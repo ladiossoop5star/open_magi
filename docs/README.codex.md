@@ -35,6 +35,13 @@ First-use setup is interactive:
 open-magi setup-codex --interactive
 ```
 
+If `open-magi` is not on PATH during local plugin development, run the bundled
+CLI directly:
+
+```bash
+node /path/to/open_magi/bin/open-magi.js setup-codex --interactive
+```
+
 Provider is optional. Leave it blank to inherit the normal Codex provider. Set
 it only when the deliberator models require a custom provider such as LiteLLM,
 a local OpenAI-compatible proxy, Azure, Bedrock, or another configured provider.

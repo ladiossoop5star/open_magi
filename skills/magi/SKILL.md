@@ -1,6 +1,6 @@
 ---
 name: magi
-description: Use when the user asks for magi, deliberation, three sages, iterative multi-agent research, or loop-until-done execution in a coding-agent runtime
+description: Use when the user asks for magi, Open-Magi, @Open-Magi, deliberation, three sages, or multi-agent research
 ---
 
 # Magi
@@ -43,11 +43,13 @@ synthesize -> act -> verify until completion.
 Do not use this for small one-shot answers where no iterative action or
 verification is needed.
 
-## Codex Goal Bootstrap Gate
+## Codex Bootstrap Gate
 
-Before Phase 0 in Codex, check fixed config `~/.codex/open_magi/codex.json`.
-If missing, run `open-magi setup-codex --interactive`; if present, run
-`open-magi setup-codex` to refresh generated agents. Report config path; no same-model fallback.
+In Codex, before reading project files, check `~/.codex/open_magi/codex.json`.
+Resolve setup CLI: use `open-magi` if in PATH; otherwise run
+`node <found>/bin/open-magi.js` from this repo or plugin cache. If config is
+missing, run `setup-codex --interactive`; otherwise run
+`setup-codex`. Report path; no same-model fallback.
 
 If running in Codex and a goal tool is available, create a goal before Phase 0
 containing the user goal, acceptance criteria, verification commands, and
