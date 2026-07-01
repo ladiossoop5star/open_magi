@@ -21,7 +21,8 @@
 
 未來每個 adapter 都應該使用該 coding agent 自己的安裝路徑與 runtime 模型。
 Magi protocol 可以盡量共用，但不假設 OpenCode runtime hook 能直接套用到其他
-agent。
+agent。各 adapter 的設定檔也應放在該 coding agent 自己的設定目錄，不放在共用
+的 Open Magi global config 目錄。
 
 ## 開發衛生
 
@@ -77,6 +78,25 @@ subagent：deliberator-melchior、deliberator-balthasar、deliberator-casper。
 如果你的 provider/model 名稱不同，請把
 `deepseek-v4-flash` 換成你的 OpenCode `opencode.json` 裡已設定的模型。
 setup 指令必須明確指定模型；它不會自動寫入 placeholder default model。
+
+## Codex 實驗設定
+
+Codex 支援和 OpenCode setup 是分開的。先安裝 Codex plugin，再產生三個
+Codex custom agent，這樣三個 deliberator 才能各自使用不同模型：
+
+```bash
+codex plugin marketplace add ladiossoop5star/open_magi --ref main
+codex plugin add open-magi@open-magi-dev
+npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
+  open-magi setup-codex --interactive
+```
+
+provider 是選填；只有使用 LiteLLM、本機 OpenAI-compatible proxy 等自接 LLM
+provider 時才需要填。setup 完會明確印出唯一固定、需要手改的設定檔路徑，通常是
+`~/.codex/open_magi/codex.json`。之後要換模型就只改這個設定檔，再跑
+`open-magi setup-codex` 重新產生 Codex agent 檔。如果設定檔被刪掉，下次
+first-use setup 會重新跑互動式設定。更多 project-scoped agent 設定與限制，
+請看 [Codex experimental notes](docs/README.codex.md)。
 
 ## 更新
 

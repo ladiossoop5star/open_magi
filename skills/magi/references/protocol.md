@@ -42,17 +42,18 @@ Create this file before the first research round:
 }
 ```
 
-If the current OpenCode `sessionID` is unavailable, set `sessionID` to `null`.
-The plugin binds it from the next `chat.message` hook.
+If the current runtime `sessionID` is unavailable, set `sessionID` to `null`.
+The OpenCode adapter binds it from the next `chat.message` hook.
 
 The default `maxDeliberationPasses` is 3. The hard maximum is 5. Raise it above
 3 only for difficult problems with unclear root cause, high-risk changes, or
 conflicting verification evidence, and record the reason in `state.history` or
 the current synthesis.
 
-The default `deliberatorTimeoutMs` is 1800000 (30 minutes). The plugin enforces
-this by tracking OpenCode deliberator child sessions and aborting timed-out
-child sessions with OpenCode `session.abort`.
+The default `deliberatorTimeoutMs` is 1800000 (30 minutes). The OpenCode
+adapter enforces this by tracking deliberator child sessions and aborting
+timed-out child sessions with OpenCode `session.abort`. Runtimes without an
+adapter must still produce timeout reports instead of waiting indefinitely.
 
 Every Phase 6 history entry for an incomplete round must include
 `progress: true|false`. Use `true` only when the round produced evidence,

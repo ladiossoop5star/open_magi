@@ -1,23 +1,16 @@
 ---
 name: magi
-description: Use when the user asks for magi, deliberation, three sages, iterative multi-agent research, or loop-until-done execution in OpenCode
-keywords:
-  - magi
-  - start deliberation
-  - deliberation
-  - three sages
-  - loop until done
-  - multi-agent
+description: Use when the user asks for magi, deliberation, three sages, iterative multi-agent research, or loop-until-done execution in a coding-agent runtime
 ---
 
 # Magi
 
 ## Overview
 
-Run an OpenCode proposal-first deliberation loop where the main agent owns decisions,
-implementation, build, test, verification, checkpoint commits, rollback, and
-final reporting. Three read-only deliberator sub-agents only research the same
-prompt independently and report back.
+Run a coding-agent proposal-first deliberation loop. The main agent owns
+decisions, implementation, verification, checkpoint commits, rollback, and final
+reporting. Three read-only deliberator sub-agents only research and report.
+Runtime adapters may add guardrails; otherwise the main agent enforces gates.
 
 Core rule: completion is based on explicit `acceptanceCriteria` and
 `verificationCommands`, not on confidence or subjective judgment.
@@ -50,20 +43,31 @@ synthesize -> act -> verify until completion.
 Do not use this for small one-shot answers where no iterative action or
 verification is needed.
 
+## Codex Goal Bootstrap Gate
+
+Before Phase 0 in Codex, check fixed config `~/.codex/open_magi/codex.json`.
+If missing, run `open-magi setup-codex --interactive`; if present, run
+`open-magi setup-codex` to refresh generated agents. Report config path; no same-model fallback.
+
+If running in Codex and a goal tool is available, create a goal before Phase 0
+containing the user goal, acceptance criteria, verification commands, and
+`final-report.md` completion rule. If no goal tool is available, continue
+normally. Do not claim that `/goal` provides runtime artifact repair.
+
 ## Roles
 
 Main agent:
-- Extracts goal, acceptance criteria, and verification commands.
-- Writes and updates `.open_magi/magi-log/state.json`.
-- Creates evidence-packet research prompts and launches all three deliberator subtasks.
-- Synthesizes reports, makes decisions, edits files, builds, tests, verifies,
-  creates checkpoint commits, reverts failed uncommitted changes, and writes the
-  final report.
+- Extracts goal, criteria, and verification commands.
+- Writes `.open_magi/magi-log/state.json`, prompts, reports, decisions, checks,
+  checkpoint commits, rollback evidence, and final report.
+- Launches all three deliberator subtasks and synthesizes their reports.
 
 Sub-agents:
 - `deliberator-melchior`: practical engineering feasibility and edge cases.
 - `deliberator-balthasar`: architecture, maintainability, long-term design.
 - `deliberator-casper`: debugging, root cause, failure paths.
+
+Use these role names for report files even with generic runtime subagents.
 
 Sub-agent restrictions:
 - sub-agents do not edit files;
@@ -83,7 +87,7 @@ Create it before the first research round with `schemaVersion`, `goal`,
 `inFlightSince`, `consecutiveNoProgress`, `verdict`, `lastError`, and
 `history`. Full schema and artifact layout are in `references/protocol.md`.
 
-Plugin-owned fields: `inFlight`, `inFlightSince`, `lastPromptedRound`,
+Runtime-adapter-owned fields: `inFlight`, `inFlightSince`, `lastPromptedRound`,
 `lastPromptedAt`, `activeDeliberators`, and `deliberatorTimeoutCounts`.
 The main agent must not set `inFlight=true` manually.
 
@@ -110,8 +114,7 @@ instead of omitting the file.
 
 ## Report Integrity Gate
 
-Before ending any assistant turn while `active=true`, verify the log directory
-matches the current state:
+Before ending a turn while `active=true`, verify log files match state:
 - `research_task` has `round-NNN/research-prompt.md`.
 - Synthesis or later has all three current council reports.
 - `synthesis` or later has current `synthesis.md`.
@@ -120,10 +123,9 @@ matches the current state:
 - Any executed command has `verification.md` with command, exit code, and important output.
 - Satisfied acceptance criteria have `final-report.md` before `active=false`.
 
-After writing each artifact, update `state.json` in the same turn. Set
-`needsContinue=true` whenever more work remains and the assistant is about to
-stop. Never leave `active=true`, a non-terminal `currentPhase`, and
-`needsContinue=false` at the end of a turn.
+After writing each artifact, update `state.json`. Set `needsContinue=true`
+whenever more work remains. Never end with `active=true`, a non-terminal
+`currentPhase`, and `needsContinue=false`.
 
 ## Council Pass Gate
 

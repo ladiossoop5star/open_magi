@@ -21,7 +21,11 @@
     "open-magi": "bin/open-magi.js"
   },
   "files": [
+    ".agents",
+    ".codex-plugin",
     "bin",
+    "docs/README.codex.md",
+    "hooks",
     "index.js",
     "lib",
     "skills",

@@ -1,30 +1,36 @@
 # open_magi
 
-English | [Traditional Chinese](README.zh-TW.md)
+English | [Traditional Chinese](README.zh-TW.md) | [Codex experimental notes](docs/README.codex.md)
 
-`open_magi` packages the Magi deliberation loop as an installable OpenCode
-plugin. It adds a `magi` skill, three read-only deliberator subagents, and a
-runtime hook that keeps long deliberation loops moving until explicit
-verification commands pass.
+`open_magi` packages the Magi deliberation loop for coding agents. The stable
+runtime today is the installable OpenCode plugin. Experimental Codex support is
+available as a skill-first Codex plugin, without full runtime backstop parity
+yet.
 
 ## Support Status
 
-OpenCode is the only supported coding-agent runtime today. The current
-installer, config writer, runtime hook, and bundled `magi` skill are designed
-for OpenCode.
+OpenCode is the only production-supported coding-agent runtime today. The
+current installer, config writer, runtime hook, and strongest guardrails are
+designed for OpenCode.
+
+Codex support is experimental. It exposes the `magi` skill through Codex plugin
+discovery, but timeout enforcement, auto-continue, question denial, and artifact
+repair still need a Codex-native runtime adapter.
 
 Future plan:
 
 1. Stabilize the OpenCode plugin and Magi protocol through real project usage.
-2. Add a Copilot CLI adapter if its extension points can support the required
+2. Validate Codex-native hooks and subagents for runtime backstop parity.
+3. Add a Copilot CLI adapter if its extension points can support the required
    loop control, subagent delegation, and artifact checks.
-3. Add a Claude Code adapter using Claude Code's native installation and
+4. Add a Claude Code adapter using Claude Code's native installation and
    workflow mechanisms.
-4. Add a Codex CLI adapter using Codex-native skills or plugins.
 
 Each future adapter should use the coding agent's own install path and runtime
 model. The shared Magi protocol can be reused where practical, but OpenCode
 runtime hooks are not assumed to work in other agents.
+Adapter-specific config files should live under that coding agent's own config
+directory, not in a shared Open Magi global directory.
 
 ## Development Hygiene
 
@@ -84,6 +90,28 @@ If your provider/model name is different, replace
 OpenCode `opencode.json`.
 The setup command requires an explicit model; it will not write a placeholder
 default model for you.
+
+## Codex Experimental Setup
+
+Codex support is separate from the OpenCode setup. Install the Codex plugin,
+then create three Codex custom agents so each deliberator can use its own
+model:
+
+```bash
+codex plugin marketplace add ladiossoop5star/open_magi --ref main
+codex plugin add open-magi@open-magi-dev
+npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
+  open-magi setup-codex --interactive
+```
+
+Provider is optional; leave it blank unless the models require a custom Codex
+provider such as LiteLLM or a local OpenAI-compatible proxy. Setup prints the
+single fixed user-editable config file path, normally
+`~/.codex/open_magi/codex.json`. If you need to change models later, edit only
+that config file and rerun `open-magi setup-codex` to regenerate Codex agent
+files. If the config file is deleted, the next first-use setup runs interactive
+setup again. See [Codex experimental notes](docs/README.codex.md) for
+project-scoped agent setup and current limitations.
 
 ## Update
 

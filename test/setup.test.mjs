@@ -8,6 +8,9 @@ import test from "node:test"
 import {
   DEFAULT_PLUGIN_SPEC,
   buildAgentConfig,
+  buildCodexAgentConfig,
+  defaultCodexSetupConfigPath,
+  setupCodexMagi,
   setupOpenMagi,
 } from "../lib/setup.js"
 
@@ -34,6 +37,115 @@ test("buildAgentConfig uses bundled prompt files as the single source of truth",
     const prompt = await readFile(new URL(`../skills/magi/prompts/${name}.md`, import.meta.url), "utf8")
     assert.equal(agents[agentName].prompt, prompt)
   }
+})
+
+test("buildCodexAgentConfig creates three custom agents with independent model settings", () => {
+  const agents = buildCodexAgentConfig({
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+    melchiorEffort: "high",
+    balthasarEffort: "medium",
+    casperEffort: "low",
+  })
+
+  assert.deepEqual(Object.keys(agents), [
+    "deliberator-melchior.toml",
+    "deliberator-balthasar.toml",
+    "deliberator-casper.toml",
+  ])
+  assert.match(agents["deliberator-melchior.toml"], /name = "deliberator-melchior"/)
+  assert.match(agents["deliberator-melchior.toml"], /model = "model-a"/)
+  assert.match(agents["deliberator-balthasar.toml"], /model = "model-b"/)
+  assert.match(agents["deliberator-casper.toml"], /model = "model-c"/)
+  assert.match(agents["deliberator-casper.toml"], /model_provider = "litellm"/)
+  assert.match(agents["deliberator-melchior.toml"], /model_reasoning_effort = "high"/)
+  assert.match(agents["deliberator-balthasar.toml"], /model_reasoning_effort = "medium"/)
+  assert.match(agents["deliberator-casper.toml"], /model_reasoning_effort = "low"/)
+  assert.match(agents["deliberator-melchior.toml"], /sandbox_mode = "read-only"/)
+  assert.match(agents["deliberator-melchior.toml"], /developer_instructions = """/)
+  assert.match(agents["deliberator-melchior.toml"], /Evidence|Recommended Next Action|Confidence/)
+})
+
+test("setupCodexMagi writes Codex custom agent files and requires explicit sage models", async () => {
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-agents-"))
+
+  await assert.rejects(
+    () => setupCodexMagi({ agentsDir, provider: "litellm", melchiorModel: "model-a" }),
+    /balthasar.*model is required/i,
+  )
+
+  const result = await setupCodexMagi({
+    agentsDir,
+    configPath: join(agentsDir, "open-magi-codex.json"),
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+
+  assert.equal(result.agentsDir, agentsDir)
+  assert.equal(result.configPath, join(agentsDir, "open-magi-codex.json"))
+  assert.equal(result.dryRun, false)
+  assert.deepEqual(result.agentFiles.map((file) => file.name), [
+    "deliberator-melchior.toml",
+    "deliberator-balthasar.toml",
+    "deliberator-casper.toml",
+  ])
+
+  const melchior = await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8")
+  const balthasar = await readFile(join(agentsDir, "deliberator-balthasar.toml"), "utf8")
+  const casper = await readFile(join(agentsDir, "deliberator-casper.toml"), "utf8")
+  const config = JSON.parse(await readFile(result.configPath, "utf8"))
+
+  assert.match(melchior, /model = "model-a"/)
+  assert.match(balthasar, /model = "model-b"/)
+  assert.match(casper, /model = "model-c"/)
+  assert.equal(config.schemaVersion, 1)
+  assert.equal(config.provider, "litellm")
+  assert.equal(config.deliberators.melchior.model, "model-a")
+  assert.equal(config.deliberators.balthasar.model, "model-b")
+  assert.equal(config.deliberators.casper.model, "model-c")
+
+  await rm(agentsDir, { recursive: true, force: true })
+})
+
+test("setupCodexMagi can regenerate custom agents from the single config file", async () => {
+  const configDir = await mkdtemp(join(tmpdir(), "open-magi-codex-config-"))
+  const agentsDir = join(configDir, "agents")
+  const configPath = join(configDir, "codex.json")
+  await writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        agentsDir,
+        provider: "litellm",
+        deliberators: {
+          melchior: { model: "model-a" },
+          balthasar: { model: "model-b" },
+          casper: { model: "model-c" },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  )
+
+  const result = await setupCodexMagi({ configPath })
+
+  assert.equal(result.configPath, configPath)
+  assert.equal(result.agentsDir, agentsDir)
+  assert.match(await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8"), /model = "model-a"/)
+  assert.match(await readFile(join(agentsDir, "deliberator-balthasar.toml"), "utf8"), /model = "model-b"/)
+  assert.match(await readFile(join(agentsDir, "deliberator-casper.toml"), "utf8"), /model = "model-c"/)
+
+  await rm(configDir, { recursive: true, force: true })
+})
+
+test("defaultCodexSetupConfigPath points at one user-editable Open Magi config file", () => {
+  assert.match(defaultCodexSetupConfigPath({ CODEX_HOME: "/tmp/example-codex" }), /\/tmp\/example-codex\/open_magi\/codex\.json$/)
 })
 
 test("setupOpenMagi merges config and copies the magi skill", async () => {

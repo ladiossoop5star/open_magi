@@ -1,26 +1,109 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util"
 import { readFile } from "node:fs/promises"
-import { setupOpenMagi } from "../lib/setup.js"
+import { readFileSync } from "node:fs"
+import { createInterface } from "node:readline/promises"
+import { stdin as input, stdout as output } from "node:process"
+import { setupCodexMagi, setupOpenMagi } from "../lib/setup.js"
 
 function printHelp() {
   console.log(`open-magi
 
 Usage:
   open-magi setup --model provider/model [--config-dir path] [--plugin-spec spec] [--dry-run]
+  open-magi setup-codex --interactive [--agents-dir path]
+  open-magi setup-codex --melchior-model model --balthasar-model model --casper-model model [--provider provider] [--agents-dir path] [--dry-run]
   open-magi --version
 
 Options:
-  --model        Required model for all three deliberator subagents.
-  --config-dir   OpenCode config directory. Defaults to OPENCODE_CONFIG_DIR or ~/.config/opencode.
-  --plugin-spec  Plugin spec to add to opencode.json. Defaults to open-magi-opencode.
-  --dry-run      Print the merged config summary without writing files.
+  --model             Required OpenCode model for all three deliberator subagents.
+  --config-dir        OpenCode config directory. Defaults to OPENCODE_CONFIG_DIR or ~/.config/opencode.
+  --plugin-spec       Plugin spec to add to opencode.json. Defaults to open-magi-opencode.
+  --agents-dir        Codex custom agents directory. Defaults to CODEX_HOME/agents or ~/.codex/agents.
+  --config-file       Single Open Magi Codex config file to write or read.
+  --provider          Codex model_provider to apply to all three deliberators.
+  --*-provider        Per-deliberator Codex model_provider override.
+  --*-effort          Per-deliberator model_reasoning_effort override.
+  --interactive       Prompt for missing Codex deliberator settings.
+  --dry-run           Print the setup summary without writing files.
 `)
 }
 
 async function packageVersion() {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
   return pkg.version
+}
+
+function createQuestioner() {
+  if (!input.isTTY) {
+    const answers = readFileSync(0, "utf8").split(/\r?\n/)
+    return {
+      question: async (prompt) => {
+        output.write(prompt)
+        return answers.shift() ?? ""
+      },
+      close: () => {},
+    }
+  }
+
+  return createInterface({ input, output })
+}
+
+async function interactiveCodexSetupOptions(values) {
+  const rl = createQuestioner()
+
+  try {
+    const askOptional = async (label, current, fallbackLabel = "inherit") => {
+      if (current) return current
+      const answer = (await rl.question(`${label} [${fallbackLabel}]: `)).trim()
+      return answer || undefined
+    }
+    const askRequired = async (label, current) => {
+      if (current) return current
+      while (true) {
+        const answer = (await rl.question(`${label}: `)).trim()
+        if (answer) return answer
+        console.log(`${label} is required.`)
+      }
+    }
+
+    let provider = values.provider
+    if (!provider) {
+      const customProvider = (await rl.question("Use a specific model provider? [y/N]: ")).trim()
+      if (/^(y|yes)$/i.test(customProvider)) {
+        provider = await askRequired("Provider", values.provider)
+      }
+    }
+    const melchiorModel = await askRequired("Melchior model", values["melchior-model"])
+    const balthasarModel = await askRequired("Balthasar model", values["balthasar-model"])
+    const casperModel = await askRequired("Casper model", values["casper-model"])
+    const reasoningEffort = await askOptional("Common reasoning effort", values["reasoning-effort"])
+    const agentsDir = values["agents-dir"]
+    const confirm = (await rl.question(`Write Codex custom agents${agentsDir ? ` to ${agentsDir}` : ""}? [Y/n]: `)).trim()
+
+    if (/^(n|no)$/i.test(confirm)) {
+      return { cancelled: true }
+    }
+
+    return {
+      agentsDir,
+      configPath: values["config-file"],
+      provider,
+      melchiorModel,
+      balthasarModel,
+      casperModel,
+      melchiorProvider: values["melchior-provider"],
+      balthasarProvider: values["balthasar-provider"],
+      casperProvider: values["casper-provider"],
+      melchiorEffort: values["melchior-effort"],
+      balthasarEffort: values["balthasar-effort"],
+      casperEffort: values["casper-effort"],
+      reasoningEffort,
+      dryRun: values["dry-run"],
+    }
+  } finally {
+    rl.close()
+  }
 }
 
 async function main(argv) {
@@ -33,8 +116,79 @@ async function main(argv) {
     console.log(await packageVersion())
     return
   }
-  if (command !== "setup") {
+  if (command !== "setup" && command !== "setup-codex") {
     throw new Error(`Unknown command: ${command}`)
+  }
+
+  if (command === "setup-codex") {
+    const { values } = parseArgs({
+      args: argv.slice(3),
+      options: {
+        "agents-dir": { type: "string" },
+        "config-file": { type: "string" },
+        provider: { type: "string" },
+        "melchior-model": { type: "string" },
+        "balthasar-model": { type: "string" },
+        "casper-model": { type: "string" },
+        "melchior-provider": { type: "string" },
+        "balthasar-provider": { type: "string" },
+        "casper-provider": { type: "string" },
+        "melchior-effort": { type: "string" },
+        "balthasar-effort": { type: "string" },
+        "casper-effort": { type: "string" },
+        "reasoning-effort": { type: "string" },
+        interactive: { type: "boolean", default: false },
+        "dry-run": { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+      },
+      allowPositionals: false,
+    })
+
+    if (values.help) {
+      printHelp()
+      return
+    }
+
+    const options = values.interactive
+      ? await interactiveCodexSetupOptions(values)
+      : {
+          agentsDir: values["agents-dir"],
+          configPath: values["config-file"],
+          provider: values.provider,
+          melchiorModel: values["melchior-model"],
+          balthasarModel: values["balthasar-model"],
+          casperModel: values["casper-model"],
+          melchiorProvider: values["melchior-provider"],
+          balthasarProvider: values["balthasar-provider"],
+          casperProvider: values["casper-provider"],
+          melchiorEffort: values["melchior-effort"],
+          balthasarEffort: values["balthasar-effort"],
+          casperEffort: values["casper-effort"],
+          reasoningEffort: values["reasoning-effort"],
+          dryRun: values["dry-run"],
+        }
+
+    if (options.cancelled) {
+      console.log(JSON.stringify({ ok: false, cancelled: true }, null, 2))
+      return
+    }
+
+    const result = await setupCodexMagi(options)
+
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          dryRun: result.dryRun,
+          agentsDir: result.agentsDir,
+          configPath: result.configPath,
+          agentFiles: result.agentFiles.map((file) => file.path),
+        },
+        null,
+        2,
+      ),
+    )
+    return
   }
 
   const { values } = parseArgs({
