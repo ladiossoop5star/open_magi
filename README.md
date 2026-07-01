@@ -48,19 +48,20 @@ git diff --check
 
 ## Install
 
-From npm after publishing:
-
-```bash
-opencode plugin open-magi-opencode -g
-npx open-magi-opencode setup --model deepseek-v4-flash
-```
-
-Directly from this public GitHub repo:
+Until the npm package is published, install directly from this public GitHub
+repo:
 
 ```bash
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
 npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
   open-magi setup --model deepseek-v4-flash
+```
+
+After the npm package is published, the shorter npm install path will be:
+
+```bash
+opencode plugin open-magi-opencode -g
+npx open-magi-opencode setup --model deepseek-v4-flash
 ```
 
 Ask an AI agent to install it:
@@ -86,14 +87,6 @@ default model for you.
 
 ## Update
 
-If you installed from npm after publishing, replace the installed plugin version
-and refresh the local skill files:
-
-```bash
-opencode plugin open-magi-opencode -g -f
-npx open-magi-opencode setup --model deepseek-v4-flash
-```
-
 If you installed directly from this GitHub repo, use the same source with
 `--force` and rerun setup:
 
@@ -101,6 +94,14 @@ If you installed directly from this GitHub repo, use the same source with
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g -f
 npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
   open-magi setup --model deepseek-v4-flash
+```
+
+After the npm package is published, replace the installed plugin version and
+refresh the local skill files with:
+
+```bash
+opencode plugin open-magi-opencode -g -f
+npx open-magi-opencode setup --model deepseek-v4-flash
 ```
 
 The setup step refreshes `~/.config/opencode/skills/magi` and preserves

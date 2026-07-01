@@ -18,7 +18,7 @@
     "./setup": "./lib/setup.js"
   },
   "bin": {
-    "open-magi": "./bin/open-magi.js"
+    "open-magi": "bin/open-magi.js"
   },
   "files": [
     "bin",

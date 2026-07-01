@@ -63,7 +63,7 @@ test("package metadata exposes OpenCode plugin, setup CLI, and injected plugin t
   assert.equal(pkg.main, "./index.js")
   assert.equal(pkg.exports["."], "./index.js")
   assert.equal(pkg.exports["./setup"], "./lib/setup.js")
-  assert.equal(pkg.bin["open-magi"], "./bin/open-magi.js")
+  assert.equal(pkg.bin["open-magi"], "bin/open-magi.js")
   assert.equal(pkg.files.includes("README.zh-TW.md"), true)
   assert.equal(pkg.scripts.test, "node --test test/package.test.mjs test/plugin.test.mjs test/setup.test.mjs")
   const suitePath = new URL("./plugin-suite.mjs", import.meta.url)
@@ -83,6 +83,7 @@ test("English README documents install and avoids local-only model warnings", as
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8")
 
   assert.match(readme, /\[Traditional Chinese\]\(README\.zh-TW\.md\)/)
+  assert.match(readme, /Until the npm package is published, install directly from this public GitHub/)
   assert.match(readme, /opencode plugin open-magi-opencode -g/)
   assert.match(readme, /open-magi setup|npx open-magi-opencode setup/)
   assert.match(readme, /Ask an AI agent to install it/)

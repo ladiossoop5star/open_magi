@@ -43,19 +43,19 @@ git diff --check
 
 ## 安裝
 
-從 npm 發布版本安裝：
-
-```bash
-opencode plugin open-magi-opencode -g
-npx open-magi-opencode setup --model deepseek-v4-flash
-```
-
-直接從公開 GitHub repo 安裝：
+在 npm package 正式發布前，請直接從公開 GitHub repo 安裝：
 
 ```bash
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
 npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
   open-magi setup --model deepseek-v4-flash
+```
+
+npm package 發布後，可以改用較短的 npm 安裝方式：
+
+```bash
+opencode plugin open-magi-opencode -g
+npx open-magi-opencode setup --model deepseek-v4-flash
 ```
 
 請 AI agent 幫你安裝時，可以貼這段：
@@ -80,14 +80,6 @@ setup 指令必須明確指定模型；它不會自動寫入 placeholder default
 
 ## 更新
 
-如果你是從 npm 發布版本安裝，使用 `--force` 取代已安裝的 plugin 版本，
-再重新執行 setup 更新本機 skill 檔案：
-
-```bash
-opencode plugin open-magi-opencode -g -f
-npx open-magi-opencode setup --model deepseek-v4-flash
-```
-
 如果你是直接從這個 GitHub repo 安裝，使用同一個來源加上 `--force`，
 然後重新執行 setup：
 
@@ -95,6 +87,14 @@ npx open-magi-opencode setup --model deepseek-v4-flash
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g -f
 npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
   open-magi setup --model deepseek-v4-flash
+```
+
+npm package 發布後，若你是從 npm 發布版本安裝，使用 `--force` 取代已安裝的
+plugin 版本，再重新執行 setup 更新本機 skill 檔案：
+
+```bash
+opencode plugin open-magi-opencode -g -f
+npx open-magi-opencode setup --model deepseek-v4-flash
 ```
 
 setup 會刷新 `~/.config/opencode/skills/magi`，並保留其他 OpenCode 設定。
