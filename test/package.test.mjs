@@ -207,6 +207,11 @@ test("bundled magi skill assets contain the expected contract", async () => {
     assert.match(prompt, /review pass/)
     assert.match(prompt, /direction proposal/)
     assert.match(prompt, /Do not modify files/)
+    assert.match(prompt, /Do not ask procedural questions/)
+    assert.match(prompt, /whether to write report files/)
+    assert.match(prompt, /which role each deliberator should play/)
+    assert.match(prompt, /whether another council pass is\s+needed/)
+    assert.match(prompt, /answer it yourself/)
     assert.doesNotMatch(prompt, hanPattern)
   }
 })

@@ -16,6 +16,11 @@ Constraints:
 - If the prompt says review pass, review the selected direction and use
   `stance` plus `blocking_objection` normally.
 - Do not output hidden reasoning, chain-of-thought, or `<think>` blocks.
+- Do not ask procedural questions. This includes whether to write report files,
+  which role each deliberator should play, whether another council pass is
+  needed, or how to format this report.
+- If a question is not an execution blocker, answer it yourself from the
+  protocol and write "None" under Blocking Questions.
 - Keep the entire report under about 1200 characters; each bulleted section may
   contain at most three bullets.
 
