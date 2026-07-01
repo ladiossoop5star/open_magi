@@ -493,6 +493,45 @@ test("CLI setup-codex without arguments starts interactive setup", async () => {
   assert.match(await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8"), /model = "model-a"/)
 })
 
+test("CLI setup-codex interactive can clear an existing Codex provider", async () => {
+  const agentsDir = await mkTempProject("open-magi-codex-cli-clear-provider-")
+  const configPath = join(agentsDir, "codex.json")
+  await writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        agentsDir,
+        provider: "o3-mini",
+        deliberators: {
+          melchior: { model: "gpt-4o" },
+          balthasar: { model: "gpt-4o" },
+          casper: { model: "gpt-4o" },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  )
+  const result = await runInteractiveCli(
+    ["setup-codex"],
+    "n\nmodel-a\nmodel-b\nmodel-c\n\ny\n",
+    {
+      env: {
+        CODEX_AGENTS_DIR: agentsDir,
+        OPEN_MAGI_CODEX_CONFIG: configPath,
+      },
+    },
+  )
+  const config = JSON.parse(await readFile(configPath, "utf8"))
+  const melchior = await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8")
+
+  assert.equal(result.code, 0, result.stderr)
+  assert.equal(config.provider, undefined)
+  assert.equal(config.deliberators.melchior.model, "model-a")
+  assert.doesNotMatch(melchior, /model_provider/)
+})
+
 test("CLI setup-codex interactive leaves provider unset when user has no custom provider", async () => {
   const agentsDir = await mkTempProject("open-magi-codex-cli-no-provider-")
   const configPath = join(agentsDir, "codex.json")

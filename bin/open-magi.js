@@ -76,10 +76,13 @@ async function interactiveCodexSetupOptions(values) {
     }
 
     let provider = values.provider
+    let clearProvider = false
     if (!provider) {
       const customProvider = (await rl.question("Use a specific model provider? [y/N]: ")).trim()
       if (/^(y|yes)$/i.test(customProvider)) {
         provider = await askRequired("Provider", values.provider)
+      } else {
+        clearProvider = true
       }
     }
     const melchiorModel = await askRequired("Melchior model", values["melchior-model"])
@@ -97,6 +100,7 @@ async function interactiveCodexSetupOptions(values) {
       agentsDir,
       configPath: values["config-file"],
       provider,
+      clearProvider,
       melchiorModel,
       balthasarModel,
       casperModel,
