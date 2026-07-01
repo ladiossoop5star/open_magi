@@ -88,13 +88,14 @@ Codex custom agent，這樣三個 deliberator 才能各自使用不同模型：
 codex plugin marketplace add ladiossoop5star/open_magi --ref main
 codex plugin add open-magi@open-magi-dev
 npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
-  open-magi setup-codex --interactive
+  open-magi setup-codex
 ```
 
 provider 是選填；只有使用 LiteLLM、本機 OpenAI-compatible proxy 等自接 LLM
 provider 時才需要填。setup 完會明確印出唯一固定、需要手改的設定檔路徑，通常是
-`~/.codex/open_magi/codex.json`。之後要換模型就只改這個設定檔，再跑
-`open-magi setup-codex` 重新產生 Codex agent 檔。如果設定檔被刪掉，下次
+`~/.codex/open_magi/codex.json`。之後要換模型就重新跑
+`open-magi setup-codex` 輸入新值，或用 `--melchior-model`、
+`--balthasar-model`、`--casper-model` 做非互動設定。如果設定檔被刪掉，下次
 first-use setup 會重新跑互動式設定。更多 project-scoped agent 設定與限制，
 請看 [Codex experimental notes](docs/README.codex.md)。
 

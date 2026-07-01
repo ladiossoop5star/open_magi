@@ -101,16 +101,18 @@ model:
 codex plugin marketplace add ladiossoop5star/open_magi --ref main
 codex plugin add open-magi@open-magi-dev
 npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
-  open-magi setup-codex --interactive
+  open-magi setup-codex
 ```
 
 Provider is optional; leave it blank unless the models require a custom Codex
 provider such as LiteLLM or a local OpenAI-compatible proxy. Setup prints the
 single fixed user-editable config file path, normally
-`~/.codex/open_magi/codex.json`. If you need to change models later, edit only
-that config file and rerun `open-magi setup-codex` to regenerate Codex agent
-files. If the config file is deleted, the next first-use setup runs interactive
-setup again. See [Codex experimental notes](docs/README.codex.md) for
+`~/.codex/open_magi/codex.json`. If you need to change models later, rerun
+`open-magi setup-codex` and enter the new values, or run it with explicit
+`--melchior-model`, `--balthasar-model`, and `--casper-model` options for
+non-interactive setup. If the config file is deleted, the next first-use setup
+runs interactive setup again. See
+[Codex experimental notes](docs/README.codex.md) for
 project-scoped agent setup and current limitations.
 
 ## Update

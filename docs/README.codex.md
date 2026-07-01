@@ -32,14 +32,14 @@ they do not have to be simulated by the main agent model.
 First-use setup is interactive:
 
 ```bash
-open-magi setup-codex --interactive
+open-magi setup-codex
 ```
 
 If `open-magi` is not on PATH during local plugin development, run the bundled
 CLI directly:
 
 ```bash
-node /path/to/open_magi/bin/open-magi.js setup-codex --interactive
+node /path/to/open_magi/bin/open-magi.js setup-codex
 ```
 
 Provider is optional. Leave it blank to inherit the normal Codex provider. Set
@@ -54,12 +54,12 @@ The user-editable Open Magi Codex config is one fixed file:
 ~/.codex/open_magi/codex.json
 ```
 
-After setup, edit only that file if a model or provider needs to change. Then
-run `open-magi setup-codex` with no long model flags to regenerate the Codex
-agent files from the config.
+After setup, rerun `open-magi setup-codex` to enter new model/provider values,
+or pass `--melchior-model`, `--balthasar-model`, and `--casper-model` for
+non-interactive setup.
 
 If this config file is deleted, the next Magi first-use preflight should run
-`open-magi setup-codex --interactive` again.
+`open-magi setup-codex` again.
 
 Generated Codex custom agent files are runtime artifacts:
 

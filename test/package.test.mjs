@@ -60,14 +60,23 @@ async function mkTempProject(prefix) {
   return mkdtemp(join(tmpdir(), prefix))
 }
 
-function runInteractiveCli(args, input) {
+function runInteractiveCli(args, input, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn("node", ["bin/open-magi.js", ...args], {
       cwd: repoRoot,
       stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, ...(options.env || {}) },
     })
     let stdout = ""
     let stderr = ""
+    let settled = false
+    const timeoutMs = options.timeoutMs ?? 2000
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child.kill("SIGKILL")
+      resolve({ code: "timeout", stdout, stderr })
+    }, timeoutMs)
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk
@@ -77,6 +86,9 @@ function runInteractiveCli(args, input) {
     })
     child.on("error", reject)
     child.on("close", (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
       resolve({ code, stdout, stderr })
     })
     child.stdin.end(input)
@@ -162,9 +174,9 @@ test("Codex documentation describes skill-first experimental support", async () 
   assert.match(docs, /Stop hook/i)
   assert.match(docs, /Magi loop is still active/)
   assert.match(docs, /setup-codex/)
-  assert.match(docs, /setup-codex --interactive/)
   assert.match(docs, /`open-magi` is not on PATH/)
-  assert.match(docs, /node \/path\/to\/open_magi\/bin\/open-magi\.js setup-codex --interactive/)
+  assert.match(docs, /node \/path\/to\/open_magi\/bin\/open-magi\.js setup-codex/)
+  assert.match(docs, /--melchior-model/)
   assert.match(docs, /first-use/i)
   assert.match(docs, /~\/\.codex\/open_magi\/codex\.json/)
   assert.match(docs, /Leave it blank/)
@@ -242,7 +254,6 @@ test("English README documents install and avoids local-only model warnings", as
   assert.match(readme, /opencode plugin open-magi-opencode -g/)
   assert.match(readme, /open-magi setup|npx open-magi-opencode setup/)
   assert.match(readme, /open-magi setup-codex/)
-  assert.match(readme, /setup-codex --interactive/)
   assert.match(readme, /~\/\.codex\/open_magi\/codex\.json/)
   assert.match(readme, /Provider is optional/)
   assert.match(readme, /single fixed user-editable config file/)
@@ -251,7 +262,7 @@ test("English README documents install and avoids local-only model warnings", as
   assert.match(readme, /deliberator-melchior/)
   assert.match(readme, /deepseek-v4-flash/)
   assert.match(readme, /setup-codex/)
-  assert.match(readme, /--interactive/)
+  assert.match(readme, /--melchior-model/)
   assert.match(readme, /codex\.json/)
   assert.match(readme, /\.open_magi\/magi-log/)
   assert.match(readme, /Development Hygiene/)
@@ -291,7 +302,7 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.doesNotMatch(skill, /Use when.*OpenCode/)
   assert.match(skill, /Codex Bootstrap Gate/)
   assert.match(skill, /If running in Codex and a goal tool is available/)
-  assert.match(skill, /setup-codex --interactive/)
+  assert.match(skill, /setup-codex` with no arguments/)
   assert.match(skill, /use `open-magi` if in PATH/)
   assert.match(skill, /plugin cache/)
   assert.match(skill, /Do not claim that `\/goal` provides runtime artifact repair/)
@@ -462,6 +473,26 @@ test("CLI setup-codex interactive writes custom agent files without long flags",
   assert.match(await readFile(join(agentsDir, "deliberator-casper.toml"), "utf8"), /model = "model-c"/)
 })
 
+test("CLI setup-codex without arguments starts interactive setup", async () => {
+  const agentsDir = await mkTempProject("open-magi-codex-cli-default-interactive-")
+  const configPath = join(agentsDir, "codex.json")
+  const result = await runInteractiveCli(
+    ["setup-codex"],
+    "n\nmodel-a\nmodel-b\nmodel-c\n\ny\n",
+    {
+      env: {
+        CODEX_AGENTS_DIR: agentsDir,
+        OPEN_MAGI_CODEX_CONFIG: configPath,
+      },
+    },
+  )
+
+  assert.equal(result.code, 0, result.stderr)
+  assert.match(result.stdout, /specific model provider/)
+  assert.equal(JSON.parse(await readFile(configPath, "utf8")).deliberators.melchior.model, "model-a")
+  assert.match(await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8"), /model = "model-a"/)
+})
+
 test("CLI setup-codex interactive leaves provider unset when user has no custom provider", async () => {
   const agentsDir = await mkTempProject("open-magi-codex-cli-no-provider-")
   const configPath = join(agentsDir, "codex.json")
@@ -475,6 +506,21 @@ test("CLI setup-codex interactive leaves provider unset when user has no custom 
   assert.equal(result.code, 0, result.stderr)
   assert.equal(config.provider, undefined)
   assert.doesNotMatch(melchior, /model_provider/)
+})
+
+test("CLI setup-codex interactive fails without real setup answers", async () => {
+  const agentsDir = await mkTempProject("open-magi-codex-cli-empty-interactive-")
+  const configPath = join(agentsDir, "codex.json")
+  const result = await runInteractiveCli(
+    ["setup-codex", "--interactive", "--agents-dir", agentsDir, "--config-file", configPath],
+    "",
+    { timeoutMs: 500 },
+  )
+
+  assert.notEqual(result.code, "timeout")
+  assert.notEqual(result.code, 0)
+  assert.match(result.stderr, /interactive setup requires input/i)
+  await assert.rejects(() => readFile(configPath, "utf8"))
 })
 
 test("only README.zh-TW.md contains Chinese characters", async () => {

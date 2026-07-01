@@ -11,6 +11,7 @@ function printHelp() {
 
 Usage:
   open-magi setup --model provider/model [--config-dir path] [--plugin-spec spec] [--dry-run]
+  open-magi setup-codex
   open-magi setup-codex --interactive [--agents-dir path]
   open-magi setup-codex --melchior-model model --balthasar-model model --casper-model model [--provider provider] [--agents-dir path] [--dry-run]
   open-magi --version
@@ -24,7 +25,7 @@ Options:
   --provider          Codex model_provider to apply to all three deliberators.
   --*-provider        Per-deliberator Codex model_provider override.
   --*-effort          Per-deliberator model_reasoning_effort override.
-  --interactive       Prompt for missing Codex deliberator settings.
+  --interactive       Prompt for Codex deliberator settings. This is the default when setup-codex has no options.
   --dry-run           Print the setup summary without writing files.
 `)
 }
@@ -36,11 +37,18 @@ async function packageVersion() {
 
 function createQuestioner() {
   if (!input.isTTY) {
-    const answers = readFileSync(0, "utf8").split(/\r?\n/)
+    const rawInput = readFileSync(0, "utf8")
+    const answers = rawInput ? rawInput.split(/\r?\n/) : []
+    let index = 0
     return {
       question: async (prompt) => {
         output.write(prompt)
-        return answers.shift() ?? ""
+        if (index >= answers.length) {
+          throw new Error(
+            "interactive setup requires input; in Codex ask the user for provider and model names, then run setup-codex with explicit --melchior-model, --balthasar-model, --casper-model, and optional --provider",
+          )
+        }
+        return answers[index++]
       },
       close: () => {},
     }
@@ -121,8 +129,9 @@ async function main(argv) {
   }
 
   if (command === "setup-codex") {
+    const setupArgs = argv.slice(3)
     const { values } = parseArgs({
-      args: argv.slice(3),
+      args: setupArgs,
       options: {
         "agents-dir": { type: "string" },
         "config-file": { type: "string" },
@@ -149,7 +158,7 @@ async function main(argv) {
       return
     }
 
-    const options = values.interactive
+    const options = values.interactive || setupArgs.length === 0
       ? await interactiveCodexSetupOptions(values)
       : {
           agentsDir: values["agents-dir"],

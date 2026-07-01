@@ -48,7 +48,7 @@ verification is needed.
 In Codex, before reading project files, check `~/.codex/open_magi/codex.json`.
 Resolve setup CLI: use `open-magi` if in PATH; otherwise run
 `node <found>/bin/open-magi.js` from this repo or plugin cache. If config is
-missing, run `setup-codex --interactive`; otherwise run
+missing, run `setup-codex` with no arguments; otherwise run
 `setup-codex`. Report path; no same-model fallback.
 
 If running in Codex and a goal tool is available, create a goal before Phase 0
