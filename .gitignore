@@ -1,0 +1,6 @@
+docs/superpowers/
+.open_magi/
+.env
+.env.*
+tmp/
+*.sw[pon]
