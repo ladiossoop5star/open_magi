@@ -188,7 +188,7 @@ deliberation loop until done.
 
 By default, all three sages use OpenCode subagents configured under
 `agent.deliberator-*`. You can also route any sage to an external headless agent
-by creating `~/.config/opencode/open_magi.json`:
+by editing the template installed at `~/.config/opencode/open_magi.json`:
 
 ```json
 {
@@ -210,8 +210,9 @@ Rules:
 
 - Do not put this custom block in `opencode.json`; OpenCode rejects unknown
   top-level config keys.
+- Plugin install creates this template if it does not already exist.
 - Missing config, `runner: "opencode"`, or `type: "opencode"` uses the normal
-  OpenCode subagent.
+  OpenCode subagent and reads its model from `opencode.json`.
 - `runner: "command"` or `type: "command"` runs the command from the project
   root.
 - The council prompt is sent to the command on stdin.

@@ -7,6 +7,7 @@ import test from "node:test"
 
 import {
   DEFAULT_PLUGIN_SPEC,
+  ensureOpenMagiConfigTemplate,
   buildAgentConfig,
   setupOpenMagi,
 } from "../lib/setup.js"
@@ -92,6 +93,13 @@ test("setupOpenMagi merges config and copies the magi skill", async () => {
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "protocol.md")), true)
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "question-firewall.md")), true)
 
+  const openMagiConfig = JSON.parse(await readFile(join(configDir, "open_magi.json"), "utf8"))
+  assert.deepEqual(openMagiConfig.deliberators, {
+    melchior: { runner: "opencode" },
+    balthasar: { runner: "opencode" },
+    casper: { runner: "opencode" },
+  })
+
   await rm(configDir, { recursive: true, force: true })
 })
 
@@ -105,7 +113,31 @@ test("setupOpenMagi dry-run returns merged config without writing files", async 
   assert.equal(result.pluginSpec, DEFAULT_PLUGIN_SPEC)
   assert.equal(result.config.plugin.includes(DEFAULT_PLUGIN_SPEC), true)
   assert.equal(existsSync(join(configDir, "opencode.json")), false)
+  assert.equal(existsSync(join(configDir, "open_magi.json")), false)
   assert.equal(existsSync(join(configDir, "skills", "magi", "SKILL.md")), false)
+
+  await rm(configDir, { recursive: true, force: true })
+})
+
+test("ensureOpenMagiConfigTemplate writes a non-overwriting external runner template", async () => {
+  const configDir = await mkdtemp(join(tmpdir(), "open-magi-template-"))
+
+  const created = await ensureOpenMagiConfigTemplate(configDir)
+  assert.equal(created.created, true)
+  assert.equal(created.configPath, join(configDir, "open_magi.json"))
+  const template = JSON.parse(await readFile(created.configPath, "utf8"))
+  assert.deepEqual(template.deliberators, {
+    melchior: { runner: "opencode" },
+    balthasar: { runner: "opencode" },
+    casper: { runner: "opencode" },
+  })
+
+  await writeFile(created.configPath, `${JSON.stringify({ deliberators: { melchior: { runner: "command", command: "echo hi" } } }, null, 2)}\n`)
+  const skipped = await ensureOpenMagiConfigTemplate(configDir)
+  assert.equal(skipped.created, false)
+  const preserved = JSON.parse(await readFile(created.configPath, "utf8"))
+  assert.equal(preserved.deliberators.melchior.runner, "command")
+  assert.equal(preserved.deliberators.melchior.command, "echo hi")
 
   await rm(configDir, { recursive: true, force: true })
 })

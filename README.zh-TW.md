@@ -176,7 +176,8 @@ deliberation loop until done.
 ## 外部 Headless Deliberator
 
 預設三賢者都使用 `agent.deliberator-*` 設定的 OpenCode subagent。你也可以在
-`~/.config/opencode/open_magi.json` 設定任一 sage 改成外部 headless agent：
+安裝時建立的 `~/.config/opencode/open_magi.json` template 中，把任一 sage 改成
+外部 headless agent：
 
 ```json
 {
@@ -198,8 +199,9 @@ deliberation loop until done.
 
 - 不要把這個自訂 block 放進 `opencode.json`；OpenCode 會拒絕未知的頂層
   config key。
+- plugin install 會在檔案不存在時建立這個 template。
 - 沒設定、`runner: "opencode"`、或 `type: "opencode"` 都使用一般 OpenCode
-  subagent。
+  subagent，模型從 `opencode.json` 讀取。
 - `runner: "command"` 或 `type: "command"` 會在專案根目錄執行該 command。
 - council prompt 會用 stdin 傳給 command。
 - command 也會收到 `OPEN_MAGI_PROMPT_FILE`、`OPEN_MAGI_REPORT_FILE`、
