@@ -1,30 +1,67 @@
 # open_magi
 
-English | [Traditional Chinese](README.zh-TW.md)
+English | [Traditional Chinese](README.zh-TW.md) | [Codex experimental notes](adapters/codex/README.md)
 
-`open_magi` packages the Magi deliberation loop as an installable OpenCode
-plugin. It adds a `magi` skill, three read-only deliberator subagents, and a
-runtime hook that keeps long deliberation loops moving until explicit
-verification commands pass.
+`open_magi` packages the Magi deliberation loop for coding agents. The stable
+runtime today is the installable OpenCode plugin. Experimental Codex support is
+available as a skill-first Codex plugin, without full runtime backstop parity
+yet.
 
 ## Support Status
 
-OpenCode is the only supported coding-agent runtime today. The current
-installer, config writer, runtime hook, and bundled `magi` skill are designed
-for OpenCode.
+OpenCode is the only production-supported coding-agent runtime today. The
+current installer, config writer, runtime hook, and strongest guardrails are
+designed for OpenCode.
+
+Codex support is experimental. It exposes the `magi` skill through Codex plugin
+discovery, but timeout enforcement, auto-continue, question denial, and artifact
+repair still need a Codex-native runtime adapter.
 
 Future plan:
 
 1. Stabilize the OpenCode plugin and Magi protocol through real project usage.
-2. Add a Copilot CLI adapter if its extension points can support the required
+2. Validate Codex-native hooks and subagents for runtime backstop parity.
+3. Add a Copilot CLI adapter if its extension points can support the required
    loop control, subagent delegation, and artifact checks.
-3. Add a Claude Code adapter using Claude Code's native installation and
+4. Add a Claude Code adapter using Claude Code's native installation and
    workflow mechanisms.
-4. Add a Codex CLI adapter using Codex-native skills or plugins.
 
 Each future adapter should use the coding agent's own install path and runtime
 model. The shared Magi protocol can be reused where practical, but OpenCode
 runtime hooks are not assumed to work in other agents.
+Adapter-specific config files should live under that coding agent's own config
+directory, not in a shared Open Magi global directory.
+
+## Adapter Package Layout
+
+The repository keeps shared Magi protocol assets separate from installable
+adapter packages:
+
+```text
+shared/magi/
+  prompts/
+  references/
+
+skills/magi/
+  OpenCode-installed magi skill
+
+adapters/codex/
+  .codex-plugin/
+  bin/
+  hooks/
+  lib/
+  skills/magi/
+```
+
+`shared/magi` is source-of-truth maintenance material only. It is not installed
+into OpenCode or Codex. Tests enforce that shared prompts and common references
+stay identical across adapter skills while allowing adapter-specific runtime
+references.
+
+The OpenCode npm package contains only the OpenCode runtime plugin, OpenCode
+setup CLI, and OpenCode `skills/magi`. The Codex marketplace entry points at
+`./adapters/codex`, so Codex installs only the Codex plugin manifest, Codex
+Stop hook, Codex setup CLI, and Codex `skills/magi`.
 
 ## Development Hygiene
 
@@ -53,15 +90,12 @@ repo:
 
 ```bash
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
-npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
-  open-magi setup --model deepseek-v4-flash
 ```
 
 After the npm package is published, the shorter npm install path will be:
 
 ```bash
 opencode plugin open-magi-opencode -g
-npx open-magi-opencode setup --model deepseek-v4-flash
 ```
 
 Ask an AI agent to install it:
@@ -71,29 +105,32 @@ Please install the public OpenCode plugin `open-magi-opencode` from the `open_ma
 https://github.com/ladiossoop5star/open_magi. Use these exact commands:
 
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
-npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git open-magi setup --model deepseek-v4-flash
 
-After installation, verify that ~/.config/opencode/opencode.json contains the
-plugin entry and the three read-only subagents: deliberator-melchior,
+The plugin install writes a template. After installation, edit
+~/.config/opencode/opencode.json and replace the three `default-model` values
+with the OpenCode models to use for deliberator-melchior,
 deliberator-balthasar, and deliberator-casper. Also verify that
 ~/.config/opencode/skills/magi/SKILL.md exists.
 ```
 
-If your provider/model name is different, replace
-`deepseek-v4-flash` with a model already configured in your
-OpenCode `opencode.json`.
-The setup command requires an explicit model; it will not write a placeholder
-default model for you.
+Use models already configured in your OpenCode `opencode.json`. You can use one
+shared model for all three deliberators, or give Melchior, Balthasar, and Casper
+different models. Restart OpenCode after editing the model values.
+
+## Codex Experimental Notes
+
+Codex support is packaged separately under `adapters/codex`. Do not use the
+OpenCode npm package or OpenCode setup command for Codex. See
+[Codex experimental notes](adapters/codex/README.md) for the current install,
+setup, and limitation details.
 
 ## Update
 
 If you installed directly from this GitHub repo, use the same source with
-`--force` and rerun setup:
+`--force`:
 
 ```bash
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g -f
-npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
-  open-magi setup --model deepseek-v4-flash
 ```
 
 After the npm package is published, replace the installed plugin version and
@@ -101,16 +138,16 @@ refresh the local skill files with:
 
 ```bash
 opencode plugin open-magi-opencode -g -f
-npx open-magi-opencode setup --model deepseek-v4-flash
 ```
 
-The setup step refreshes `~/.config/opencode/skills/magi` and preserves
-unrelated OpenCode configuration. Replace the model name if your local
-OpenCode config uses a different provider/model.
+The plugin install hook refreshes `~/.config/opencode/skills/magi` and
+preserves unrelated OpenCode configuration. If the three model values are still
+`default-model`, edit them manually or use the setup command below to write real
+models directly.
 
-## What Setup Writes
+## What Installation Writes
 
-`open-magi setup` writes to the OpenCode config directory. By default this is:
+Plugin installation writes to the OpenCode config directory. By default this is:
 
 ```text
 ~/.config/opencode/
@@ -126,7 +163,7 @@ Generated or updated files:
 ~/.config/opencode/skills/magi/prompts/casper.md
 ```
 
-The setup command preserves unrelated `provider`, `agent`, and `plugin`
+The install hook preserves unrelated `provider`, `agent`, and `plugin`
 configuration. It adds or updates:
 
 - `plugin[]`: `open-magi-opencode`, unless OpenCode already registered this
@@ -140,6 +177,24 @@ All three deliberator agents are configured as subagents with `edit=deny` and
 
 ## Setup Options
 
+The CLI setup command is optional. Use it to repair or regenerate config if the
+install hook was skipped. To intentionally write editable `default-model`
+placeholders, make that explicit:
+
+```bash
+open-magi setup --allow-default-model
+```
+
+Then edit `~/.config/opencode/opencode.json` and replace:
+
+```text
+agent.deliberator-melchior.model
+agent.deliberator-balthasar.model
+agent.deliberator-casper.model
+```
+
+One model for all three deliberators, without placeholders:
+
 ```bash
 open-magi setup \
   --model deepseek-v4-flash \
@@ -147,20 +202,37 @@ open-magi setup \
   --plugin-spec open-magi-opencode
 ```
 
+Independent deliberator models:
+
+```bash
+open-magi setup \
+  --melchior-model model-a \
+  --balthasar-model model-b \
+  --casper-model model-c
+```
+
 Dry run:
 
 ```bash
-open-magi setup --dry-run
+open-magi setup --model deepseek-v4-flash --dry-run
 ```
 
 Environment overrides:
 
 ```bash
 OPEN_MAGI_MODEL=deepseek-v4-flash open-magi setup
-OPENCODE_CONFIG_DIR=/path/to/opencode-config open-magi setup
+OPEN_MAGI_MELCHIOR_MODEL=model-a \
+OPEN_MAGI_BALTHASAR_MODEL=model-b \
+OPEN_MAGI_CASPER_MODEL=model-c \
+  open-magi setup
+OPENCODE_CONFIG_DIR=/path/to/opencode-config open-magi setup --model deepseek-v4-flash
 ```
 
-`--model` or `OPEN_MAGI_MODEL` is required.
+Interactive prompt mode:
+
+```bash
+open-magi setup --interactive
+```
 
 ## Usage
 

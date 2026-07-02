@@ -30,6 +30,7 @@
     "LICENSE"
   ],
   "scripts": {
+    "postinstall": "node bin/postinstall.js",
     "test": "node --test test/package.test.mjs test/plugin.test.mjs test/setup.test.mjs"
   },
   "engines": {

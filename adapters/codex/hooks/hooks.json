@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'for root in \"${CODEX_PLUGIN_ROOT:-}\" \"${CLAUDE_PLUGIN_ROOT:-}\" \"${OPENAI_PLUGIN_ROOT:-}\"; do if [ -n \"$root\" ] && [ -x \"$root/hooks/magi-stop\" ]; then exec \"$root/hooks/magi-stop\"; fi; done; exit 0'",
+            "timeout": 10,
+            "statusMessage": "Checking Magi state"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -8,14 +8,13 @@ description: Use when the user asks for magi, Open-Magi, @Open-Magi, deliberatio
 ## Overview
 
 Run a coding-agent proposal-first deliberation loop. The main agent owns
-decisions, implementation, verification, checkpoint commits, rollback, and final
-reporting. Three read-only deliberator sub-agents only research and report.
-Runtime adapters may add guardrails; otherwise the main agent enforces gates.
+decisions, edits, verification, commits, rollback, and final reporting. Three
+read-only sub-agents only research and report.
 
-Core rule: completion is based on explicit `acceptanceCriteria` and
-`verificationCommands`, not on confidence or subjective judgment.
+Core rule: completion requires explicit `acceptanceCriteria` and
+`verificationCommands`, not confidence.
 
-Proposal-first rule: before any fix direction is selected, the main agent prepares an evidence packet and does not propose a fix. The three deliberators propose directions first; the main agent selects one direction; then the deliberators review that selected direction before execution.
+Proposal-first rule: before any fix direction is selected, the main agent prepares an evidence packet and does not propose a fix. The deliberators propose directions first; the main agent selects one, then they review it before execution.
 
 ## Required Reference Loading
 
@@ -43,6 +42,21 @@ synthesize -> act -> verify until completion.
 
 Do not use this for small one-shot answers where no iterative action or
 verification is needed.
+
+## Codex Bootstrap Gate
+
+Before project work, check `~/.codex/agents/deliberator-melchior.toml`,
+`~/.codex/agents/deliberator-balthasar.toml`, and
+`~/.codex/agents/deliberator-casper.toml`. If any is missing, locate this
+Codex plugin's cached `bin/open-magi.js` first and run
+`node "$PLUGIN_CLI" setup-codex`. Use PATH `open-magi setup-codex` only if no
+plugin cache entry exists and `open-magi --help` lists `setup-codex`. Stop and
+tell the user to edit all `model = "default-model"` values. If any still
+contains `default-model`, stop and report the path. No same-model fallback.
+
+If running in Codex and a goal tool is available, create a goal before Phase 0
+with the user goal, acceptance criteria, verification commands, and
+`final-report.md` rule; otherwise continue. Do not claim that `/goal` provides runtime artifact repair.
 
 ## Roles
 
@@ -270,9 +284,9 @@ failed verification and the next deliberator pass.
 2. Research Task: write `round-NNN/research-prompt.md` and
    `round-NNN/council-PPP/prompt.md`; for pass 1 this is an evidence packet,
    not a proposed fix; for pass 2+ include `direction-selection.md`.
-3. Parallel Deliberation: start all three configured deliberator subtasks with
-   the same prompt and write all three `report-*.md` files. Pass 1 reports are
-   direction proposals; later reports review the selected direction.
+3. Parallel Deliberation: in Codex, use `references/runtime.md` and the bundled
+   CLI runner; do not write successful deliberator reports directly. Pass 1
+   reports are direction proposals; later reports review the selected direction.
 4. Synthesis and Decision: write current `synthesis.md`; apply Council Pass
    Gate; after pass 1 write `direction-selection.md`, otherwise start another
    pass or write `verdict.md`.
