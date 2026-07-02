@@ -34,16 +34,33 @@ setup is complete and OpenCode has been restarted.
 
 ## Model Prompt
 
-Ask for model settings only when setup is required. Prefer one concise question:
+Ask for model settings only when setup is required. Use this exact menu first:
 
 ```text
-Magi needs three OpenCode deliberator models before it can run. Provide either
-one shared model, or three models as Melchior/Balthasar/Casper.
+Magi needs three OpenCode deliberator models before it can run.
+Choose setup mode:
+A. Use one shared model for Melchior, Balthasar, and Casper.
+B. Set Melchior, Balthasar, and Casper separately.
+Reply with A or B.
 ```
 
-Accept either:
-- one shared model for all three deliberators;
-- three explicit models for Melchior, Balthasar, and Casper.
+If the user chooses A, ask:
+
+```text
+Enter the shared OpenCode model name.
+```
+
+If the user chooses B, ask:
+
+```text
+Enter models as:
+Melchior: <model>
+Balthasar: <model>
+Casper: <model>
+```
+
+Do not list provider/model examples unless you read them from the user's
+OpenCode config. Do not guess available models.
 
 Do not leave any deliberator as `default-model`.
 
