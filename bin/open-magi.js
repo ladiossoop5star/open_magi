@@ -170,6 +170,7 @@ async function main(argv) {
         ok: true,
         dryRun: result.dryRun,
         configPath: result.configPath,
+        magiConfigPath: result.magiConfigPath,
         skillDir: result.skillDir,
         model: result.model,
         models: result.models,
