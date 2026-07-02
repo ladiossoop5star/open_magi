@@ -115,14 +115,12 @@ the three deliberators. After installation, verify that
 ~/.config/opencode/opencode.json contains the plugin entry and the three
 read-only subagents: deliberator-melchior, deliberator-balthasar, and
 deliberator-casper. Also verify that ~/.config/opencode/skills/magi/SKILL.md
-exists. Setup also prints the Magi config path:
-~/.config/opencode/magi.json.
+exists.
 ```
 
-Use models already configured for OpenCode. You can use one shared model for
-all three deliberators, or give Melchior, Balthasar, and Casper different
-models. The user-editable Magi settings live in `magi.json`; rerun
-`open-magi setup` after editing it to regenerate `opencode.json`.
+Use a model already configured in your OpenCode `opencode.json`. You can use
+one shared model for all three deliberators, or give Melchior, Balthasar, and
+Casper different models.
 
 ## Codex Experimental Notes
 
@@ -165,28 +163,11 @@ or use the non-interactive flags below.
 Generated or updated files:
 
 ```text
-~/.config/opencode/magi.json
 ~/.config/opencode/opencode.json
 ~/.config/opencode/skills/magi/SKILL.md
 ~/.config/opencode/skills/magi/prompts/melchior.md
 ~/.config/opencode/skills/magi/prompts/balthasar.md
 ~/.config/opencode/skills/magi/prompts/casper.md
-```
-
-`magi.json` is the single user-editable Magi setup file for OpenCode. It stores
-the plugin spec and the three deliberator models:
-
-```json
-{
-  "schemaVersion": 1,
-  "adapter": "opencode",
-  "pluginSpec": "open-magi-opencode",
-  "deliberators": {
-    "melchior": { "model": "model-a" },
-    "balthasar": { "model": "model-b" },
-    "casper": { "model": "model-c" }
-  }
-}
 ```
 
 The setup command preserves unrelated `provider`, `agent`, and `plugin`
@@ -200,10 +181,6 @@ configuration. It adds or updates:
 
 All three deliberator agents are configured as subagents with `edit=deny` and
 `bash=deny`.
-
-If `magi.json` already exists, `open-magi setup` can regenerate the OpenCode
-config from it without model flags. If `magi.json` is deleted, setup will ask
-for the model settings again unless you provide flags or environment variables.
 
 ## Setup Options
 

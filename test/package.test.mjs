@@ -282,11 +282,8 @@ test("English README documents install and avoids local-only model warnings", as
   assert.match(readme, /Please install the public OpenCode plugin `open-magi-opencode`/)
   assert.match(readme, /deliberator-melchior/)
   assert.match(readme, /deepseek-v4-flash/)
-  assert.match(readme, /one shared model for\s+all three deliberators/i)
+  assert.match(readme, /Use one shared model for all three deliberators|one shared model for all three deliberators/i)
   assert.match(readme, /--melchior-model model-a/)
-  assert.match(readme, /~\/\.config\/opencode\/magi\.json/)
-  assert.match(readme, /single user-editable Magi setup file/)
-  assert.match(readme, /regenerate the OpenCode\s+config from it without model flags/)
   assert.match(readme, /\.open_magi\/magi-log/)
   assert.match(readme, /Development Hygiene/)
   assert.match(readme, /Small changes, documentation edits, and routine debugging may be committed\s+directly on `main`/)
@@ -510,19 +507,12 @@ test("CLI setup writes independent OpenCode deliberator models", async () => {
   )
   const output = JSON.parse(stdout)
   const cfg = JSON.parse(await readFile(join(configDir, "opencode.json"), "utf8"))
-  const magiConfig = JSON.parse(await readFile(join(configDir, "magi.json"), "utf8"))
 
   assert.equal(output.ok, true)
-  assert.match(output.magiConfigPath, /magi\.json$/)
   assert.deepEqual(output.models, {
     melchior: "model-a",
     balthasar: "model-b",
     casper: "model-c",
-  })
-  assert.deepEqual(magiConfig.deliberators, {
-    melchior: { model: "model-a" },
-    balthasar: { model: "model-b" },
-    casper: { model: "model-c" },
   })
   assert.equal(cfg.agent["deliberator-melchior"].model, "model-a")
   assert.equal(cfg.agent["deliberator-balthasar"].model, "model-b")
@@ -537,7 +527,6 @@ test("CLI setup without model starts OpenCode interactive setup", async () => {
     },
   })
   const cfg = JSON.parse(await readFile(join(configDir, "opencode.json"), "utf8"))
-  const magiConfig = JSON.parse(await readFile(join(configDir, "magi.json"), "utf8"))
 
   assert.equal(result.code, 0, result.stderr)
   assert.match(result.stderr, /Use one model for all three deliberators/)
@@ -546,12 +535,6 @@ test("CLI setup without model starts OpenCode interactive setup", async () => {
     melchior: "model-a",
     balthasar: "model-b",
     casper: "model-c",
-  })
-  assert.match(JSON.parse(result.stdout).magiConfigPath, /magi\.json$/)
-  assert.deepEqual(magiConfig.deliberators, {
-    melchior: { model: "model-a" },
-    balthasar: { model: "model-b" },
-    casper: { model: "model-c" },
   })
   assert.equal(cfg.agent["deliberator-melchior"].model, "model-a")
   assert.equal(cfg.agent["deliberator-balthasar"].model, "model-b")

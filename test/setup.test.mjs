@@ -7,7 +7,6 @@ import test from "node:test"
 
 import {
   DEFAULT_PLUGIN_SPEC,
-  MAGI_CONFIG_FILE,
   buildAgentConfig,
   setupOpenMagi,
 } from "../lib/setup.js"
@@ -195,7 +194,6 @@ test("setupOpenMagi merges config and copies the magi skill", async () => {
   })
 
   assert.equal(result.configPath, configPath)
-  assert.equal(result.magiConfigPath, join(configDir, MAGI_CONFIG_FILE))
   assert.equal(result.model, "deepseek-v4-flash")
   assert.equal(result.pluginSpec, "open-magi-opencode")
   assert.equal(result.dryRun, false)
@@ -220,16 +218,6 @@ test("setupOpenMagi merges config and copies the magi skill", async () => {
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "protocol.md")), true)
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "question-firewall.md")), true)
 
-  const magiConfig = JSON.parse(await readFile(result.magiConfigPath, "utf8"))
-  assert.equal(magiConfig.schemaVersion, 1)
-  assert.equal(magiConfig.adapter, "opencode")
-  assert.equal(magiConfig.pluginSpec, "open-magi-opencode")
-  assert.deepEqual(magiConfig.deliberators, {
-    melchior: { model: "deepseek-v4-flash" },
-    balthasar: { model: "deepseek-v4-flash" },
-    casper: { model: "deepseek-v4-flash" },
-  })
-
   await rm(configDir, { recursive: true, force: true })
 })
 
@@ -245,52 +233,12 @@ test("setupOpenMagi can write independent deliberator models", async () => {
     },
   })
   const cfg = JSON.parse(await readFile(result.configPath, "utf8"))
-  const magiConfig = JSON.parse(await readFile(result.magiConfigPath, "utf8"))
 
   assert.deepEqual(result.models, {
     melchior: "model-a",
     balthasar: "model-b",
     casper: "model-c",
   })
-  assert.equal(cfg.agent["deliberator-melchior"].model, "model-a")
-  assert.equal(cfg.agent["deliberator-balthasar"].model, "model-b")
-  assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
-  assert.deepEqual(magiConfig.deliberators, {
-    melchior: { model: "model-a" },
-    balthasar: { model: "model-b" },
-    casper: { model: "model-c" },
-  })
-
-  await rm(configDir, { recursive: true, force: true })
-})
-
-test("setupOpenMagi regenerates OpenCode config from magi.json when no models are passed", async () => {
-  const configDir = await mkdtemp(join(tmpdir(), "open-magi-config-file-"))
-  const magiConfigPath = join(configDir, MAGI_CONFIG_FILE)
-  await writeFile(
-    magiConfigPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: 1,
-        adapter: "opencode",
-        pluginSpec: "custom-open-magi",
-        deliberators: {
-          melchior: { model: "model-a" },
-          balthasar: { model: "model-b" },
-          casper: { model: "model-c" },
-        },
-      },
-      null,
-      2,
-    )}\n`,
-  )
-
-  const result = await setupOpenMagi({ configDir })
-  const cfg = JSON.parse(await readFile(result.configPath, "utf8"))
-
-  assert.equal(result.magiConfigPath, magiConfigPath)
-  assert.equal(result.pluginSpec, "custom-open-magi")
-  assert.equal(cfg.plugin.includes("custom-open-magi"), true)
   assert.equal(cfg.agent["deliberator-melchior"].model, "model-a")
   assert.equal(cfg.agent["deliberator-balthasar"].model, "model-b")
   assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
@@ -306,10 +254,8 @@ test("setupOpenMagi dry-run returns merged config without writing files", async 
   assert.equal(result.dryRun, true)
   assert.equal(result.model, "deepseek-v4-flash")
   assert.equal(result.pluginSpec, DEFAULT_PLUGIN_SPEC)
-  assert.equal(result.magiConfigPath, join(configDir, MAGI_CONFIG_FILE))
   assert.equal(result.config.plugin.includes(DEFAULT_PLUGIN_SPEC), true)
   assert.equal(existsSync(join(configDir, "opencode.json")), false)
-  assert.equal(existsSync(join(configDir, MAGI_CONFIG_FILE)), false)
   assert.equal(existsSync(join(configDir, "skills", "magi", "SKILL.md")), false)
 
   await rm(configDir, { recursive: true, force: true })
@@ -323,7 +269,6 @@ test("setupOpenMagi requires an explicit model instead of writing an invalid def
     /model is required/i,
   )
   assert.equal(existsSync(join(configDir, "opencode.json")), false)
-  assert.equal(existsSync(join(configDir, MAGI_CONFIG_FILE)), false)
 
   await rm(configDir, { recursive: true, force: true })
 })
