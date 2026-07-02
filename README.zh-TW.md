@@ -112,8 +112,150 @@ model 後請重啟 OpenCode。
 ## Codex 實驗說明
 
 Codex 支援會獨立包在 `adapters/codex`。不要用 OpenCode npm package 或
-OpenCode setup 指令來設定 Codex。現在的 Codex 安裝、設定與限制請看
-[Codex experimental notes](adapters/codex/README.md)。
+OpenCode setup 指令來設定 Codex。完整英文說明在
+[Codex experimental notes](adapters/codex/README.md)，以下是繁中快速流程。
+
+目前 Codex 支援仍是 experimental、skill-first。它會安裝 Codex 專用的 `magi`
+skill、Codex Stop hook、setup CLI，以及一個會啟動三個獨立 `codex exec`
+subprocess 的 council runner。它還不是 OpenCode 等級的完整 runtime adapter。
+
+從本機 checkout 安裝 Codex plugin：
+
+```bash
+codex plugin marketplace add /path/to/open_magi
+codex plugin add open-magi@open-magi-dev
+```
+
+等 Codex 支援合併回 `main` 後，也可以從 GitHub 安裝：
+
+```bash
+codex plugin marketplace add ladiossoop5star/open_magi --ref main
+codex plugin add open-magi@open-magi-dev
+```
+
+確認 plugin 可見：
+
+```bash
+codex plugin list --available
+```
+
+### Codex 三賢者模型設定
+
+Codex 版本使用 Codex custom agents 來設定 Melchior、Balthasar、Casper。第一次
+使用前先產生 template：
+
+```bash
+open-magi setup-codex
+```
+
+如果本機開發時 `open-magi` 不在 `PATH`，可以直接跑 plugin 內的 CLI：
+
+```bash
+node /path/to/open_magi/adapters/codex/bin/open-magi.js setup-codex
+```
+
+這會建立三個檔案：
+
+```text
+~/.codex/agents/deliberator-melchior.toml
+~/.codex/agents/deliberator-balthasar.toml
+~/.codex/agents/deliberator-casper.toml
+```
+
+每個 template 一開始會有：
+
+```toml
+model = "default-model"
+```
+
+使用前必須把三個 `default-model` 改成真實 Codex model。除非你的模型需要特定
+Codex `model_provider`，否則 provider 可以留空。若使用 LiteLLM、本機
+OpenAI-compatible proxy、Azure、Bedrock 或其他 custom provider，再補
+`model_provider`。
+
+`open-magi setup-codex` 預設不會覆蓋已存在的 agent 檔案。如果你已經手動改過
+template，重新執行 setup 只會補缺少的檔案。若要自動化，也可以直接指定三個
+model：
+
+```bash
+open-magi setup-codex \
+  --melchior-model model-a \
+  --balthasar-model model-b \
+  --casper-model model-c
+```
+
+若要把 custom agents 放在專案內，而不是 `~/.codex/agents`：
+
+```bash
+open-magi setup-codex --agents-dir .codex/agents
+```
+
+### Codex 使用方式
+
+在專案目錄啟動 Codex，建議優先使用 Goal mode：
+
+```text
+/goal Use the magi skill. Goal: fix the tests until npm test passes. Verification command: npm test. Continue until .open_magi/magi-log/final-report.md is written.
+```
+
+如果 `/goal` 不可用，也可以直接叫 skill：
+
+```text
+magi, goal: fix the tests until npm test passes.
+```
+
+Codex 版 Magi 也會把 runtime artifact 寫在：
+
+```text
+.open_magi/magi-log/
+```
+
+重要檔案包含：
+
+```text
+state.json
+checklist.md
+round-NNN/research-prompt.md
+round-NNN/council-PPP/report-melchior.md
+round-NNN/council-PPP/report-balthasar.md
+round-NNN/council-PPP/report-casper.md
+round-NNN/direction-selection.md
+round-NNN/synthesis.md
+round-NNN/verdict.md
+round-NNN/verification.md
+final-report.md
+```
+
+Phase 3 會透過 plugin 內建 CLI runner 啟動三個 Codex subprocess：
+
+```bash
+PLUGIN_CLI="$(find "$HOME/.codex/plugins/cache" -path "*/open-magi/*/bin/open-magi.js" | sort | tail -n 1)"
+node "$PLUGIN_CLI" run-council --project-root "$PWD" --prompt-path ".open_magi/magi-log/round-NNN/council-PPP/prompt.md" --round N --pass P
+```
+
+runner 會讀取 `~/.codex/agents/deliberator-*.toml`，分別啟動三個 `codex exec`
+subprocess，並寫出 `report-melchior.md`、`report-balthasar.md`、
+`report-casper.md`。成功報告會標示 `report_source: codex_exec`；啟動失敗會寫
+`report_source: codex_exec_failed`。
+
+### Codex Stop Hook 與限制
+
+Codex plugin 內含一個保守的 Stop hook。當 Codex 準備停止時，它會讀取
+`.open_magi/magi-log/state.json`。如果 `active=true` 且 `final-report.md` 不存在，
+hook 會回傳 `decision: block`，並附上一個 `<MAGI_STOP_BACKSTOP>` continuation
+block，下一行會是 `Magi loop is still active`，讓 Codex 自動續跑而不是靜默停止。
+
+如果 `state.json` 損毀，Stop hook 會採 fail-safe 行為：阻止停止並要求 Codex
+根據 `.open_magi/magi-log` history 修復 state。若 state 持續無法修復，continuation
+可能會一直被觸發，直到 `state.json` 被修好。
+
+目前限制：
+
+- Codex 版是 skill package 加 CLI deliberator runner，還不是完整 runtime adapter。
+- OpenCode runtime backstop 目前仍比較完整，可以喚醒停滯 loop、處理 question
+  request、abort timeout deliberator、修復缺失 artifact。
+- Codex 版依賴 `run-council` 來取得真正分離的 deliberator process。如果 CLI runner
+  不可用，Magi 應停止並回報問題，不應假造 report 檔案。
 
 ## 更新
 
