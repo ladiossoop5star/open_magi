@@ -92,16 +92,6 @@ repo:
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
 ```
 
-Then start OpenCode and configure Magi inside OpenCode:
-
-```bash
-opencode .
-```
-
-```text
-/magi setup
-```
-
 After the npm package is published, the shorter npm install path will be:
 
 ```bash
@@ -112,19 +102,20 @@ Ask an AI agent to install it:
 
 ```text
 Please install the public OpenCode plugin `open-magi-opencode` from the `open_magi` repo:
-https://github.com/ladiossoop5star/open_magi. Use this command:
+https://github.com/ladiossoop5star/open_magi. Use these exact commands:
 
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
 
-After installation, start OpenCode and run `/magi setup`. Magi should ask for
-the OpenCode model or models to use for the three deliberators, write
-~/.config/opencode/opencode.json, and tell the user to restart OpenCode.
+The plugin install writes a template. After installation, edit
+~/.config/opencode/opencode.json and replace the three `default-model` values
+with the OpenCode models to use for deliberator-melchior,
+deliberator-balthasar, and deliberator-casper. Also verify that
+~/.config/opencode/skills/magi/SKILL.md exists.
 ```
 
-Use a model already configured in your OpenCode `opencode.json`. You can use
-one shared model for all three deliberators, or give Melchior, Balthasar, and
-Casper different models. If a Magi goal starts before setup is complete and any
-deliberator uses `default-model`, Magi must stop the goal and run setup first.
+Use models already configured in your OpenCode `opencode.json`. You can use one
+shared model for all three deliberators, or give Melchior, Balthasar, and Casper
+different models. Restart OpenCode after editing the model values.
 
 ## Codex Experimental Notes
 
@@ -136,7 +127,7 @@ setup, and limitation details.
 ## Update
 
 If you installed directly from this GitHub repo, use the same source with
-`--force` and rerun setup:
+`--force`:
 
 ```bash
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g -f
@@ -149,12 +140,14 @@ refresh the local skill files with:
 opencode plugin open-magi-opencode -g -f
 ```
 
-Restart OpenCode after updating. If deliberator config is missing or still uses
-`default-model`, run `/magi setup` again inside OpenCode.
+The plugin install hook refreshes `~/.config/opencode/skills/magi` and
+preserves unrelated OpenCode configuration. If the three model values are still
+`default-model`, edit them manually or use the setup command below to write real
+models directly.
 
-## What Setup Writes
+## What Installation Writes
 
-`/magi setup` writes to the OpenCode config directory. By default this is:
+Plugin installation writes to the OpenCode config directory. By default this is:
 
 ```text
 ~/.config/opencode/
@@ -164,9 +157,13 @@ Generated or updated files:
 
 ```text
 ~/.config/opencode/opencode.json
+~/.config/opencode/skills/magi/SKILL.md
+~/.config/opencode/skills/magi/prompts/melchior.md
+~/.config/opencode/skills/magi/prompts/balthasar.md
+~/.config/opencode/skills/magi/prompts/casper.md
 ```
 
-The setup flow preserves unrelated `provider`, `agent`, and `plugin`
+The install hook preserves unrelated `provider`, `agent`, and `plugin`
 configuration. It adds or updates:
 
 - `plugin[]`: `open-magi-opencode`, unless OpenCode already registered this
@@ -178,20 +175,25 @@ configuration. It adds or updates:
 All three deliberator agents are configured as subagents with `edit=deny` and
 `bash=deny`.
 
-After setup writes `opencode.json`, restart OpenCode so the new subagent
-configuration is loaded.
+## Setup Options
 
-## Optional CLI Fallback
-
-The CLI remains available for automation or repair. With no model flags it
-writes `default-model` placeholders so `/magi setup` can finish configuration
-inside OpenCode:
+The CLI setup command is optional. Use it to repair or regenerate the same
+template if the install hook was skipped. This writes fixed read-only subagent
+config and uses `default-model` placeholders for the three model fields:
 
 ```bash
 open-magi setup
 ```
 
-One model for all three deliberators:
+Then edit `~/.config/opencode/opencode.json` and replace:
+
+```text
+agent.deliberator-melchior.model
+agent.deliberator-balthasar.model
+agent.deliberator-casper.model
+```
+
+One model for all three deliberators, without placeholders:
 
 ```bash
 open-magi setup \
@@ -224,6 +226,12 @@ OPEN_MAGI_BALTHASAR_MODEL=model-b \
 OPEN_MAGI_CASPER_MODEL=model-c \
   open-magi setup
 OPENCODE_CONFIG_DIR=/path/to/opencode-config open-magi setup
+```
+
+Interactive prompt mode:
+
+```bash
+open-magi setup --interactive
 ```
 
 ## Usage

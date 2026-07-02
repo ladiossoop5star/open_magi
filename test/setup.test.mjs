@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -166,6 +166,10 @@ test("defaultCodexSetupConfigPath points at one user-editable Open Magi config f
 test("setupOpenMagi merges config and copies the magi skill", async () => {
   const configDir = await mkdtemp(join(tmpdir(), "open-magi-setup-"))
   const configPath = join(configDir, "opencode.json")
+  const staleReferenceDir = join(configDir, "skills", "magi", "references")
+  await mkdir(staleReferenceDir, { recursive: true })
+  await writeFile(join(staleReferenceDir, "setup.md"), "obsolete setup reference\n")
+
   await writeFile(
     configPath,
     `${JSON.stringify(
@@ -218,6 +222,7 @@ test("setupOpenMagi merges config and copies the magi skill", async () => {
   assert.equal(existsSync(join(configDir, "skills", "magi", "prompts", "melchior.md")), true)
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "protocol.md")), true)
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "question-firewall.md")), true)
+  assert.equal(existsSync(join(configDir, "skills", "magi", "references", "setup.md")), false)
 
   await rm(configDir, { recursive: true, force: true })
 })
@@ -262,13 +267,12 @@ test("setupOpenMagi dry-run returns merged config without writing files", async 
   await rm(configDir, { recursive: true, force: true })
 })
 
-test("setupOpenMagi can write default-model placeholders for in-OpenCode setup", async () => {
-  const configDir = await mkdtemp(join(tmpdir(), "open-magi-default-model-"))
+test("setupOpenMagi without models writes an editable template", async () => {
+  const configDir = await mkdtemp(join(tmpdir(), "open-magi-template-"))
 
-  const result = await setupOpenMagi({ configDir, allowDefaultModel: true })
+  const result = await setupOpenMagi({ configDir })
   const cfg = JSON.parse(await readFile(result.configPath, "utf8"))
 
-  assert.equal(result.model, DEFAULT_MODEL_SENTINEL)
   assert.deepEqual(result.models, {
     melchior: DEFAULT_MODEL_SENTINEL,
     balthasar: DEFAULT_MODEL_SENTINEL,
@@ -277,18 +281,43 @@ test("setupOpenMagi can write default-model placeholders for in-OpenCode setup",
   assert.equal(cfg.agent["deliberator-melchior"].model, DEFAULT_MODEL_SENTINEL)
   assert.equal(cfg.agent["deliberator-balthasar"].model, DEFAULT_MODEL_SENTINEL)
   assert.equal(cfg.agent["deliberator-casper"].model, DEFAULT_MODEL_SENTINEL)
+  assert.match(cfg.agent["deliberator-melchior"].prompt, /Evidence|Recommended Next Action|Confidence/)
+  assert.equal(existsSync(join(configDir, "skills", "magi", "SKILL.md")), true)
 
   await rm(configDir, { recursive: true, force: true })
 })
 
-test("setupOpenMagi requires an explicit model instead of writing an invalid default", async () => {
-  const configDir = await mkdtemp(join(tmpdir(), "open-magi-model-required-"))
-
-  await assert.rejects(
-    () => setupOpenMagi({ configDir }),
-    /model is required/i,
+test("setupOpenMagi template refresh preserves existing real models", async () => {
+  const configDir = await mkdtemp(join(tmpdir(), "open-magi-template-preserve-"))
+  const configPath = join(configDir, "opencode.json")
+  await writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        agent: {
+          "deliberator-melchior": { model: "model-a" },
+          "deliberator-balthasar": { model: "model-b" },
+          "deliberator-casper": { model: "model-c" },
+        },
+      },
+      null,
+      2,
+    )}\n`,
   )
-  assert.equal(existsSync(join(configDir, "opencode.json")), false)
+
+  const result = await setupOpenMagi({ configDir })
+  const cfg = JSON.parse(await readFile(result.configPath, "utf8"))
+
+  assert.deepEqual(result.models, {
+    melchior: "model-a",
+    balthasar: "model-b",
+    casper: "model-c",
+  })
+  assert.equal(cfg.agent["deliberator-melchior"].model, "model-a")
+  assert.equal(cfg.agent["deliberator-balthasar"].model, "model-b")
+  assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
+  assert.equal(cfg.agent["deliberator-melchior"].permission.edit, "deny")
+  assert.equal(cfg.agent["deliberator-balthasar"].permission.bash, "deny")
 
   await rm(configDir, { recursive: true, force: true })
 })

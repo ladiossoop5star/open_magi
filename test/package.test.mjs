@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFile as execFileCallback, spawn } from "node:child_process"
 import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
-import { constants } from "node:fs"
+import { constants, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import { promisify } from "node:util"
@@ -24,7 +24,7 @@ const sharedMagiReferences = [
   "question-firewall.md",
   "troubleshooting.md",
 ]
-const requiredMagiReferences = [...sharedMagiReferences, "runtime.md", "setup.md"]
+const requiredMagiReferences = [...sharedMagiReferences, "runtime.md"]
 
 async function listFiles(dir) {
   const entries = await readdir(dir, { withFileTypes: true })
@@ -111,6 +111,7 @@ function runInteractiveCli(args, input, options = {}) {
 test("package metadata exposes OpenCode plugin, setup CLI, and injected plugin tests", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
   const cli = await readFile(new URL("../bin/open-magi.js", import.meta.url), "utf8")
+  const postinstall = await readFile(new URL("../bin/postinstall.js", import.meta.url), "utf8")
   const setupLib = await readFile(new URL("../lib/setup.js", import.meta.url), "utf8")
 
   assert.equal(pkg.name, "open-magi-opencode")
@@ -128,7 +129,10 @@ test("package metadata exposes OpenCode plugin, setup CLI, and injected plugin t
   assert.equal(pkg.files.includes("adapters/codex"), false)
   assert.equal(pkg.files.includes("shared"), false)
   assert.doesNotMatch(cli, /setup-codex/)
+  assert.match(postinstall, /setupOpenMagi/)
+  assert.match(postinstall, /allowDefaultModel: true/)
   assert.doesNotMatch(setupLib, /setupCodexMagi|buildCodexAgentConfig|defaultCodex/)
+  assert.equal(pkg.scripts.postinstall, "node bin/postinstall.js")
   assert.equal(pkg.scripts.test, "node --test test/package.test.mjs test/plugin.test.mjs test/setup.test.mjs")
   const suitePath = new URL("./plugin-suite.mjs", import.meta.url)
   const suite = await readFile(suitePath, "utf8")
@@ -282,8 +286,7 @@ test("English README documents install and avoids local-only model warnings", as
   assert.match(readme, /Please install the public OpenCode plugin `open-magi-opencode`/)
   assert.match(readme, /deliberator-melchior/)
   assert.match(readme, /deepseek-v4-flash/)
-  assert.match(readme, /\/magi setup/)
-  assert.match(readme, /default-model/)
+  assert.match(readme, /Use one shared model for all three deliberators|one\s+shared model for all three deliberators/i)
   assert.match(readme, /--melchior-model model-a/)
   assert.match(readme, /\.open_magi\/magi-log/)
   assert.match(readme, /Development Hygiene/)
@@ -321,11 +324,6 @@ test("bundled magi skill assets contain the expected contract", async () => {
 
   assert.match(skill, /^---\nname: magi\n/m)
   assert.match(skill, /start deliberation/)
-  assert.match(skill, /Setup Gate/)
-  assert.match(skill, /\/magi setup/)
-  assert.match(skill, /\/magi <file>/)
-  assert.match(skill, /before reading user files/)
-  assert.match(skill, /default-model/)
   assert.match(skill, /Open-Magi/)
   assert.match(skill, /@Open-Magi/)
   assert.match(skill, /coding-agent/)
@@ -342,17 +340,6 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(references["runtime.md"], /OpenCode Runtime Reference/)
   assert.match(references["runtime.md"], /OpenCode `session\.abort`/)
   assert.doesNotMatch(references["runtime.md"], /setup-codex|spawn_agent/)
-  assert.match(references["setup.md"], /OpenCode Setup Reference/)
-  assert.match(references["setup.md"], /default-model/)
-  assert.match(references["setup.md"], /workflow\s+files/)
-  assert.match(references["setup.md"], /Do not\s+read workflow files or start the goal/)
-  assert.match(references["setup.md"], /Choose setup mode:/)
-  assert.match(references["setup.md"], /Reply with A or B/)
-  assert.match(references["setup.md"], /Enter the shared OpenCode model name/)
-  assert.match(references["setup.md"], /Do not guess available models/)
-  assert.match(references["setup.md"], /Do not create `\.open_magi\/`/)
-  assert.match(references["setup.md"], /OpenCode must be restarted/)
-  assert.doesNotMatch(references["setup.md"], /setup-codex|spawn_agent/)
   assert.match(codexRuntime, /Codex Runtime Reference/)
   assert.match(codexRuntime, /setup-codex/)
   assert.match(codexRuntime, /spawn_agent/)
@@ -536,9 +523,13 @@ test("CLI setup writes independent OpenCode deliberator models", async () => {
   assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
 })
 
-test("CLI setup without model writes default-model placeholders", async () => {
-  const configDir = await mkTempProject("open-magi-opencode-cli-default-")
-  const { stdout } = await execFile("node", ["bin/open-magi.js", "setup", "--config-dir", configDir], { cwd: repoRoot })
+test("CLI setup without model writes an editable OpenCode template", async () => {
+  const configDir = await mkTempProject("open-magi-opencode-cli-template-")
+  const { stdout } = await execFile(
+    "node",
+    ["bin/open-magi.js", "setup", "--config-dir", configDir],
+    { cwd: repoRoot },
+  )
   const cfg = JSON.parse(await readFile(join(configDir, "opencode.json"), "utf8"))
 
   assert.deepEqual(JSON.parse(stdout).models, {
@@ -549,28 +540,25 @@ test("CLI setup without model writes default-model placeholders", async () => {
   assert.equal(cfg.agent["deliberator-melchior"].model, "default-model")
   assert.equal(cfg.agent["deliberator-balthasar"].model, "default-model")
   assert.equal(cfg.agent["deliberator-casper"].model, "default-model")
+  assert.equal(cfg.agent["deliberator-melchior"].permission.edit, "deny")
+  assert.equal(cfg.agent["deliberator-melchior"].permission.bash, "deny")
 })
 
-test("CLI setup interactive mode prompts for OpenCode models", async () => {
-  const configDir = await mkTempProject("open-magi-opencode-cli-interactive-")
-  const result = await runInteractiveCli(["setup", "--interactive"], "n\nmodel-a\nmodel-b\nmodel-c\ny\n", {
-    env: {
-      OPENCODE_CONFIG_DIR: configDir,
-    },
+test("postinstall writes an editable OpenCode template during plugin install", async () => {
+  const configDir = await mkTempProject("open-magi-opencode-postinstall-")
+  const { stderr } = await execFile("node", ["bin/postinstall.js"], {
+    cwd: repoRoot,
+    env: { ...process.env, OPENCODE_CONFIG_DIR: configDir },
   })
   const cfg = JSON.parse(await readFile(join(configDir, "opencode.json"), "utf8"))
 
-  assert.equal(result.code, 0, result.stderr)
-  assert.match(result.stderr, /Use one model for all three deliberators/)
-  assert.match(result.stderr, /Melchior model/)
-  assert.deepEqual(JSON.parse(result.stdout).models, {
-    melchior: "model-a",
-    balthasar: "model-b",
-    casper: "model-c",
-  })
-  assert.equal(cfg.agent["deliberator-melchior"].model, "model-a")
-  assert.equal(cfg.agent["deliberator-balthasar"].model, "model-b")
-  assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
+  assert.match(stderr, /OpenCode template written/)
+  assert.equal(cfg.agent["deliberator-melchior"].model, "default-model")
+  assert.equal(cfg.agent["deliberator-balthasar"].model, "default-model")
+  assert.equal(cfg.agent["deliberator-casper"].model, "default-model")
+  assert.equal(cfg.agent["deliberator-melchior"].permission.edit, "deny")
+  assert.equal(cfg.agent["deliberator-melchior"].permission.bash, "deny")
+  assert.equal(existsSync(join(configDir, "skills", "magi", "SKILL.md")), true)
 })
 
 test("CLI setup-codex dry-run reports generated custom agent paths", async () => {
