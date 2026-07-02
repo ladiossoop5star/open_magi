@@ -292,7 +292,7 @@ test("Codex Stop hook is bundled and points at the Magi stop checker", async () 
   assert.match(commandHook.statusMessage, /Magi/)
 })
 
-test("Codex Magi Stop hook injects continuation context for active loops", async () => {
+test("Codex Magi Stop hook returns a continuation decision for active loops", async () => {
   const project = await mkTempProject("open-magi-codex-stop-active-")
   const logDir = join(project, ".open_magi", "magi-log")
   await mkdir(logDir, { recursive: true })
@@ -315,11 +315,12 @@ test("Codex Magi Stop hook injects continuation context for active loops", async
   const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
   const output = JSON.parse(stdout)
 
-  assert.match(output.additionalContext, /Magi loop is still active/)
-  assert.match(output.additionalContext, /currentPhase: research_task/)
-  assert.match(output.additionalContext, /currentRound: 2/)
-  assert.match(output.additionalContext, /final-report\.md/)
-  assert.match(output.additionalContext, /npm test/)
+  assert.equal(output.decision, "block")
+  assert.match(output.reason, /Magi loop is still active/)
+  assert.match(output.reason, /currentPhase: research_task/)
+  assert.match(output.reason, /currentRound: 2/)
+  assert.match(output.reason, /final-report\.md/)
+  assert.match(output.reason, /npm test/)
 })
 
 test("Codex Magi Stop hook is silent when no Magi loop needs continuation", async () => {

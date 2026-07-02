@@ -7,8 +7,8 @@ const logDir = join(process.cwd(), ".open_magi", "magi-log")
 const statePath = join(logDir, "state.json")
 const finalReportPath = join(logDir, "final-report.md")
 
-function emitAdditionalContext(text) {
-  process.stdout.write(`${JSON.stringify({ additionalContext: text })}\n`)
+function emitContinuation(text) {
+  process.stdout.write(`${JSON.stringify({ decision: "block", reason: text })}\n`)
 }
 
 function asList(value) {
@@ -23,7 +23,7 @@ let state
 try {
   state = JSON.parse(readFileSync(statePath, "utf8"))
 } catch (error) {
-  emitAdditionalContext(
+  emitContinuation(
     [
       "<MAGI_STOP_BACKSTOP>",
       "Magi state appears corrupt.",
@@ -64,4 +64,4 @@ lines.push(
   "</MAGI_STOP_BACKSTOP>",
 )
 
-emitAdditionalContext(lines.join("\n"))
+emitContinuation(lines.join("\n"))

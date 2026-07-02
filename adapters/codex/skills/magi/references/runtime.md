@@ -71,8 +71,8 @@ Do not claim that the deliberators reported.
 ## Stop Hook Backstop
 
 The Codex adapter includes a conservative Stop hook. When a Magi loop is still
-active, it injects continuation context so Codex can keep working instead of
-stopping silently.
+active, it returns a Stop `decision: block` continuation prompt so Codex can
+keep working instead of stopping silently.
 
 This is not equivalent to the full runtime backstop. It does not abort
 subagents, rewrite state, repair missing artifacts by itself, or replace Goal
