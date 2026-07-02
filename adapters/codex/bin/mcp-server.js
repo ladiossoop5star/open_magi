@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 import { runCouncil } from "../lib/codex-runner.js"
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url))
-const serverInfo = { name: "open-magi", version: "0.1.3" }
+const serverInfo = { name: "open-magi", version: "0.1.4" }
 const headerDelimiter = Buffer.from("\r\n\r\n")
 let transportMode = "line"
 
