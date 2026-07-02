@@ -9,7 +9,6 @@ import {
   DEFAULT_MODEL_SENTINEL,
   DEFAULT_PLUGIN_SPEC,
   buildAgentConfig,
-  ensureOpenMagiConfigTemplate,
   setupOpenMagi,
 } from "../lib/setup.js"
 import {
@@ -200,7 +199,6 @@ test("setupOpenMagi merges config and copies the magi skill", async () => {
   })
 
   assert.equal(result.configPath, configPath)
-  assert.equal(result.openMagiConfigPath, join(configDir, "open_magi.json"))
   assert.equal(result.model, "deepseek-v4-flash")
   assert.equal(result.pluginSpec, "open-magi-opencode")
   assert.equal(result.dryRun, false)
@@ -225,13 +223,6 @@ test("setupOpenMagi merges config and copies the magi skill", async () => {
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "protocol.md")), true)
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "question-firewall.md")), true)
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "setup.md")), false)
-
-  const openMagiConfig = JSON.parse(await readFile(result.openMagiConfigPath, "utf8"))
-  assert.deepEqual(openMagiConfig.deliberators, {
-    melchior: { runner: "opencode" },
-    balthasar: { runner: "opencode" },
-    casper: { runner: "opencode" },
-  })
 
   await rm(configDir, { recursive: true, force: true })
 })
@@ -258,13 +249,6 @@ test("setupOpenMagi can write independent deliberator models", async () => {
   assert.equal(cfg.agent["deliberator-balthasar"].model, "model-b")
   assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
 
-  const openMagiConfig = JSON.parse(await readFile(result.openMagiConfigPath, "utf8"))
-  assert.deepEqual(openMagiConfig.deliberators, {
-    melchior: { runner: "opencode" },
-    balthasar: { runner: "opencode" },
-    casper: { runner: "opencode" },
-  })
-
   await rm(configDir, { recursive: true, force: true })
 })
 
@@ -278,31 +262,7 @@ test("setupOpenMagi dry-run returns merged config without writing files", async 
   assert.equal(result.pluginSpec, DEFAULT_PLUGIN_SPEC)
   assert.equal(result.config.plugin.includes(DEFAULT_PLUGIN_SPEC), true)
   assert.equal(existsSync(join(configDir, "opencode.json")), false)
-  assert.equal(existsSync(join(configDir, "open_magi.json")), false)
   assert.equal(existsSync(join(configDir, "skills", "magi", "SKILL.md")), false)
-
-  await rm(configDir, { recursive: true, force: true })
-})
-
-test("ensureOpenMagiConfigTemplate writes a non-overwriting external runner template", async () => {
-  const configDir = await mkdtemp(join(tmpdir(), "open-magi-template-"))
-
-  const created = await ensureOpenMagiConfigTemplate(configDir)
-  assert.equal(created.created, true)
-  assert.equal(created.configPath, join(configDir, "open_magi.json"))
-  const template = JSON.parse(await readFile(created.configPath, "utf8"))
-  assert.deepEqual(template.deliberators, {
-    melchior: { runner: "opencode" },
-    balthasar: { runner: "opencode" },
-    casper: { runner: "opencode" },
-  })
-
-  await writeFile(created.configPath, `${JSON.stringify({ deliberators: { melchior: { runner: "command", command: "echo hi" } } }, null, 2)}\n`)
-  const skipped = await ensureOpenMagiConfigTemplate(configDir)
-  assert.equal(skipped.created, false)
-  const preserved = JSON.parse(await readFile(created.configPath, "utf8"))
-  assert.equal(preserved.deliberators.melchior.runner, "command")
-  assert.equal(preserved.deliberators.melchior.command, "echo hi")
 
   await rm(configDir, { recursive: true, force: true })
 })
@@ -323,7 +283,6 @@ test("setupOpenMagi without models writes an editable template", async () => {
   assert.equal(cfg.agent["deliberator-casper"].model, DEFAULT_MODEL_SENTINEL)
   assert.match(cfg.agent["deliberator-melchior"].prompt, /Evidence|Recommended Next Action|Confidence/)
   assert.equal(existsSync(join(configDir, "skills", "magi", "SKILL.md")), true)
-  assert.equal(existsSync(result.openMagiConfigPath), true)
 
   await rm(configDir, { recursive: true, force: true })
 })
@@ -359,7 +318,6 @@ test("setupOpenMagi template refresh preserves existing real models", async () =
   assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
   assert.equal(cfg.agent["deliberator-melchior"].permission.edit, "deny")
   assert.equal(cfg.agent["deliberator-balthasar"].permission.bash, "deny")
-  assert.equal(existsSync(result.openMagiConfigPath), true)
 
   await rm(configDir, { recursive: true, force: true })
 })
