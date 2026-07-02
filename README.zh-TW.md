@@ -8,21 +8,54 @@
 
 ## 支援狀態
 
-目前只支援 OpenCode。現在的 installer、config writer、runtime hook，以及內建
-的 `magi` skill 都是為 OpenCode 設計。
+OpenCode 是目前唯一 production-supported runtime。現在最完整的 installer、
+config writer、runtime hook，以及 runtime backstop 都是為 OpenCode 設計。
+
+Codex 支援目前是 experimental。它有獨立的 Codex plugin package root、Codex
+skill、Stop hook，以及 setup CLI，但還沒有 OpenCode 等級的 timeout、
+auto-continue、question denial、artifact repair runtime backstop。
 
 未來計畫：
 
 1. 先透過實際專案使用穩定 OpenCode plugin 與 Magi protocol。
-2. 若 Copilot CLI 的 extension point 足以支援 loop control、subagent
+2. 驗證 Codex-native hooks 與 custom agents 是否能補齊 runtime backstop。
+3. 若 Copilot CLI 的 extension point 足以支援 loop control、subagent
    delegation、artifact 檢查，再加入 Copilot CLI adapter。
-3. 使用 Claude Code 原生的安裝與 workflow 機制加入 Claude Code adapter。
-4. 使用 Codex 原生的 skill 或 plugin 機制加入 Codex CLI adapter。
+4. 使用 Claude Code 原生的安裝與 workflow 機制加入 Claude Code adapter。
 
 未來每個 adapter 都應該使用該 coding agent 自己的安裝路徑與 runtime 模型。
 Magi protocol 可以盡量共用，但不假設 OpenCode runtime hook 能直接套用到其他
 agent。各 adapter 的設定檔也應放在該 coding agent 自己的設定目錄，不放在共用
 的 Open Magi global config 目錄。
+
+## Adapter Package Layout
+
+repo 內會把共用 Magi protocol asset 和可安裝 adapter package 分開：
+
+```text
+shared/magi/
+  prompts/
+  references/
+
+skills/magi/
+  OpenCode 安裝用的 magi skill
+
+adapters/codex/
+  .codex-plugin/
+  bin/
+  hooks/
+  lib/
+  skills/magi/
+```
+
+`shared/magi` 只作為維護 source of truth，不會直接安裝到 OpenCode 或 Codex。
+測試會強制 shared prompts/common references 和各 adapter skill 保持一致，同時
+允許每個 adapter 擁有自己的 runtime reference。
+
+OpenCode npm package 只包含 OpenCode runtime plugin、OpenCode setup CLI、
+OpenCode `skills/magi`。Codex marketplace entry 指向 `./adapters/codex`，
+所以 Codex 只會安裝 Codex plugin manifest、Codex Stop hook、Codex setup CLI、
+Codex `skills/magi`。
 
 ## 開發衛生
 
@@ -79,25 +112,11 @@ subagent：deliberator-melchior、deliberator-balthasar、deliberator-casper。
 `deepseek-v4-flash` 換成你的 OpenCode `opencode.json` 裡已設定的模型。
 setup 指令必須明確指定模型；它不會自動寫入 placeholder default model。
 
-## Codex 實驗設定
+## Codex 實驗說明
 
-Codex 支援和 OpenCode setup 是分開的。先安裝 Codex plugin，再產生三個
-Codex custom agent，這樣三個 deliberator 才能各自使用不同模型：
-
-```bash
-codex plugin marketplace add ladiossoop5star/open_magi --ref main
-codex plugin add open-magi@open-magi-dev
-npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
-  open-magi setup-codex
-```
-
-provider 是選填；只有使用 LiteLLM、本機 OpenAI-compatible proxy 等自接 LLM
-provider 時才需要填。setup 完會明確印出唯一固定、需要手改的設定檔路徑，通常是
-`~/.codex/open_magi/codex.json`。之後要換模型就重新跑
-`open-magi setup-codex` 輸入新值，或用 `--melchior-model`、
-`--balthasar-model`、`--casper-model` 做非互動設定。如果設定檔被刪掉，下次
-first-use setup 會重新跑互動式設定。更多 project-scoped agent 設定與限制，
-請看 [Codex experimental notes](docs/README.codex.md)。
+Codex 支援會獨立包在 `adapters/codex`。不要用 OpenCode npm package 或
+OpenCode setup 指令來設定 Codex。現在的 Codex 安裝、設定與限制請看
+[Codex experimental notes](adapters/codex/README.md)。
 
 ## 更新
 

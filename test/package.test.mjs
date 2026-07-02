@@ -9,14 +9,14 @@ import { fileURLToPath } from "node:url"
 import test from "node:test"
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url))
-const magiStopHookPath = fileURLToPath(new URL("../hooks/magi-stop", import.meta.url))
+const magiStopHookPath = fileURLToPath(new URL("../adapters/codex/hooks/magi-stop", import.meta.url))
 const hanPattern = /\p{Script=Han}/u
 const execFile = promisify(execFileCallback)
 const chars = (...codes) => String.fromCodePoint(...codes)
 const oldExampleModel = ["deepseek", "-spark3/deepseek", "-spark3"].join("")
 const localOnlyModel = ["qw", "en"].join("")
 const localStatusWarning = ["unavailable", "or", "restarting"].join(" ")
-const requiredMagiReferences = [
+const sharedMagiReferences = [
   "checklist-template.md",
   "deliberation.md",
   "execution-and-verification.md",
@@ -24,6 +24,7 @@ const requiredMagiReferences = [
   "question-firewall.md",
   "troubleshooting.md",
 ]
+const requiredMagiReferences = [...sharedMagiReferences, "runtime.md"]
 
 async function listFiles(dir) {
   const entries = await readdir(dir, { withFileTypes: true })
@@ -53,7 +54,19 @@ async function readMagiReferences() {
 
 async function listTrackedFiles() {
   const { stdout } = await execFile("git", ["ls-files"], { cwd: repoRoot })
-  return stdout.trim().split("\n").filter(Boolean)
+  const files = []
+
+  for (const rel of stdout.trim().split("\n").filter(Boolean)) {
+    try {
+      await access(join(repoRoot, rel), constants.F_OK)
+      files.push(rel)
+    } catch (error) {
+      if (error?.code === "ENOENT") continue
+      throw error
+    }
+  }
+
+  return files
 }
 
 async function mkTempProject(prefix) {
@@ -62,7 +75,7 @@ async function mkTempProject(prefix) {
 
 function runInteractiveCli(args, input, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn("node", ["bin/open-magi.js", ...args], {
+    const child = spawn("node", [options.script || "bin/open-magi.js", ...args], {
       cwd: repoRoot,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...(options.env || {}) },
@@ -97,6 +110,8 @@ function runInteractiveCli(args, input, options = {}) {
 
 test("package metadata exposes OpenCode plugin, setup CLI, and injected plugin tests", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
+  const cli = await readFile(new URL("../bin/open-magi.js", import.meta.url), "utf8")
+  const setupLib = await readFile(new URL("../lib/setup.js", import.meta.url), "utf8")
 
   assert.equal(pkg.name, "open-magi-opencode")
   assert.equal(pkg.type, "module")
@@ -106,10 +121,14 @@ test("package metadata exposes OpenCode plugin, setup CLI, and injected plugin t
   assert.equal(pkg.exports["./setup"], "./lib/setup.js")
   assert.equal(pkg.bin["open-magi"], "bin/open-magi.js")
   assert.equal(pkg.files.includes("README.zh-TW.md"), true)
-  assert.equal(pkg.files.includes(".codex-plugin"), true)
-  assert.equal(pkg.files.includes(".agents"), true)
-  assert.equal(pkg.files.includes("hooks"), true)
-  assert.equal(pkg.files.includes("docs/README.codex.md"), true)
+  assert.equal(pkg.files.includes(".codex-plugin"), false)
+  assert.equal(pkg.files.includes(".agents"), false)
+  assert.equal(pkg.files.includes("hooks"), false)
+  assert.equal(pkg.files.includes("docs/README.codex.md"), false)
+  assert.equal(pkg.files.includes("adapters/codex"), false)
+  assert.equal(pkg.files.includes("shared"), false)
+  assert.doesNotMatch(cli, /setup-codex/)
+  assert.doesNotMatch(setupLib, /setupCodexMagi|buildCodexAgentConfig|defaultCodex/)
   assert.equal(pkg.scripts.test, "node --test test/package.test.mjs test/plugin.test.mjs test/setup.test.mjs")
   const suitePath = new URL("./plugin-suite.mjs", import.meta.url)
   const suite = await readFile(suitePath, "utf8")
@@ -126,10 +145,14 @@ test("package metadata exposes OpenCode plugin, setup CLI, and injected plugin t
 
 test("Codex plugin manifest exposes the portable magi skill", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
-  const manifest = JSON.parse(await readFile(new URL("../.codex-plugin/plugin.json", import.meta.url), "utf8"))
+  const codexPkg = JSON.parse(await readFile(new URL("../adapters/codex/package.json", import.meta.url), "utf8"))
+  const manifest = JSON.parse(await readFile(new URL("../adapters/codex/.codex-plugin/plugin.json", import.meta.url), "utf8"))
 
   assert.equal(manifest.name, "open-magi")
   assert.equal(manifest.version, pkg.version)
+  assert.equal(codexPkg.name, "open-magi-codex")
+  assert.equal(codexPkg.files.includes("shared"), false)
+  assert.equal(codexPkg.files.includes("../.."), false)
   assert.equal(manifest.repository, "https://github.com/ladiossoop5star/open_magi")
   assert.equal(manifest.homepage, "https://github.com/ladiossoop5star/open_magi#readme")
   assert.equal(manifest.license, "MIT")
@@ -157,14 +180,14 @@ test("Codex marketplace metadata can install this repo as a local development pl
   assert.equal(marketplace.name, "open-magi-dev")
   assert.equal(marketplace.interface.displayName, "Open Magi Dev")
   assert.ok(entry)
-  assert.deepEqual(entry.source, { source: "url", url: "./" })
+  assert.deepEqual(entry.source, { source: "url", url: "./adapters/codex" })
   assert.equal(entry.policy.installation, "AVAILABLE")
   assert.equal(entry.policy.authentication, "ON_INSTALL")
   assert.equal(entry.category, "Developer Tools")
 })
 
 test("Codex documentation describes skill-first experimental support", async () => {
-  const docs = await readFile(new URL("../docs/README.codex.md", import.meta.url), "utf8")
+  const docs = await readFile(new URL("../adapters/codex/README.md", import.meta.url), "utf8")
 
   assert.match(docs, /Codex/)
   assert.match(docs, /experimental/i)
@@ -175,7 +198,7 @@ test("Codex documentation describes skill-first experimental support", async () 
   assert.match(docs, /Magi loop is still active/)
   assert.match(docs, /setup-codex/)
   assert.match(docs, /`open-magi` is not on PATH/)
-  assert.match(docs, /node \/path\/to\/open_magi\/bin\/open-magi\.js setup-codex/)
+  assert.match(docs, /node \/path\/to\/open_magi\/adapters\/codex\/bin\/open-magi\.js setup-codex/)
   assert.match(docs, /--melchior-model/)
   assert.match(docs, /first-use/i)
   assert.match(docs, /~\/\.codex\/open_magi\/codex\.json/)
@@ -191,7 +214,7 @@ test("Codex documentation describes skill-first experimental support", async () 
 })
 
 test("Codex Stop hook is bundled and points at the Magi stop checker", async () => {
-  const hooks = JSON.parse(await readFile(new URL("../hooks/hooks.json", import.meta.url), "utf8"))
+  const hooks = JSON.parse(await readFile(new URL("../adapters/codex/hooks/hooks.json", import.meta.url), "utf8"))
   const stopHooks = hooks.hooks.Stop?.[0]?.hooks || []
   const commandHook = stopHooks.find((hook) => hook.type === "command")
 
@@ -249,26 +272,24 @@ test("English README documents install and avoids local-only model warnings", as
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8")
 
   assert.match(readme, /\[Traditional Chinese\]\(README\.zh-TW\.md\)/)
-  assert.match(readme, /\[Codex experimental notes\]\(docs\/README\.codex\.md\)/)
+  assert.match(readme, /\[Codex experimental notes\]\(adapters\/codex\/README\.md\)/)
   assert.match(readme, /Until the npm package is published, install directly from this public GitHub/)
   assert.match(readme, /opencode plugin open-magi-opencode -g/)
   assert.match(readme, /open-magi setup|npx open-magi-opencode setup/)
-  assert.match(readme, /open-magi setup-codex/)
-  assert.match(readme, /~\/\.codex\/open_magi\/codex\.json/)
-  assert.match(readme, /Provider is optional/)
-  assert.match(readme, /single fixed user-editable config file/)
+  assert.match(readme, /Codex Experimental Notes/)
+  assert.match(readme, /packaged separately under `adapters\/codex`/)
   assert.match(readme, /Ask an AI agent to install it/)
   assert.match(readme, /Please install the public OpenCode plugin `open-magi-opencode`/)
   assert.match(readme, /deliberator-melchior/)
   assert.match(readme, /deepseek-v4-flash/)
-  assert.match(readme, /setup-codex/)
-  assert.match(readme, /--melchior-model/)
-  assert.match(readme, /codex\.json/)
   assert.match(readme, /\.open_magi\/magi-log/)
   assert.match(readme, /Development Hygiene/)
   assert.match(readme, /Small changes, documentation edits, and routine debugging may be committed\s+directly on `main`/)
   assert.match(readme, /Use a feature branch for risky or large changes/)
   assert.match(readme, /Adapter-specific config files should live under that coding agent's own config/)
+  assert.doesNotMatch(readme, /setup-codex/)
+  assert.doesNotMatch(readme, /~\/\.codex\/open_magi\/codex\.json/)
+  assert.doesNotMatch(readme, /--melchior-model/)
   assert.doesNotMatch(readme, new RegExp(oldExampleModel))
   assert.doesNotMatch(readme, new RegExp(localStatusWarning, "i"))
   assert.doesNotMatch(readme, new RegExp(`--model ${localOnlyModel}`, "i"))
@@ -291,6 +312,8 @@ test("Traditional Chinese README exists for zh-TW users", async () => {
 
 test("bundled magi skill assets contain the expected contract", async () => {
   const skill = await readFile(new URL("../skills/magi/SKILL.md", import.meta.url), "utf8")
+  const codexSkill = await readFile(new URL("../adapters/codex/skills/magi/SKILL.md", import.meta.url), "utf8")
+  const codexRuntime = await readFile(new URL("../adapters/codex/skills/magi/references/runtime.md", import.meta.url), "utf8")
   const references = await readMagiReferences()
   const contract = [skill, ...Object.values(references)].join("\n")
 
@@ -300,12 +323,22 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(skill, /@Open-Magi/)
   assert.match(skill, /coding-agent/)
   assert.doesNotMatch(skill, /Use when.*OpenCode/)
-  assert.match(skill, /Codex Bootstrap Gate/)
-  assert.match(skill, /If running in Codex and a goal tool is available/)
-  assert.match(skill, /setup-codex` with no arguments/)
-  assert.match(skill, /use `open-magi` if in PATH/)
-  assert.match(skill, /plugin cache/)
-  assert.match(skill, /Do not claim that `\/goal` provides runtime artifact repair/)
+  assert.doesNotMatch(skill, /Codex Bootstrap Gate/)
+  assert.doesNotMatch(skill, /setup-codex/)
+  assert.doesNotMatch(contract, /Codex|setup-codex|spawn_agent/)
+  assert.match(codexSkill, /Codex Bootstrap Gate/)
+  assert.match(codexSkill, /If running in Codex and a goal tool is available/)
+  assert.match(codexSkill, /setup-codex` with no arguments/)
+  assert.match(codexSkill, /use `open-magi` if in PATH/)
+  assert.match(codexSkill, /plugin cache/)
+  assert.match(codexSkill, /Do not claim that `\/goal` provides runtime artifact repair/)
+  assert.match(references["runtime.md"], /OpenCode Runtime Reference/)
+  assert.match(references["runtime.md"], /OpenCode `session\.abort`/)
+  assert.doesNotMatch(references["runtime.md"], /setup-codex|spawn_agent/)
+  assert.match(codexRuntime, /Codex Runtime Reference/)
+  assert.match(codexRuntime, /setup-codex/)
+  assert.match(codexRuntime, /spawn_agent/)
+  assert.doesNotMatch(codexRuntime, /OpenCode `session\.abort`/)
   assert.match(skill, /\.open_magi\/magi-log/)
   assert.ok(skill.split("\n").length <= 300, "SKILL.md should stay concise and route detail to references")
   assert.ok(Buffer.byteLength(skill, "utf8") <= 14000, "SKILL.md should stay below the main-load context budget")
@@ -401,6 +434,35 @@ test("bundled magi skill assets contain the expected contract", async () => {
   }
 })
 
+test("shared Magi prompts and common references are identical across adapter skills", async () => {
+  for (const name of sharedMagiReferences) {
+    const shared = await readFile(new URL(`../shared/magi/references/${name}`, import.meta.url), "utf8")
+    const opencode = await readFile(new URL(`../skills/magi/references/${name}`, import.meta.url), "utf8")
+    const codex = await readFile(new URL(`../adapters/codex/skills/magi/references/${name}`, import.meta.url), "utf8")
+
+    assert.equal(opencode, shared, `OpenCode ${name} should match shared source`)
+    assert.equal(codex, shared, `Codex ${name} should match shared source`)
+  }
+
+  const opencodeRuntime = await readFile(new URL("../skills/magi/references/runtime.md", import.meta.url), "utf8")
+  const codexRuntime = await readFile(new URL("../adapters/codex/skills/magi/references/runtime.md", import.meta.url), "utf8")
+
+  assert.notEqual(opencodeRuntime, codexRuntime)
+  assert.match(opencodeRuntime, /OpenCode Runtime Reference/)
+  assert.match(codexRuntime, /Codex Runtime Reference/)
+  assert.doesNotMatch(opencodeRuntime, /Codex|setup-codex|spawn_agent/)
+  assert.doesNotMatch(codexRuntime, /OpenCode `session\.abort`/)
+
+  for (const name of ["melchior.md", "balthasar.md", "casper.md"]) {
+    const shared = await readFile(new URL(`../shared/magi/prompts/${name}`, import.meta.url), "utf8")
+    const opencode = await readFile(new URL(`../skills/magi/prompts/${name}`, import.meta.url), "utf8")
+    const codex = await readFile(new URL(`../adapters/codex/skills/magi/prompts/${name}`, import.meta.url), "utf8")
+
+    assert.equal(opencode, shared, `OpenCode ${name} should match shared source`)
+    assert.equal(codex, shared, `Codex ${name} should match shared source`)
+  }
+})
+
 test("GitHub Actions CI runs tests and package dry-run", async () => {
   const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8")
 
@@ -429,7 +491,7 @@ test("CLI setup-codex dry-run reports generated custom agent paths", async () =>
   const { stdout } = await execFile(
     "node",
     [
-      "bin/open-magi.js",
+      "adapters/codex/bin/open-magi.js",
       "setup-codex",
       "--agents-dir",
       agentsDir,
@@ -461,6 +523,7 @@ test("CLI setup-codex interactive writes custom agent files without long flags",
   const result = await runInteractiveCli(
     ["setup-codex", "--interactive", "--agents-dir", agentsDir, "--config-file", configPath],
     "y\nlitellm\nmodel-a\nmodel-b\nmodel-c\n\ny\n",
+    { script: "adapters/codex/bin/open-magi.js" },
   )
 
   assert.equal(result.code, 0, result.stderr)
@@ -480,6 +543,7 @@ test("CLI setup-codex without arguments starts interactive setup", async () => {
     ["setup-codex"],
     "n\nmodel-a\nmodel-b\nmodel-c\n\ny\n",
     {
+      script: "adapters/codex/bin/open-magi.js",
       env: {
         CODEX_AGENTS_DIR: agentsDir,
         OPEN_MAGI_CODEX_CONFIG: configPath,
@@ -517,6 +581,7 @@ test("CLI setup-codex interactive can clear an existing Codex provider", async (
     ["setup-codex"],
     "n\nmodel-a\nmodel-b\nmodel-c\n\ny\n",
     {
+      script: "adapters/codex/bin/open-magi.js",
       env: {
         CODEX_AGENTS_DIR: agentsDir,
         OPEN_MAGI_CODEX_CONFIG: configPath,
@@ -538,6 +603,7 @@ test("CLI setup-codex interactive leaves provider unset when user has no custom 
   const result = await runInteractiveCli(
     ["setup-codex", "--interactive", "--agents-dir", agentsDir, "--config-file", configPath],
     "n\nmodel-a\nmodel-b\nmodel-c\n\ny\n",
+    { script: "adapters/codex/bin/open-magi.js" },
   )
   const config = JSON.parse(await readFile(configPath, "utf8"))
   const melchior = await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8")
@@ -553,7 +619,7 @@ test("CLI setup-codex interactive fails without real setup answers", async () =>
   const result = await runInteractiveCli(
     ["setup-codex", "--interactive", "--agents-dir", agentsDir, "--config-file", configPath],
     "",
-    { timeoutMs: 500 },
+    { script: "adapters/codex/bin/open-magi.js", timeoutMs: 500 },
   )
 
   assert.notEqual(result.code, "timeout")

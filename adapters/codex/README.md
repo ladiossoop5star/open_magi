@@ -1,7 +1,8 @@
 # Open Magi for Codex
 
-Codex support is experimental and skill-first. The plugin exposes the shared
-`magi` skill through Codex plugin discovery, but it does not yet include the
+Codex support is experimental and skill-first. The plugin exposes the
+Codex-specific `magi` skill through Codex plugin discovery, built from shared
+protocol assets plus Codex runtime instructions. It does not yet include the
 OpenCode runtime backstop for automatic continuation, child-session timeout
 abort, question denial, or artifact repair.
 
@@ -39,7 +40,7 @@ If `open-magi` is not on PATH during local plugin development, run the bundled
 CLI directly:
 
 ```bash
-node /path/to/open_magi/bin/open-magi.js setup-codex
+node /path/to/open_magi/adapters/codex/bin/open-magi.js setup-codex
 ```
 
 Provider is optional. Leave it blank to inherit the normal Codex provider. Set

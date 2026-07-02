@@ -1,6 +1,6 @@
 # open_magi
 
-English | [Traditional Chinese](README.zh-TW.md) | [Codex experimental notes](docs/README.codex.md)
+English | [Traditional Chinese](README.zh-TW.md) | [Codex experimental notes](adapters/codex/README.md)
 
 `open_magi` packages the Magi deliberation loop for coding agents. The stable
 runtime today is the installable OpenCode plugin. Experimental Codex support is
@@ -31,6 +31,37 @@ model. The shared Magi protocol can be reused where practical, but OpenCode
 runtime hooks are not assumed to work in other agents.
 Adapter-specific config files should live under that coding agent's own config
 directory, not in a shared Open Magi global directory.
+
+## Adapter Package Layout
+
+The repository keeps shared Magi protocol assets separate from installable
+adapter packages:
+
+```text
+shared/magi/
+  prompts/
+  references/
+
+skills/magi/
+  OpenCode-installed magi skill
+
+adapters/codex/
+  .codex-plugin/
+  bin/
+  hooks/
+  lib/
+  skills/magi/
+```
+
+`shared/magi` is source-of-truth maintenance material only. It is not installed
+into OpenCode or Codex. Tests enforce that shared prompts and common references
+stay identical across adapter skills while allowing adapter-specific runtime
+references.
+
+The OpenCode npm package contains only the OpenCode runtime plugin, OpenCode
+setup CLI, and OpenCode `skills/magi`. The Codex marketplace entry points at
+`./adapters/codex`, so Codex installs only the Codex plugin manifest, Codex
+Stop hook, Codex setup CLI, and Codex `skills/magi`.
 
 ## Development Hygiene
 
@@ -91,29 +122,12 @@ OpenCode `opencode.json`.
 The setup command requires an explicit model; it will not write a placeholder
 default model for you.
 
-## Codex Experimental Setup
+## Codex Experimental Notes
 
-Codex support is separate from the OpenCode setup. Install the Codex plugin,
-then create three Codex custom agents so each deliberator can use its own
-model:
-
-```bash
-codex plugin marketplace add ladiossoop5star/open_magi --ref main
-codex plugin add open-magi@open-magi-dev
-npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
-  open-magi setup-codex
-```
-
-Provider is optional; leave it blank unless the models require a custom Codex
-provider such as LiteLLM or a local OpenAI-compatible proxy. Setup prints the
-single fixed user-editable config file path, normally
-`~/.codex/open_magi/codex.json`. If you need to change models later, rerun
-`open-magi setup-codex` and enter the new values, or run it with explicit
-`--melchior-model`, `--balthasar-model`, and `--casper-model` options for
-non-interactive setup. If the config file is deleted, the next first-use setup
-runs interactive setup again. See
-[Codex experimental notes](docs/README.codex.md) for
-project-scoped agent setup and current limitations.
+Codex support is packaged separately under `adapters/codex`. Do not use the
+OpenCode npm package or OpenCode setup command for Codex. See
+[Codex experimental notes](adapters/codex/README.md) for the current install,
+setup, and limitation details.
 
 ## Update
 

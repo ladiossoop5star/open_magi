@@ -1,0 +1,34 @@
+{
+  "name": "open-magi-codex",
+  "version": "0.1.3",
+  "description": "Codex Magi skill package and setup CLI",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/ladiossoop5star/open_magi#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ladiossoop5star/open_magi.git"
+  },
+  "bin": {
+    "open-magi": "bin/open-magi.js"
+  },
+  "files": [
+    ".codex-plugin",
+    "bin",
+    "hooks",
+    "lib",
+    "skills",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "codex",
+    "plugin",
+    "magi",
+    "deliberation",
+    "multi-agent"
+  ]
+}

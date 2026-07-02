@@ -44,6 +44,20 @@ synthesize -> act -> verify until completion.
 Do not use this for small one-shot answers where no iterative action or
 verification is needed.
 
+## Codex Bootstrap Gate
+
+In Codex, before reading project files, check `~/.codex/open_magi/codex.json`.
+Resolve setup CLI: use `open-magi` if in PATH; otherwise run
+`node <plugin-root>/bin/open-magi.js` from the plugin cache, or
+`node <repo>/adapters/codex/bin/open-magi.js` from a checkout. If config is
+missing, run `setup-codex` with no arguments; otherwise run `setup-codex`.
+Report path; no same-model fallback.
+
+If running in Codex and a goal tool is available, create a goal before Phase 0
+containing the user goal, acceptance criteria, verification commands, and
+`final-report.md` completion rule. If no goal tool is available, continue
+normally. Do not claim that `/goal` provides runtime artifact repair.
+
 ## Roles
 
 Main agent:

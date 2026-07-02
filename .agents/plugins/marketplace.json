@@ -8,7 +8,7 @@
       "name": "open-magi",
       "source": {
         "source": "url",
-        "url": "./"
+        "url": "./adapters/codex"
       },
       "policy": {
         "installation": "AVAILABLE",

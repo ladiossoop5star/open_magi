@@ -8,11 +8,13 @@ import test from "node:test"
 import {
   DEFAULT_PLUGIN_SPEC,
   buildAgentConfig,
+  setupOpenMagi,
+} from "../lib/setup.js"
+import {
   buildCodexAgentConfig,
   defaultCodexSetupConfigPath,
   setupCodexMagi,
-  setupOpenMagi,
-} from "../lib/setup.js"
+} from "../adapters/codex/lib/setup.js"
 
 const localOnlyModel = ["qw", "en"].join("")
 
