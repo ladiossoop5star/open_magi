@@ -20,7 +20,7 @@ Options:
   --*-model           Per-deliberator OpenCode model override.
   --config-dir        OpenCode config directory. Defaults to OPENCODE_CONFIG_DIR or ~/.config/opencode.
   --plugin-spec       Plugin spec to add to opencode.json. Defaults to open-magi-opencode.
-  --interactive       Prompt for OpenCode deliberator settings. This is the default when setup has no model options.
+  --interactive       Prompt for OpenCode deliberator settings instead of writing default-model placeholders.
   --dry-run           Print the setup summary without writing files.
 `)
 }
@@ -145,7 +145,7 @@ async function main(argv) {
   const hasModelOptions = Boolean(
     values.model || values["melchior-model"] || values["balthasar-model"] || values["casper-model"],
   )
-  const options = values.interactive || !hasModelOptions
+  const options = values.interactive
     ? await interactiveOpenCodeSetupOptions(values)
     : {
         model: values.model,
@@ -154,6 +154,7 @@ async function main(argv) {
         casperModel: values["casper-model"],
         configDir: values["config-dir"],
         pluginSpec: values["plugin-spec"],
+        allowDefaultModel: !hasModelOptions,
         dryRun: values["dry-run"],
       }
 

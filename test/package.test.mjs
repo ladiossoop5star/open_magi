@@ -24,7 +24,7 @@ const sharedMagiReferences = [
   "question-firewall.md",
   "troubleshooting.md",
 ]
-const requiredMagiReferences = [...sharedMagiReferences, "runtime.md"]
+const requiredMagiReferences = [...sharedMagiReferences, "runtime.md", "setup.md"]
 
 async function listFiles(dir) {
   const entries = await readdir(dir, { withFileTypes: true })
@@ -282,7 +282,8 @@ test("English README documents install and avoids local-only model warnings", as
   assert.match(readme, /Please install the public OpenCode plugin `open-magi-opencode`/)
   assert.match(readme, /deliberator-melchior/)
   assert.match(readme, /deepseek-v4-flash/)
-  assert.match(readme, /Use one shared model for all three deliberators|one shared model for all three deliberators/i)
+  assert.match(readme, /\/magi setup/)
+  assert.match(readme, /default-model/)
   assert.match(readme, /--melchior-model model-a/)
   assert.match(readme, /\.open_magi\/magi-log/)
   assert.match(readme, /Development Hygiene/)
@@ -320,6 +321,9 @@ test("bundled magi skill assets contain the expected contract", async () => {
 
   assert.match(skill, /^---\nname: magi\n/m)
   assert.match(skill, /start deliberation/)
+  assert.match(skill, /Setup Gate/)
+  assert.match(skill, /\/magi setup/)
+  assert.match(skill, /default-model/)
   assert.match(skill, /Open-Magi/)
   assert.match(skill, /@Open-Magi/)
   assert.match(skill, /coding-agent/)
@@ -336,6 +340,11 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(references["runtime.md"], /OpenCode Runtime Reference/)
   assert.match(references["runtime.md"], /OpenCode `session\.abort`/)
   assert.doesNotMatch(references["runtime.md"], /setup-codex|spawn_agent/)
+  assert.match(references["setup.md"], /OpenCode Setup Reference/)
+  assert.match(references["setup.md"], /default-model/)
+  assert.match(references["setup.md"], /Do not create `\.open_magi\/`/)
+  assert.match(references["setup.md"], /OpenCode must be restarted/)
+  assert.doesNotMatch(references["setup.md"], /setup-codex|spawn_agent/)
   assert.match(codexRuntime, /Codex Runtime Reference/)
   assert.match(codexRuntime, /setup-codex/)
   assert.match(codexRuntime, /spawn_agent/)
@@ -519,9 +528,24 @@ test("CLI setup writes independent OpenCode deliberator models", async () => {
   assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
 })
 
-test("CLI setup without model starts OpenCode interactive setup", async () => {
+test("CLI setup without model writes default-model placeholders", async () => {
+  const configDir = await mkTempProject("open-magi-opencode-cli-default-")
+  const { stdout } = await execFile("node", ["bin/open-magi.js", "setup", "--config-dir", configDir], { cwd: repoRoot })
+  const cfg = JSON.parse(await readFile(join(configDir, "opencode.json"), "utf8"))
+
+  assert.deepEqual(JSON.parse(stdout).models, {
+    melchior: "default-model",
+    balthasar: "default-model",
+    casper: "default-model",
+  })
+  assert.equal(cfg.agent["deliberator-melchior"].model, "default-model")
+  assert.equal(cfg.agent["deliberator-balthasar"].model, "default-model")
+  assert.equal(cfg.agent["deliberator-casper"].model, "default-model")
+})
+
+test("CLI setup interactive mode prompts for OpenCode models", async () => {
   const configDir = await mkTempProject("open-magi-opencode-cli-interactive-")
-  const result = await runInteractiveCli(["setup"], "n\nmodel-a\nmodel-b\nmodel-c\ny\n", {
+  const result = await runInteractiveCli(["setup", "--interactive"], "n\nmodel-a\nmodel-b\nmodel-c\ny\n", {
     env: {
       OPENCODE_CONFIG_DIR: configDir,
     },

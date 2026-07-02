@@ -24,6 +24,7 @@ acting in that situation:
 
 | Situation | Required reference |
 |---|---|
+| User asks `magi setup`, `/magi setup`, `setup magi`, or Magi is unconfigured | `references/setup.md` |
 | Starting or resuming Magi | `references/protocol.md` |
 | Creating `checklist.md` or changing phase | `references/checklist-template.md` |
 | Writing prompts, reports, synthesis, or verdict | `references/deliberation.md` |
@@ -34,6 +35,16 @@ acting in that situation:
 
 Do not rely on memory for phase transitions. Before every phase transition,
 read `.open_magi/magi-log/checklist.md`.
+
+## Setup Gate
+
+If asked `magi setup`, `/magi setup`, `setup magi`, or `configure magi`, read
+`references/setup.md` and perform OpenCode setup only.
+
+Before starting any Magi goal, read `references/setup.md` and verify the three
+OpenCode deliberators are configured. If any model is missing or equals
+`default-model`, stop the goal and run setup first. Do not create state until
+setup is complete and OpenCode restarts.
 
 ## When to Use
 

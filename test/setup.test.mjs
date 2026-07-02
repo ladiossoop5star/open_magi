@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import test from "node:test"
 
 import {
+  DEFAULT_MODEL_SENTINEL,
   DEFAULT_PLUGIN_SPEC,
   buildAgentConfig,
   setupOpenMagi,
@@ -257,6 +258,25 @@ test("setupOpenMagi dry-run returns merged config without writing files", async 
   assert.equal(result.config.plugin.includes(DEFAULT_PLUGIN_SPEC), true)
   assert.equal(existsSync(join(configDir, "opencode.json")), false)
   assert.equal(existsSync(join(configDir, "skills", "magi", "SKILL.md")), false)
+
+  await rm(configDir, { recursive: true, force: true })
+})
+
+test("setupOpenMagi can write default-model placeholders for in-OpenCode setup", async () => {
+  const configDir = await mkdtemp(join(tmpdir(), "open-magi-default-model-"))
+
+  const result = await setupOpenMagi({ configDir, allowDefaultModel: true })
+  const cfg = JSON.parse(await readFile(result.configPath, "utf8"))
+
+  assert.equal(result.model, DEFAULT_MODEL_SENTINEL)
+  assert.deepEqual(result.models, {
+    melchior: DEFAULT_MODEL_SENTINEL,
+    balthasar: DEFAULT_MODEL_SENTINEL,
+    casper: DEFAULT_MODEL_SENTINEL,
+  })
+  assert.equal(cfg.agent["deliberator-melchior"].model, DEFAULT_MODEL_SENTINEL)
+  assert.equal(cfg.agent["deliberator-balthasar"].model, DEFAULT_MODEL_SENTINEL)
+  assert.equal(cfg.agent["deliberator-casper"].model, DEFAULT_MODEL_SENTINEL)
 
   await rm(configDir, { recursive: true, force: true })
 })

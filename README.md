@@ -90,37 +90,41 @@ repo:
 
 ```bash
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
-npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
-  open-magi setup
+```
+
+Then start OpenCode and configure Magi inside OpenCode:
+
+```bash
+opencode .
+```
+
+```text
+/magi setup
 ```
 
 After the npm package is published, the shorter npm install path will be:
 
 ```bash
 opencode plugin open-magi-opencode -g
-npx open-magi-opencode setup
 ```
 
 Ask an AI agent to install it:
 
 ```text
 Please install the public OpenCode plugin `open-magi-opencode` from the `open_magi` repo:
-https://github.com/ladiossoop5star/open_magi. Use these exact commands:
+https://github.com/ladiossoop5star/open_magi. Use this command:
 
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
-npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git open-magi setup
 
-During setup, answer the prompts with the OpenCode model or models to use for
-the three deliberators. After installation, verify that
-~/.config/opencode/opencode.json contains the plugin entry and the three
-read-only subagents: deliberator-melchior, deliberator-balthasar, and
-deliberator-casper. Also verify that ~/.config/opencode/skills/magi/SKILL.md
-exists.
+After installation, start OpenCode and run `/magi setup`. Magi should ask for
+the OpenCode model or models to use for the three deliberators, write
+~/.config/opencode/opencode.json, and tell the user to restart OpenCode.
 ```
 
 Use a model already configured in your OpenCode `opencode.json`. You can use
 one shared model for all three deliberators, or give Melchior, Balthasar, and
-Casper different models.
+Casper different models. If a Magi goal starts before setup is complete and any
+deliberator uses `default-model`, Magi must stop the goal and run setup first.
 
 ## Codex Experimental Notes
 
@@ -136,8 +140,6 @@ If you installed directly from this GitHub repo, use the same source with
 
 ```bash
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g -f
-npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
-  open-magi setup
 ```
 
 After the npm package is published, replace the installed plugin version and
@@ -145,16 +147,14 @@ refresh the local skill files with:
 
 ```bash
 opencode plugin open-magi-opencode -g -f
-npx open-magi-opencode setup
 ```
 
-The setup step refreshes `~/.config/opencode/skills/magi` and preserves
-unrelated OpenCode configuration. Re-enter the deliberator models when prompted
-or use the non-interactive flags below.
+Restart OpenCode after updating. If deliberator config is missing or still uses
+`default-model`, run `/magi setup` again inside OpenCode.
 
 ## What Setup Writes
 
-`open-magi setup` writes to the OpenCode config directory. By default this is:
+`/magi setup` writes to the OpenCode config directory. By default this is:
 
 ```text
 ~/.config/opencode/
@@ -164,13 +164,9 @@ Generated or updated files:
 
 ```text
 ~/.config/opencode/opencode.json
-~/.config/opencode/skills/magi/SKILL.md
-~/.config/opencode/skills/magi/prompts/melchior.md
-~/.config/opencode/skills/magi/prompts/balthasar.md
-~/.config/opencode/skills/magi/prompts/casper.md
 ```
 
-The setup command preserves unrelated `provider`, `agent`, and `plugin`
+The setup flow preserves unrelated `provider`, `agent`, and `plugin`
 configuration. It adds or updates:
 
 - `plugin[]`: `open-magi-opencode`, unless OpenCode already registered this
@@ -182,9 +178,14 @@ configuration. It adds or updates:
 All three deliberator agents are configured as subagents with `edit=deny` and
 `bash=deny`.
 
-## Setup Options
+After setup writes `opencode.json`, restart OpenCode so the new subagent
+configuration is loaded.
 
-Interactive setup:
+## Optional CLI Fallback
+
+The CLI remains available for automation or repair. With no model flags it
+writes `default-model` placeholders so `/magi setup` can finish configuration
+inside OpenCode:
 
 ```bash
 open-magi setup
