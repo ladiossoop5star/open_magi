@@ -1,8 +1,8 @@
 # OpenCode Setup Reference
 
-Use this when the user asks `magi setup`, `/magi setup`, `setup magi`,
-`configure magi`, or when a Magi goal is requested but the OpenCode
-deliberators are not configured.
+Use this on every Magi invocation before reading user-provided files, workflow
+files, or project context. This includes `magi setup`, `/magi setup`,
+`setup magi`, `/magi goal: ...`, and `/magi <path>`.
 
 ## Setup Contract
 
@@ -28,9 +28,9 @@ Read `opencode.json`. Magi is unconfigured if any of these are missing or have
 - `agent.deliberator-balthasar`
 - `agent.deliberator-casper`
 
-If a user requested a Magi goal and Magi is unconfigured, stop the goal flow and
-run setup first. Tell the user the goal will start only after setup is complete
-and OpenCode has been restarted.
+If Magi is unconfigured, stop the requested work and run setup first. Do not
+read workflow files or start the goal. Tell the user work can start only after
+setup is complete and OpenCode has been restarted.
 
 ## Model Prompt
 
