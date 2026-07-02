@@ -10,8 +10,9 @@ try {
   console.error(
     [
       `[open-magi] OpenCode template written to ${result.configPath}`,
+      `[open-magi] External runner template available at ${result.openMagiConfigPath}`,
       `[open-magi] Skill files written to ${result.skillDir}`,
-      "[open-magi] Edit the three deliberator model fields if they still use default-model, then restart OpenCode.",
+      "[open-magi] Edit default-model fields in opencode.json, and optionally edit open_magi.json for external command runners, then restart OpenCode.",
     ].join("\n"),
   )
 } catch (error) {

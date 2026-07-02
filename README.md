@@ -256,6 +256,60 @@ three-sages loop, goal: diagnose this bug and fix it.
 deliberation loop until done.
 ```
 
+## External Headless Deliberators
+
+By default, all three sages use OpenCode subagents configured under
+`agent.deliberator-*`. You can also route any sage to an external headless agent
+by editing the template installed at `~/.config/opencode/open_magi.json`:
+
+```json
+{
+  "deliberators": {
+    "melchior": { "runner": "opencode" },
+    "balthasar": {
+      "runner": "command",
+      "command": "codex exec --sandbox read-only -"
+    },
+    "casper": {
+      "runner": "command",
+      "command": "claude -p"
+    }
+  }
+}
+```
+
+Rules:
+
+- Do not put this custom block in `opencode.json`; OpenCode rejects unknown
+  top-level config keys.
+- Plugin install creates this template if it does not already exist.
+- Missing config, `runner: "opencode"`, or `type: "opencode"` uses the normal
+  OpenCode subagent and reads its model from `opencode.json`.
+- `runner: "command"` or `type: "command"` runs the command from the project
+  root.
+- The council prompt is sent to the command on stdin.
+- The command also receives `OPEN_MAGI_PROMPT_FILE`, `OPEN_MAGI_REPORT_FILE`,
+  `OPEN_MAGI_SAGE`, `OPEN_MAGI_ROUND`, and `OPEN_MAGI_PASS`.
+- If stdout contains Magi report metadata such as `stance:` and
+  `blocking_objection:`, stdout is written as the report.
+- If the command writes `OPEN_MAGI_REPORT_FILE` itself, Open Magi preserves that
+  file.
+- Failed or timed-out commands generate a `needs_evidence` report so the loop can
+  continue without asking what to do.
+
+For CLIs that do not read stdin directly, wrap the command yourself. Example:
+
+```json
+{
+  "deliberators": {
+    "melchior": {
+      "runner": "command",
+      "command": "sh -lc 'codex exec --sandbox read-only < \"$OPEN_MAGI_PROMPT_FILE\"'"
+    }
+  }
+}
+```
+
 ## Runtime Files
 
 For each project where Magi runs, runtime logs are written under:

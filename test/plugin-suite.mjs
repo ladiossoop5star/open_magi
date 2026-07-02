@@ -23,6 +23,20 @@ async function writeArtifact(root, relativePath, text = "ok\n") {
   await writeFile(path, text)
 }
 
+async function waitFor(check, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError
+  while (Date.now() < deadline) {
+    try {
+      return await check()
+    } catch (error) {
+      lastError = error
+      await sleep(25)
+    }
+  }
+  throw lastError
+}
+
 function activeState(overrides = {}) {
   return {
     schemaVersion: 1,
@@ -82,7 +96,7 @@ test("idle event locks state and sends exactly one continue prompt for the same 
   const hooks = await server({
     client: fakeClient(calls),
     directory: project.root,
-  })
+  }, { configDir: project.root })
 
   await hooks.event({
     event: { type: "session.idle", properties: { sessionID: "ses-1" } },
@@ -125,7 +139,7 @@ test("idle event continues a same-round loop after the previous prompt was consu
   const hooks = await server({
     client: fakeClient(calls),
     directory: project.root,
-  })
+  }, { configDir: project.root })
 
   await hooks.event({
     event: { type: "session.idle", properties: { sessionID: "ses-1" } },
@@ -219,7 +233,7 @@ test("idle event in research_task tells the agent to immediately launch delibera
   const hooks = await server({
     client: fakeClient(calls),
     directory: project.root,
-  })
+  }, { configDir: project.root })
 
   await hooks.event({
     event: { type: "session.idle", properties: { sessionID: "ses-1" } },
@@ -279,6 +293,213 @@ test("idle event in council research_task tells the agent to launch the current 
   assert.match(prompt, /round-002\/council-001\/report-melchior\.md/)
   assert.match(prompt, /stance: approve \| oppose \| needs_evidence/)
   assert.match(prompt, /Do not ask the user whether another council pass is needed/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("external command deliberator writes a report from stdout", async () => {
+  const project = await makeProject("{}")
+  const scriptPath = join(project.root, "external-deliberator.mjs")
+  await writeFile(
+    scriptPath,
+    [
+      "let input = ''",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (chunk) => { input += chunk })",
+      "process.stdin.on('end', () => {",
+      "  console.log('stance: approve')",
+      "  console.log('blocking_objection: no')",
+      "  console.log('recommended_plan: keep going')",
+      "  console.log('verification_plan: inspect report')",
+      "  console.log('risk_level: low')",
+      "  console.log('')",
+      "  console.log('## Summary')",
+      "  console.log(`Saw prompt: ${input.includes('UNIQUE_PROMPT_MARKER')}`)",
+      "})",
+    ].join("\n"),
+  )
+  const configPath = join(project.root, "open_magi.json")
+  await writeFile(
+    configPath,
+    JSON.stringify(
+      {
+        deliberators: {
+          melchior: {
+            runner: "command",
+            command: `${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)}`,
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  )
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    needsContinue: false,
+    activeDeliberators: {},
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/round-002/research-prompt.md")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-002/council-001/prompt.md", "UNIQUE_PROMPT_MARKER\n")
+  const hooks = await server(
+    {
+      client: fakeClient([]),
+      directory: project.root,
+    },
+    { configDir: project.root },
+  )
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  const reportPath = join(project.root, ".open_magi/magi-log/round-002/council-001/report-melchior.md")
+  const report = await waitFor(() => readFile(reportPath, "utf8"))
+  assert.match(report, /stance: approve/)
+  assert.match(report, /Saw prompt: true/)
+
+  const updated = await waitFor(async () => {
+    const stateText = await readFile(project.statePath, "utf8")
+    const parsed = JSON.parse(stateText)
+    assert.equal(parsed.activeDeliberators.melchior.status, "completed")
+    return parsed
+  })
+  assert.equal(updated.activeDeliberators.melchior.runner, "command")
+  assert.equal(updated.activeDeliberators.melchior.reportPath, ".open_magi/magi-log/round-002/council-001/report-melchior.md")
+  assert.equal(updated.needsContinue, true)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("external command deliberator failure writes a failure report", async () => {
+  const project = await makeProject("{}")
+  const configPath = join(project.root, "open_magi.json")
+  await writeFile(
+    configPath,
+    JSON.stringify(
+      {
+        deliberators: {
+          casper: {
+            type: "command",
+            command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.error('boom'); process.exit(7)")}`,
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  )
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    needsContinue: false,
+    activeDeliberators: {},
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/round-002/research-prompt.md")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-002/council-001/prompt.md", "prompt\n")
+  const hooks = await server(
+    {
+      client: fakeClient([]),
+      directory: project.root,
+    },
+    { configPath },
+  )
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  const report = await waitFor(() =>
+    readFile(join(project.root, ".open_magi/magi-log/round-002/council-001/report-casper.md"), "utf8"),
+  )
+  assert.match(report, /status: failed/)
+  assert.match(report, /exit_code: 7/)
+  assert.match(report, /boom/)
+  assert.match(report, /stance: needs_evidence/)
+  assert.match(report, /blocking_objection: yes/)
+
+  const updated = await waitFor(async () => {
+    const parsed = JSON.parse(await readFile(project.statePath, "utf8"))
+    assert.equal(parsed.activeDeliberators.casper.status, "failed")
+    return parsed
+  })
+  assert.equal(updated.activeDeliberators.casper.runner, "command")
+  assert.equal(updated.needsContinue, true)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("parallel deliberation with an external runner asks for only the remaining OpenCode subtasks", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "collecting_reports",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 1,
+    activeDeliberators: {
+      melchior: {
+        runner: "command",
+        agent: "external-command",
+        sessionID: "external-melchior",
+        parentSessionID: "ses-1",
+        round: 2,
+        pass: 1,
+        startedAt: new Date().toISOString(),
+        deadlineAt: new Date(Date.now() + 600000).toISOString(),
+        status: "running",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  for (const artifact of [
+    "research-prompt.md",
+    "council-001/prompt.md",
+    "council-001/report-melchior.md",
+    "council-001/report-balthasar.md",
+    "council-001/report-casper.md",
+    "council-001/synthesis.md",
+    "verdict.md",
+    "verification.md",
+  ]) {
+    await writeArtifact(project.root, `.open_magi/magi-log/round-001/${artifact}`)
+  }
+  await writeArtifact(project.root, ".open_magi/magi-log/round-002/research-prompt.md")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-002/council-001/prompt.md")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  }, { configDir: project.root })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.doesNotMatch(prompt, /Artifact integrity repair required/)
+  assert.match(prompt, /Phase 3 council report gate/)
+  assert.match(prompt, /External command runner is handling: melchior/)
+  assert.match(prompt, /Launch OpenCode subtasks only for: balthasar, casper/)
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.inFlight, true)
+  assert.equal(updated.needsContinue, true)
 
   await rm(project.root, { recursive: true, force: true })
 })
@@ -808,6 +1029,54 @@ test("server startup reschedules persisted expired deliberator deadlines without
   assert.equal(aborts.length, 1)
   const updated = JSON.parse(await readFile(project.statePath, "utf8"))
   assert.equal(updated.activeDeliberators.melchior.status, "timed_out")
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("server startup expires persisted external command deliberators", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    activeDeliberators: {
+      melchior: {
+        runner: "command",
+        agent: "external-melchior",
+        command: "codex exec -",
+        externalRunID: "run-melchior",
+        sessionID: "external-melchior-run-melchior",
+        parentSessionID: "ses-1",
+        round: 2,
+        pass: 1,
+        promptPath: ".open_magi/magi-log/round-002/council-001/prompt.md",
+        reportPath: ".open_magi/magi-log/round-002/council-001/report-melchior.md",
+        startedAt: new Date(Date.now() - 700000).toISOString(),
+        deadlineAt: new Date(Date.now() - 1000).toISOString(),
+        status: "running",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const aborts = []
+
+  await server({
+    client: fakeClient([], { aborts }),
+    directory: project.root,
+  })
+  await sleep(30)
+
+  assert.equal(aborts.length, 0)
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.activeDeliberators.melchior.status, "timed_out")
+  assert.match(updated.activeDeliberators.melchior.abortError, /external command deadline exceeded/)
+  const report = await readFile(
+    join(project.root, ".open_magi/magi-log/round-002/council-001/report-melchior.md"),
+    "utf8",
+  )
+  assert.match(report, /status: timeout/)
+  assert.match(report, /external command deadline exceeded/)
 
   await rm(project.root, { recursive: true, force: true })
 })

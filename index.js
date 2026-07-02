@@ -1,4 +1,5 @@
 import { access, appendFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
+import { spawn } from "node:child_process"
 import { dirname, join, resolve } from "node:path"
 import { randomUUID } from "node:crypto"
 
@@ -16,6 +17,9 @@ const DEFAULT_MAX_DELIBERATION_PASSES = 3
 const MIN_DELIBERATION_PASSES = 3
 const HARD_MAX_DELIBERATION_PASSES = 5
 const NO_PROGRESS_LIMIT = 5
+const SAGES = ["melchior", "balthasar", "casper"]
+const EXTERNAL_OUTPUT_LIMIT = 64 * 1024
+const EXTERNAL_KILL_GRACE_MS = 2000
 const STATE_QUEUES = new Map()
 const PHASE_RANK = {
   goal_definition: 0,
@@ -55,6 +59,22 @@ function questionRequestPath(projectRoot) {
 
 function questionDeniedPath(projectRoot) {
   return join(projectRoot, LOG_DIR, QUESTION_DENIED_FILE)
+}
+
+function openMagiConfigPath(options = {}, env = process.env) {
+  if (typeof options.configPath === "string" && options.configPath.trim()) return options.configPath
+  if (typeof env.OPEN_MAGI_CONFIG === "string" && env.OPEN_MAGI_CONFIG.trim()) return env.OPEN_MAGI_CONFIG
+  if (typeof options.configDir === "string" && options.configDir.trim()) return join(options.configDir, "open_magi.json")
+  if (typeof options.opencodeConfigDir === "string" && options.opencodeConfigDir.trim()) {
+    return join(options.opencodeConfigDir, "open_magi.json")
+  }
+  if (typeof env.OPENCODE_CONFIG_DIR === "string" && env.OPENCODE_CONFIG_DIR.trim()) {
+    return join(env.OPENCODE_CONFIG_DIR, "open_magi.json")
+  }
+  if (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) {
+    return join(env.XDG_CONFIG_HOME, "opencode", "open_magi.json")
+  }
+  return join(env.HOME || ".", ".config", "opencode", "open_magi.json")
 }
 
 function escapeRegExp(text) {
@@ -142,6 +162,14 @@ function deliberatorReportArtifact(state, sage, entry = {}) {
   return `${roundPrefix(round)}/report-${sage}.md`
 }
 
+function deliberatorPromptArtifact(state) {
+  const round = roundNumber(state)
+  if (usesCouncilPasses(state)) {
+    return `${councilPrefix(round, deliberationPassNumber(state))}/prompt.md`
+  }
+  return `${roundPrefix(round)}/research-prompt.md`
+}
+
 function completeCouncilPassArtifacts(round, pass) {
   return [...councilReportArtifacts(round, pass), `${councilPrefix(round, pass)}/synthesis.md`]
 }
@@ -192,7 +220,7 @@ function currentCouncilRoundArtifacts(state) {
     }
   }
 
-  if (phaseAtLeast(phase, "parallel_deliberation") || finalizing) {
+  if (phaseAtLeast(phase, "synthesis") || finalizing) {
     required.push(...councilReportArtifacts(round, pass))
   }
 
@@ -235,7 +263,7 @@ function currentRoundArtifacts(state) {
     required.push(`${prefix}/research-prompt.md`)
   }
 
-  if (phaseAtLeast(phase, "parallel_deliberation") || finalizing) {
+  if (phaseAtLeast(phase, "synthesis") || finalizing) {
     required.push(
       `${prefix}/report-melchior.md`,
       `${prefix}/report-balthasar.md`,
@@ -288,9 +316,23 @@ async function fileExists(projectRoot, relativePath) {
   }
 }
 
+function runningDeliberatorReportArtifacts(state) {
+  const ignored = new Set()
+  if (!state?.activeDeliberators || typeof state.activeDeliberators !== "object") return ignored
+
+  for (const [sage, entry] of Object.entries(state.activeDeliberators)) {
+    if (!entry || entry.status !== "running") continue
+    if (!isCurrentDeliberatorEntry(state, entry)) continue
+    ignored.add(deliberatorReportArtifact(state, sage, entry))
+  }
+  return ignored
+}
+
 async function findMissingArtifacts(projectRoot, state) {
   const missing = []
+  const ignored = runningDeliberatorReportArtifacts(state)
   for (const artifact of requiredArtifacts(state)) {
+    if (ignored.has(artifact)) continue
     if (!(await fileExists(projectRoot, artifact))) missing.push(artifact)
   }
   return missing
@@ -548,7 +590,9 @@ function phaseActionText(state, missingArtifacts = []) {
           : `Use ${prefix}/direction-selection.md and prior council synthesis as source evidence for review pass ${pass}.`,
         `Write ${council}/prompt.md before launching deliberators.`,
         "Do not add extended single-agent analysis before launching deliberators.",
-        "Immediately launch exactly these three subtasks with the same council prompt: deliberator-melchior, deliberator-balthasar, deliberator-casper.",
+        runningExternalSages(state).length > 0
+          ? `Immediately launch the OpenCode-mode subtasks with the same council prompt: ${openCodeSagesToLaunch(state).map((sage) => `deliberator-${sage}`).join(", ") || "none"}. ${externalRunnerInstructionText(state)}`
+          : "Immediately launch exactly these three subtasks with the same council prompt: deliberator-melchior, deliberator-balthasar, deliberator-casper.",
         `After results return, write ${council}/report-melchior.md, ${council}/report-balthasar.md, and ${council}/report-casper.md.`,
         firstPass
           ? "This is the proposal pass: each report must include stance: approve | oppose | needs_evidence, blocking_objection: yes | no, a direction proposal in recommended_plan, verification_plan, and risk_level."
@@ -564,7 +608,9 @@ function phaseActionText(state, missingArtifacts = []) {
       "[magi] Phase 2 -> Phase 3 immediate action.",
       `Use ${prefix}/research-prompt.md as the shared prompt.`,
       "Do not add more single-agent analysis before launching deliberators.",
-      "Immediately launch exactly these three subtasks with that same prompt: deliberator-melchior, deliberator-balthasar, deliberator-casper.",
+      runningExternalSages(state).length > 0
+        ? `Immediately launch the OpenCode-mode subtasks with that same prompt: ${openCodeSagesToLaunch(state).map((sage) => `deliberator-${sage}`).join(", ") || "none"}. ${externalRunnerInstructionText(state)}`
+        : "Immediately launch exactly these three subtasks with that same prompt: deliberator-melchior, deliberator-balthasar, deliberator-casper.",
       `After results return, write ${prefix}/report-melchior.md, ${prefix}/report-balthasar.md, and ${prefix}/report-casper.md.`,
       "If a deliberator fails or times out, still write its report file with failure evidence instead of omitting it.",
       "Only after the three report files exist may you continue to synthesis or another fix decision.",
@@ -577,6 +623,9 @@ function phaseActionText(state, missingArtifacts = []) {
       "",
       `[magi] Phase 3 council report gate. Council pass ${pass} of ${maxPasses}.`,
       `Required report files: ${council}/report-melchior.md, ${council}/report-balthasar.md, ${council}/report-casper.md.`,
+      runningExternalSages(state).length > 0
+        ? externalRunnerInstructionText(state)
+        : "If any required report is missing, launch the corresponding OpenCode deliberator subtask now.",
       "Do not proceed until all three report files exist; failed deliberators still get a report file with failure evidence.",
       "Do not ask the user what role an agent should play or whether reports are needed.",
     ].join("\n")
@@ -663,6 +712,299 @@ function enqueueStateWork(directory, work) {
   })
   STATE_QUEUES.set(directory, guarded)
   return guarded
+}
+
+async function readOpenMagiConfig(configPath, directory) {
+  try {
+    return JSON.parse(await readFile(configPath, "utf8"))
+  } catch (error) {
+    if (error?.code !== "ENOENT") await appendError(directory, `Failed to read Open Magi config at ${configPath}`, error)
+    return {}
+  }
+}
+
+function openMagiConfigSection(config) {
+  if (config?.deliberators || config?.runners) return config
+  return config?.openMagi || config?.open_magi || config?.magi || {}
+}
+
+function externalRunnerFor(config, sage) {
+  const section = openMagiConfigSection(config)
+  const deliberators = section.deliberators || section.runners || {}
+  const value = deliberators[sage] || deliberators[`deliberator-${sage}`]
+  if (!value) return null
+  if (typeof value === "string") return { runner: "command", command: value }
+  if (typeof value !== "object") return null
+
+  const runner = value.runner || value.type || value.mode
+  const command = typeof value.command === "string" ? value.command.trim() : ""
+  if ((runner === "command" || command) && command) {
+    return {
+      runner: "command",
+      command,
+      timeoutMs: positiveInteger(value.timeoutMs, null),
+    }
+  }
+  return null
+}
+
+function externalDeliberatorEntry(state, sage, runner, nowMs, promptPath, reportPath) {
+  const startedAt = new Date(nowMs).toISOString()
+  const externalRunID = randomUUID()
+  const timeoutMs = Math.min(
+    positiveInteger(runner.timeoutMs, deliberatorTimeoutMs(state)),
+    HARD_MAX_DELIBERATOR_TIMEOUT_MS,
+  )
+  return {
+    runner: "command",
+    agent: `external-${sage}`,
+    command: runner.command,
+    externalRunID,
+    sessionID: `external-${sage}-${externalRunID}`,
+    parentSessionID: state.sessionID || null,
+    round: roundNumber(state),
+    pass: usesCouncilPasses(state) ? deliberationPassNumber(state) : undefined,
+    promptPath,
+    reportPath,
+    startedAt,
+    deadlineAt: new Date(nowMs + timeoutMs).toISOString(),
+    status: "running",
+  }
+}
+
+function appendLimitedOutput(current, chunk) {
+  const next = `${current}${chunk}`
+  if (next.length <= EXTERNAL_OUTPUT_LIMIT) return next
+  return `${next.slice(0, EXTERNAL_OUTPUT_LIMIT)}\n[open-magi output truncated]\n`
+}
+
+function commandReportContent({ sage, entry, result, nowIso }) {
+  const stdout = String(result.stdout || "").trim()
+  if (result.exitCode === 0 && !result.timedOut && /(^|\n)stance:\s*/.test(stdout) && /(^|\n)blocking_objection:\s*/.test(stdout)) {
+    return `${stdout}\n`
+  }
+
+  const status = result.timedOut ? "timeout" : result.exitCode === 0 ? "completed" : "failed"
+  const stance = status === "completed" ? "needs_evidence" : "needs_evidence"
+  const blocking = status === "completed" ? "no" : "yes"
+  const stderr = String(result.stderr || "").trim()
+
+  return [
+    "# External Deliberator Report",
+    "",
+    `status: ${status}`,
+    `stance: ${stance}`,
+    `blocking_objection: ${blocking}`,
+    'recommended_plan: "see external output"',
+    'verification_plan: "see external output"',
+    status === "failed" || status === "timeout" ? "risk_level: high" : "risk_level: medium",
+    `agent: external-${sage}`,
+    `command: ${entry.command || ""}`,
+    `exit_code: ${result.exitCode ?? "null"}`,
+    `signal: ${result.signal || "null"}`,
+    `completed_at: ${nowIso}`,
+    "",
+    "## Summary",
+    status === "completed"
+      ? `The external ${sage} command completed, but its output did not include the full Magi report metadata.`
+      : `The external ${sage} command ${status === "timeout" ? "timed out" : "failed"}; this failure report lets the council continue.`,
+    "",
+    "## Evidence",
+    `- exit_code: ${result.exitCode ?? "null"}`,
+    `- signal: ${result.signal || "null"}`,
+    stderr ? `- stderr: ${oneLine(stderr).slice(0, 500)}` : "- stderr: none",
+    "",
+    "## Risks",
+    "- Missing or failed external deliberator output can hide a blocking objection.",
+    "- Treat this report as needs_evidence during council synthesis.",
+    "",
+    "## Recommended Next Action",
+    "- Continue the Magi Council Pass Gate with this report recorded.",
+    "",
+    "## Confidence",
+    "Medium: the command result is factual, but deliberator analysis may be incomplete.",
+    "",
+    "## Blocking Questions",
+    "- None",
+    "",
+    "## External Output",
+    stdout || "(no stdout)",
+    stderr ? "\n## External Error Output\n" : "",
+    stderr || "",
+    "",
+  ].join("\n")
+}
+
+async function completeExternalDeliberator(client, directory, sage, entry, result) {
+  const nowIso = new Date().toISOString()
+  const state = await readState(directory)
+  if (!state?.activeDeliberators || typeof state.activeDeliberators !== "object") return
+
+  const currentEntry = state.activeDeliberators[sage]
+  if (!currentEntry || currentEntry.externalRunID !== entry.externalRunID || currentEntry.status !== "running") return
+
+  const reportPath = entry.reportPath || deliberatorReportArtifact(state, sage, entry)
+  if (!(await fileExists(directory, reportPath))) {
+    const target = join(directory, reportPath)
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, commandReportContent({ sage, entry, result, nowIso }))
+  }
+
+  const status = result.timedOut ? "timed_out" : result.exitCode === 0 ? "completed" : "failed"
+  const timeoutCounts = { ...(state.deliberatorTimeoutCounts || {}) }
+  if (status === "timed_out") timeoutCounts[sage] = positiveInteger(timeoutCounts[sage], 0) + 1
+
+  const nextState = {
+    ...state,
+    currentPhase: state.currentPhase === "research_task" ? "parallel_deliberation" : state.currentPhase,
+    needsContinue: true,
+    inFlight: false,
+    inFlightSince: null,
+    activeDeliberators: {
+      ...state.activeDeliberators,
+      [sage]: {
+        ...currentEntry,
+        status,
+        exitCode: result.exitCode,
+        signal: result.signal || null,
+        completedAt: status === "completed" ? nowIso : currentEntry.completedAt || null,
+        failedAt: status === "failed" ? nowIso : currentEntry.failedAt || null,
+        timedOutAt: status === "timed_out" ? nowIso : currentEntry.timedOutAt || null,
+        reportPath,
+      },
+    },
+    deliberatorTimeoutCounts: timeoutCounts,
+    lastError:
+      status === "completed"
+        ? state.lastError || null
+        : `external deliberator ${sage} ${status} at ${nowIso}: ${reportPath}`,
+  }
+
+  const missingArtifacts = await findMissingArtifacts(directory, nextState)
+  const shouldPrompt = Boolean(nextState.sessionID && !state.inFlight)
+  const promptState = shouldPrompt
+    ? {
+        ...nextState,
+        inFlight: true,
+        inFlightSince: nowIso,
+        lastPromptedRound: nextState.currentRound,
+        lastPromptedAt: nowIso,
+      }
+    : nextState
+
+  await writeState(directory, promptState)
+
+  if (!shouldPrompt) return
+  try {
+    await sendContinuePrompt(client, promptState, directory, missingArtifacts)
+  } catch (error) {
+    await appendError(directory, "Failed to send external deliberator completion prompt", error)
+    await writeState(directory, {
+      ...promptState,
+      inFlight: false,
+      inFlightSince: null,
+      lastError: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+function runExternalDeliberator({ client, directory, sage, entry, prompt }) {
+  const child = spawn(entry.command, {
+    cwd: directory,
+    shell: true,
+    env: {
+      ...process.env,
+      OPEN_MAGI_SAGE: sage,
+      OPEN_MAGI_PROMPT_FILE: join(directory, entry.promptPath),
+      OPEN_MAGI_REPORT_FILE: join(directory, entry.reportPath),
+      OPEN_MAGI_ROUND: String(entry.round || ""),
+      OPEN_MAGI_PASS: entry.pass === undefined ? "" : String(entry.pass),
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  })
+
+  let stdout = ""
+  let stderr = ""
+  let finished = false
+  let timedOut = false
+  const timeoutMs = Math.max(0, Date.parse(entry.deadlineAt) - Date.now())
+  const timeout = setTimeout(() => {
+    timedOut = true
+    child.kill("SIGTERM")
+    setTimeout(() => {
+      if (!finished) child.kill("SIGKILL")
+    }, EXTERNAL_KILL_GRACE_MS).unref?.()
+  }, timeoutMs)
+  timeout.unref?.()
+
+  const finish = (result) => {
+    if (finished) return
+    finished = true
+    clearTimeout(timeout)
+    enqueueStateWork(directory, () => completeExternalDeliberator(client, directory, sage, entry, result))
+  }
+
+  child.stdout?.on("data", (chunk) => {
+    stdout = appendLimitedOutput(stdout, chunk)
+  })
+  child.stderr?.on("data", (chunk) => {
+    stderr = appendLimitedOutput(stderr, chunk)
+  })
+  child.on("error", (error) => {
+    finish({ exitCode: null, signal: null, stdout, stderr: `${stderr}${error.message}`, timedOut })
+  })
+  child.on("close", (exitCode, signal) => {
+    finish({ exitCode, signal, stdout, stderr, timedOut })
+  })
+  child.stdin?.on("error", () => {})
+  child.stdin?.end(prompt)
+}
+
+async function startExternalDeliberators(client, directory, state, configPath, nowMs = Date.now()) {
+  if (!state?.active || state.projectRoot !== directory) return state
+  if (!["research_task", "parallel_deliberation"].includes(state.currentPhase)) return state
+
+  const promptPath = deliberatorPromptArtifact(state)
+  if (!(await fileExists(directory, promptPath))) return state
+
+  const config = await readOpenMagiConfig(configPath, directory)
+  const prompt = await readFile(join(directory, promptPath), "utf8")
+  const activeDeliberators = { ...(state.activeDeliberators || {}) }
+  const started = []
+
+  for (const sage of SAGES) {
+    const runner = externalRunnerFor(config, sage)
+    if (!runner) continue
+
+    const reportPath = deliberatorReportArtifact(state, sage, {
+      round: roundNumber(state),
+      pass: usesCouncilPasses(state) ? deliberationPassNumber(state) : undefined,
+    })
+    if (await fileExists(directory, reportPath)) continue
+
+    const existing = activeDeliberators[sage]
+    if (existing?.status === "running" && isCurrentDeliberatorEntry(state, existing)) continue
+
+    const entry = externalDeliberatorEntry(state, sage, runner, nowMs, promptPath, reportPath)
+    activeDeliberators[sage] = entry
+    started.push({ sage, entry })
+  }
+
+  if (started.length === 0) return state
+
+  const nextState = {
+    ...state,
+    currentPhase: "parallel_deliberation",
+    deliberatorTimeoutMs: state.deliberatorTimeoutMs || DEFAULT_DELIBERATOR_TIMEOUT_MS,
+    activeDeliberators,
+  }
+  await writeState(directory, nextState)
+
+  for (const item of started) {
+    runExternalDeliberator({ client, directory, sage: item.sage, entry: item.entry, prompt })
+  }
+
+  return nextState
 }
 
 async function backupCorruptState(projectRoot, nowIso) {
@@ -770,6 +1112,30 @@ function isDeliberatorAgent(agent) {
 function activeTimeoutEntries(state) {
   if (!state?.activeDeliberators || typeof state.activeDeliberators !== "object") return []
   return Object.entries(state.activeDeliberators).filter(([, entry]) => entry?.status === "timed_out")
+}
+
+function runningExternalSages(state) {
+  if (!state?.activeDeliberators || typeof state.activeDeliberators !== "object") return []
+  return Object.entries(state.activeDeliberators)
+    .filter(([, entry]) => entry?.runner === "command" && entry.status === "running" && isCurrentDeliberatorEntry(state, entry))
+    .map(([sage]) => sage)
+}
+
+function openCodeSagesToLaunch(state) {
+  const external = new Set(runningExternalSages(state))
+  return SAGES.filter((sage) => !external.has(sage))
+}
+
+function externalRunnerInstructionText(state) {
+  const external = runningExternalSages(state)
+  if (external.length === 0) return ""
+  const openCode = openCodeSagesToLaunch(state)
+  return [
+    `External command runner is handling: ${external.join(", ")}.`,
+    openCode.length > 0
+      ? `Do not launch OpenCode subtasks for those sages. Launch OpenCode subtasks only for: ${openCode.join(", ")}.`
+      : "Do not launch any OpenCode deliberator subtasks for this pass; wait for external command reports.",
+  ].join(" ")
 }
 
 function deliberatorTimeoutText(state) {
@@ -907,6 +1273,7 @@ function timeoutLastError(timedOut, nowIso) {
 
 function timeoutReportContent({ sage, entry, nowIso, abortError }) {
   const abortErrorText = oneLine(abortError) || "none"
+  const external = isExternalDeliberatorEntry(entry)
   return [
     "# Deliberator Timeout Report",
     "",
@@ -923,7 +1290,9 @@ function timeoutReportContent({ sage, entry, nowIso, abortError }) {
     `abort_error: ${abortErrorText}`,
     "",
     "## Summary",
-    `The ${sage} deliberator exceeded the configured timeout. The OpenCode plugin aborted the child session and generated this timeout report so the council can continue.`,
+    external
+      ? `The external ${sage} command exceeded the configured timeout. The Magi plugin generated this timeout report so the council can continue.`
+      : `The ${sage} deliberator exceeded the configured timeout. The OpenCode plugin aborted the child session and generated this timeout report so the council can continue.`,
     "",
     "## Evidence",
     `- child_session: ${entry.sessionID || "unknown"}`,
@@ -990,6 +1359,10 @@ function supersededDeliberatorEntry(state, entry, nowIso) {
   }
 }
 
+function isExternalDeliberatorEntry(entry) {
+  return entry?.runner === "command" || entry?.agent?.startsWith?.("external-")
+}
+
 async function enforceExpiredDeliberators(client, directory, state, nowMs = Date.now()) {
   if (!state?.active || state.projectRoot !== directory) return { state, timedOut: [] }
   if (!state.activeDeliberators || typeof state.activeDeliberators !== "object") {
@@ -1015,11 +1388,15 @@ async function enforceExpiredDeliberators(client, directory, state, nowMs = Date
     }
 
     let abortError = null
-    try {
-      await abortDeliberatorSession(client, entry, directory)
-    } catch (error) {
-      abortError = error instanceof Error ? error.message : String(error)
-      await appendError(directory, `Failed to abort timed-out deliberator ${sage}`, error)
+    if (isExternalDeliberatorEntry(entry)) {
+      abortError = "external command deadline exceeded; no live process handle was available to abort"
+    } else {
+      try {
+        await abortDeliberatorSession(client, entry, directory)
+      } catch (error) {
+        abortError = error instanceof Error ? error.message : String(error)
+        await appendError(directory, `Failed to abort timed-out deliberator ${sage}`, error)
+      }
     }
 
     let reportResult = { relativePath: deliberatorReportArtifact(state, sage, entry), written: false }
@@ -1250,8 +1627,9 @@ async function repairClosedStateArtifacts(client, directory, toolInput) {
   }
 }
 
-export const server = async (input) => {
+export const server = async (input, options = {}) => {
   const directory = input.directory
+  const configPath = openMagiConfigPath(options)
   const timeoutHandles = new Map()
 
   const clearDeliberatorTimeout = (sessionID) => {
@@ -1315,6 +1693,7 @@ export const server = async (input) => {
         state = noProgressResult.state
         if (noProgressResult.blocked) return
         state = normalizeCouncilRoundEntry(state)
+        state = await startExternalDeliberators(input.client, directory, state, configPath, now)
 
         const questionRequest = await readQuestionRequest(directory)
         if (questionRequest && isQuestionAllowed(state, questionRequest)) {
@@ -1385,8 +1764,10 @@ export const server = async (input) => {
         await bindSessionOnStateWrite(directory, toolInput)
         await repairActiveRoundTransitionState(directory, toolInput)
         await repairClosedStateArtifacts(input.client, directory, toolInput)
-        const state = await readState(directory)
+        let state = await readState(directory)
         await enforceNoProgressLimit(directory, state)
+        state = await readState(directory)
+        await startExternalDeliberators(input.client, directory, state, configPath)
         await sweepExpiredDeliberators(input.client, directory)
       })
     },
