@@ -257,7 +257,9 @@ test("Codex documentation describes skill-first experimental support", async () 
   assert.match(docs, /\/goal Use the magi skill/)
   assert.match(docs, /goal tool is available/)
   assert.match(docs, /Stop hook/i)
+  assert.match(docs, /<MAGI_STOP_BACKSTOP>/)
   assert.match(docs, /Magi loop is still active/)
+  assert.match(docs, /corrupt/i)
   assert.match(docs, /setup-codex/)
   assert.match(docs, /`open-magi` is not on PATH/)
   assert.match(docs, /node \/path\/to\/open_magi\/adapters\/codex\/bin\/open-magi\.js setup-codex/)
@@ -574,6 +576,13 @@ test("CLI entrypoint exists and is executable", async () => {
   await access(new URL("../bin/open-magi.js", import.meta.url), constants.X_OK)
 })
 
+test("CLI setup help documents explicit default-model template opt-in", async () => {
+  const { stdout } = await execFile("node", ["bin/open-magi.js", "setup", "--help"], { cwd: repoRoot })
+
+  assert.match(stdout, /--allow-default-model/)
+  assert.match(stdout, /default-model/)
+})
+
 test("CLI setup writes independent OpenCode deliberator models", async () => {
   const configDir = await mkTempProject("open-magi-opencode-cli-independent-")
   const { stdout } = await execFile(
@@ -606,11 +615,35 @@ test("CLI setup writes independent OpenCode deliberator models", async () => {
   assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
 })
 
-test("CLI setup without model writes an editable OpenCode template", async () => {
+test("CLI setup without model fails before writing an ambiguous OpenCode template", async () => {
   const configDir = await mkTempProject("open-magi-opencode-cli-template-")
+
+  await assert.rejects(
+    () =>
+      execFile("node", ["bin/open-magi.js", "setup", "--config-dir", configDir], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          OPEN_MAGI_MODEL: "",
+          OPEN_MAGI_MELCHIOR_MODEL: "",
+          OPEN_MAGI_BALTHASAR_MODEL: "",
+          OPEN_MAGI_CASPER_MODEL: "",
+        },
+      }),
+    (error) => {
+      assert.match(error.stderr, /Specify --model/)
+      assert.match(error.stderr, /--allow-default-model/)
+      return true
+    },
+  )
+  assert.equal(existsSync(join(configDir, "opencode.json")), false)
+})
+
+test("CLI setup writes an editable OpenCode template when explicitly allowed", async () => {
+  const configDir = await mkTempProject("open-magi-opencode-cli-template-allowed-")
   const { stdout } = await execFile(
     "node",
-    ["bin/open-magi.js", "setup", "--config-dir", configDir],
+    ["bin/open-magi.js", "setup", "--config-dir", configDir, "--allow-default-model"],
     { cwd: repoRoot },
   )
   const cfg = JSON.parse(await readFile(join(configDir, "opencode.json"), "utf8"))
@@ -675,6 +708,16 @@ test("CLI setup-codex dry-run reports generated custom agent paths", async () =>
   assert.deepEqual(output.written, [])
   assert.deepEqual(output.skipped, [])
   assert.match(output.agentFiles.join("\n"), /deliberator-melchior\.toml/)
+})
+
+test("CLI run-council help documents executable and agents directory overrides", async () => {
+  const { stdout } = await execFile("node", ["adapters/codex/bin/open-magi.js", "run-council", "--help"], {
+    cwd: repoRoot,
+  })
+
+  assert.match(stdout, /run-council/)
+  assert.match(stdout, /--agents-dir/)
+  assert.match(stdout, /--codex-bin/)
 })
 
 test("Codex postinstall writes editable custom agent templates during plugin install", async () => {

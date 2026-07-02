@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import test from "node:test"
 
@@ -359,6 +359,142 @@ test("runCouncil writes failure provenance reports when a Codex subprocess fails
   assert.match(casper, /report_source: codex_exec_failed/)
   assert.match(casper, /codex_exit_code: 7/)
   assert.match(casper, /casper failed in fake codex/)
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("runCouncil survives a deliberator that exits before draining a large prompt", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-epipe-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-epipe-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-epipe-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "P".repeat(2 * 1024 * 1024))
+  for (const [sage, model] of [
+    ["melchior", "model-a"],
+    ["balthasar", "model-b"],
+    ["casper", "model-c"],
+  ]) {
+    await writeFile(join(agentsDir, `deliberator-${sage}.toml`), `name = "deliberator-${sage}"\nmodel = "${model}"\n`)
+  }
+  await writeFile(fakeCodex, "#!/usr/bin/env node\nprocess.exit(1)\n")
+  await chmod(fakeCodex, 0o755)
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 5000,
+  })
+
+  assert.equal(result.ok, false)
+  assert.deepEqual(result.results.map((entry) => entry.ok), [false, false, false])
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    const report = await readFile(
+      join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", `report-${sage}.md`),
+      "utf8",
+    )
+    assert.match(report, /report_source: codex_exec_failed/)
+  }
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("runCouncil rejects unsupported Codex sandbox modes before spawning subprocesses", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-sandbox-invalid-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-sandbox-invalid-agents-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await writeFile(
+      join(agentsDir, `deliberator-${sage}.toml`),
+      [
+        `name = "deliberator-${sage}"`,
+        `model = "model-${sage}"`,
+        'sandbox_mode = "network-admin"',
+        "",
+      ].join("\n"),
+    )
+  }
+
+  await assert.rejects(
+    () => runCouncil({ projectRoot, promptPath, round: 1, pass: 1, agentsDir, codexBin: "codex" }),
+    /unsupported sandbox_mode "network-admin"/,
+  )
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+})
+
+test("runCouncil requires explicit opt-in for danger-full-access sandbox mode", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-sandbox-full-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-sandbox-full-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-sandbox-full-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+  const fakeLog = join(projectRoot, "fake-codex.jsonl")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await writeFile(
+      join(agentsDir, `deliberator-${sage}.toml`),
+      [
+        `name = "deliberator-${sage}"`,
+        `model = "model-${sage}"`,
+        'sandbox_mode = "danger-full-access"',
+        "",
+      ].join("\n"),
+    )
+  }
+
+  await assert.rejects(
+    () => runCouncil({ projectRoot, promptPath, round: 1, pass: 1, agentsDir, codexBin: fakeCodex }),
+    /OPEN_MAGI_ALLOW_FULL_ACCESS=1/,
+  )
+
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { appendFileSync, writeFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "process.stdin.resume()",
+      "process.stdin.on('end', () => {",
+      "  appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify({ args }) + '\\n')",
+      "  writeFileSync(args[args.indexOf('-o') + 1], 'stance: approve\\nblocking_objection: no\\nrecommended_plan: ok\\nverification_plan: true\\nrisk_level: low\\n')",
+      "})",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 2000,
+    env: { OPEN_MAGI_ALLOW_FULL_ACCESS: "1", FAKE_CODEX_LOG: fakeLog },
+  })
+  const calls = (await readFile(fakeLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
+
+  assert.equal(result.ok, true)
+  assert.equal(calls.length, 3)
+  assert.ok(calls.every((call) => call.args.includes("--sandbox") && call.args.includes("danger-full-access")))
 
   await rm(projectRoot, { recursive: true, force: true })
   await rm(agentsDir, { recursive: true, force: true })

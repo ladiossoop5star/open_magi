@@ -16,6 +16,7 @@ const DELIBERATORS = [
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
 const MAX_CAPTURE_CHARS = 20000
+const ALLOWED_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"])
 
 function padNumber(value) {
   return String(Number(value || 1)).padStart(3, "0")
@@ -50,7 +51,18 @@ function councilPromptPath(projectRoot, round, pass) {
   return join(projectRoot, ".open_magi", "magi-log", `round-${padNumber(round)}`, `council-${padNumber(pass)}`, "prompt.md")
 }
 
-async function readAgent(agentsDir, definition) {
+function readSandboxMode(text, path, env) {
+  const sandboxMode = readTomlString(text, "sandbox_mode") || "read-only"
+  if (!ALLOWED_SANDBOX_MODES.has(sandboxMode)) {
+    throw new Error(`${path} has unsupported sandbox_mode "${sandboxMode}"; use read-only, workspace-write, or danger-full-access`)
+  }
+  if (sandboxMode === "danger-full-access" && env.OPEN_MAGI_ALLOW_FULL_ACCESS !== "1") {
+    throw new Error(`${path} requests sandbox_mode "danger-full-access"; set OPEN_MAGI_ALLOW_FULL_ACCESS=1 to allow it`)
+  }
+  return sandboxMode
+}
+
+async function readAgent(agentsDir, definition, env = process.env) {
   const path = join(agentsDir, definition.fileName)
   const text = await readFile(path, "utf8")
   const model = readTomlString(text, "model")
@@ -65,7 +77,7 @@ async function readAgent(agentsDir, definition) {
     model,
     provider: readTomlString(text, "model_provider"),
     reasoningEffort: readTomlString(text, "model_reasoning_effort"),
-    sandboxMode: readTomlString(text, "sandbox_mode") || "read-only",
+    sandboxMode: readSandboxMode(text, path, env),
     developerInstructions: readTomlMultiline(text, "developer_instructions") || "",
   }
 }
@@ -126,7 +138,7 @@ async function runCodexProcess({ agent, projectRoot, prompt, codexBin, timeoutMs
     let settled = false
     const child = spawn(codexBin, args, {
       cwd: projectRoot,
-      env: { ...process.env, OPEN_MAGI_DISABLE_STOP_BACKSTOP: "1", ...env },
+      env: { ...process.env, ...env, OPEN_MAGI_DISABLE_STOP_BACKSTOP: "1" },
       stdio: ["pipe", "pipe", "pipe"],
     })
     const killTimer = setTimeout(() => {
@@ -161,7 +173,14 @@ async function runCodexProcess({ agent, projectRoot, prompt, codexBin, timeoutMs
       await rm(tempDir, { recursive: true, force: true })
       resolve({ ok: exitCode === 0 && !timedOut, exitCode, timedOut, stdout, stderr, output })
     })
-    child.stdin.end(prompt)
+    // A fast-failing deliberator can exit before draining stdin. Ignoring EPIPE
+    // preserves per-deliberator isolation; the close/error handlers settle the result.
+    child.stdin.on("error", () => {})
+    try {
+      child.stdin.end(prompt)
+    } catch {
+      // stdin was already closed; close/error handler still records failure.
+    }
   })
 }
 
@@ -193,7 +212,8 @@ export async function runCouncil(options = {}) {
   const codexBin = options.codexBin || process.env.OPEN_MAGI_CODEX_BIN || "codex"
   const timeoutMs = Number(options.timeoutMs || process.env.OPEN_MAGI_DELIBERATOR_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)
   const councilPrompt = await readFile(promptPath, "utf8")
-  const agents = await Promise.all(DELIBERATORS.map((definition) => readAgent(agentsDir, definition)))
+  const env = { ...process.env, ...(options.env || {}) }
+  const agents = await Promise.all(DELIBERATORS.map((definition) => readAgent(agentsDir, definition, env)))
   const results = await Promise.all(
     agents.map(async (agent) => {
       const prompt = buildDeliberatorPrompt(agent, councilPrompt)

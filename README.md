@@ -177,12 +177,12 @@ All three deliberator agents are configured as subagents with `edit=deny` and
 
 ## Setup Options
 
-The CLI setup command is optional. Use it to repair or regenerate the same
-template if the install hook was skipped. This writes fixed read-only subagent
-config and uses `default-model` placeholders for the three model fields:
+The CLI setup command is optional. Use it to repair or regenerate config if the
+install hook was skipped. To intentionally write editable `default-model`
+placeholders, make that explicit:
 
 ```bash
-open-magi setup
+open-magi setup --allow-default-model
 ```
 
 Then edit `~/.config/opencode/opencode.json` and replace:
@@ -214,7 +214,7 @@ open-magi setup \
 Dry run:
 
 ```bash
-open-magi setup --dry-run
+open-magi setup --model deepseek-v4-flash --dry-run
 ```
 
 Environment overrides:
@@ -225,7 +225,7 @@ OPEN_MAGI_MELCHIOR_MODEL=model-a \
 OPEN_MAGI_BALTHASAR_MODEL=model-b \
 OPEN_MAGI_CASPER_MODEL=model-c \
   open-magi setup
-OPENCODE_CONFIG_DIR=/path/to/opencode-config open-magi setup
+OPENCODE_CONFIG_DIR=/path/to/opencode-config open-magi setup --model deepseek-v4-flash
 ```
 
 Interactive prompt mode:

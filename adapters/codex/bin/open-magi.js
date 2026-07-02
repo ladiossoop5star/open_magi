@@ -14,11 +14,11 @@ Usage:
   open-magi setup-codex
   open-magi setup-codex --interactive [--agents-dir path]
   open-magi setup-codex --melchior-model model --balthasar-model model --casper-model model [--provider provider] [--agents-dir path] [--dry-run]
-  open-magi run-council --project-root path --prompt-path path --round N --pass N [--timeout-ms ms]
+  open-magi run-council --project-root path --prompt-path path --round N --pass N [--agents-dir path] [--codex-bin path] [--timeout-ms ms]
   open-magi --version
 
 Options:
-  --agents-dir        Codex custom agents directory. Defaults to CODEX_HOME/agents or ~/.codex/agents.
+  --agents-dir        Codex custom agents directory for setup-codex and run-council. Defaults to CODEX_HOME/agents or ~/.codex/agents.
   --provider          Codex model_provider to apply to all three deliberators.
   --*-provider        Per-deliberator Codex model_provider override.
   --*-effort          Per-deliberator model_reasoning_effort override.
@@ -28,6 +28,7 @@ Options:
   --prompt-path       Council prompt path for run-council.
   --round             Magi round number for run-council.
   --pass              Council pass number for run-council.
+  --codex-bin         Codex executable for run-council. Defaults to OPEN_MAGI_CODEX_BIN or codex.
   --timeout-ms        Per-deliberator timeout for run-council.
 `)
 }

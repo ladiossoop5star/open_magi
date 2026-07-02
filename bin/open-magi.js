@@ -10,9 +10,10 @@ function printHelp() {
   console.log(`open-magi
 
 Usage:
-  open-magi setup
+  open-magi setup --allow-default-model
   open-magi setup --model provider/model [--config-dir path] [--plugin-spec spec] [--dry-run]
   open-magi setup --melchior-model model --balthasar-model model --casper-model model [--config-dir path] [--plugin-spec spec] [--dry-run]
+  open-magi setup --interactive [--config-dir path] [--plugin-spec spec] [--dry-run]
   open-magi --version
 
 Options:
@@ -21,6 +22,8 @@ Options:
   --config-dir        OpenCode config directory. Defaults to OPENCODE_CONFIG_DIR or ~/.config/opencode.
   --plugin-spec       Plugin spec to add to opencode.json. Defaults to open-magi-opencode.
   --interactive       Prompt for OpenCode deliberator settings instead of writing default-model placeholders.
+  --allow-default-model
+                      Write editable "default-model" placeholders instead of requiring real models.
   --dry-run           Print the setup summary without writing files.
 `)
 }
@@ -131,6 +134,7 @@ async function main(argv) {
       "config-dir": { type: "string" },
       "plugin-spec": { type: "string" },
       interactive: { type: "boolean", default: false },
+      "allow-default-model": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -145,6 +149,17 @@ async function main(argv) {
   const hasModelOptions = Boolean(
     values.model || values["melchior-model"] || values["balthasar-model"] || values["casper-model"],
   )
+  const hasModelEnvironment = Boolean(
+    process.env.OPEN_MAGI_MODEL ||
+      process.env.OPEN_MAGI_MELCHIOR_MODEL ||
+      process.env.OPEN_MAGI_BALTHASAR_MODEL ||
+      process.env.OPEN_MAGI_CASPER_MODEL,
+  )
+  if (!values.interactive && !hasModelOptions && !hasModelEnvironment && !values["allow-default-model"]) {
+    throw new Error(
+      'Specify --model / --melchior-model / --balthasar-model / --casper-model or OPEN_MAGI_MODEL, or pass --allow-default-model to write an editable "default-model" placeholder.',
+    )
+  }
   const options = values.interactive
     ? await interactiveOpenCodeSetupOptions(values)
     : {
@@ -154,7 +169,7 @@ async function main(argv) {
         casperModel: values["casper-model"],
         configDir: values["config-dir"],
         pluginSpec: values["plugin-spec"],
-        allowDefaultModel: !hasModelOptions,
+        allowDefaultModel: Boolean(values["allow-default-model"]),
         dryRun: values["dry-run"],
       }
 

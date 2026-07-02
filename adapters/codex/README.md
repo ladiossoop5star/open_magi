@@ -120,12 +120,15 @@ not exposed to the model, so the CLI runner is the supported execution path.
 The plugin bundles a minimal Codex Stop hook. When Codex is about to stop, the
 hook reads `.open_magi/magi-log/state.json`. If `active=true` and
 `final-report.md` does not exist, it returns a Codex Stop decision of
-`decision: block` with a continuation prompt beginning with
-`Magi loop is still active`. Codex treats that as an automatic continuation, so
-the Magi loop can resume instead of stopping silently.
+`decision: block` with a `<MAGI_STOP_BACKSTOP>` continuation block. The next
+line is `Magi loop is still active`. Codex treats that as an automatic
+continuation, so the Magi loop can resume instead of stopping silently.
 
 This hook is intentionally conservative. It does not abort subagents, rewrite
 state, repair missing artifacts by itself, or replace Goal mode.
+If `state.json` is corrupt, the hook blocks as a fail-safe and asks Codex to
+repair state from `.open_magi/magi-log` history. Repeated corruption can keep
+continuation active until the state file is repaired.
 
 ## Current Limitations
 
