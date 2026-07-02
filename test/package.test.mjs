@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile as execFileCallback, spawn } from "node:child_process"
-import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
 import { constants, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
@@ -108,6 +108,31 @@ function runInteractiveCli(args, input, options = {}) {
   })
 }
 
+function rpcFrame(payload) {
+  const json = JSON.stringify(payload)
+  return `Content-Length: ${Buffer.byteLength(json, "utf8")}\r\n\r\n${json}`
+}
+
+function parseRpcFrames(output) {
+  const frames = []
+  let buffer = Buffer.from(output)
+  const delimiter = Buffer.from("\r\n\r\n")
+
+  while (buffer.length) {
+    const index = buffer.indexOf(delimiter)
+    if (index === -1) break
+    const header = buffer.slice(0, index).toString("utf8")
+    const length = Number(header.match(/Content-Length:\s*(\d+)/i)?.[1])
+    const start = index + delimiter.length
+    const end = start + length
+    if (!Number.isFinite(length) || buffer.length < end) break
+    frames.push(JSON.parse(buffer.slice(start, end).toString("utf8")))
+    buffer = buffer.slice(end)
+  }
+
+  return frames
+}
+
 test("package metadata exposes OpenCode plugin, setup CLI, and injected plugin tests", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
   const cli = await readFile(new URL("../bin/open-magi.js", import.meta.url), "utf8")
@@ -151,10 +176,12 @@ test("Codex plugin manifest exposes the portable magi skill", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
   const codexPkg = JSON.parse(await readFile(new URL("../adapters/codex/package.json", import.meta.url), "utf8"))
   const manifest = JSON.parse(await readFile(new URL("../adapters/codex/.codex-plugin/plugin.json", import.meta.url), "utf8"))
+  const mcp = JSON.parse(await readFile(new URL("../adapters/codex/.mcp.json", import.meta.url), "utf8"))
 
   assert.equal(manifest.name, "open-magi")
   assert.equal(manifest.version, pkg.version)
   assert.equal(codexPkg.name, "open-magi-codex")
+  assert.equal(codexPkg.files.includes(".mcp.json"), true)
   assert.equal(codexPkg.files.includes("shared"), false)
   assert.equal(codexPkg.files.includes("../.."), false)
   assert.equal(manifest.repository, "https://github.com/ladiossoop5star/open_magi")
@@ -162,8 +189,12 @@ test("Codex plugin manifest exposes the portable magi skill", async () => {
   assert.equal(manifest.license, "MIT")
   assert.equal(manifest.skills, "./skills/")
   assert.equal(manifest.hooks, undefined)
-  assert.equal(manifest.mcpServers, undefined)
+  assert.equal(manifest.mcpServers, "./.mcp.json")
   assert.equal(manifest.apps, undefined)
+  assert.deepEqual(Object.keys(mcp), ["open-magi"])
+  assert.equal(mcp["open-magi"].command, "node")
+  assert.deepEqual(mcp["open-magi"].args, ["bin/mcp-server.js"])
+  assert.equal(mcp["open-magi"].cwd, ".")
   assert.equal(manifest.interface.displayName, "Open Magi")
   assert.equal(manifest.interface.category, "Coding")
   assert.ok(manifest.interface.capabilities.includes("Interactive"))
@@ -175,6 +206,33 @@ test("Codex plugin manifest exposes the portable magi skill", async () => {
   assert.ok(manifest.interface.shortDescription.length > 20)
   assert.ok(manifest.interface.longDescription.length > manifest.interface.shortDescription.length)
   assert.equal(manifest.interface.defaultPrompt.length, 3)
+})
+
+test("Codex MCP server supports Content-Length handshake and exposes run_council", async () => {
+  const input = [
+    rpcFrame({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "test", version: "0" },
+      },
+    }),
+    rpcFrame({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+  ].join("")
+  const result = await runInteractiveCli([], input, {
+    script: "adapters/codex/bin/mcp-server.js",
+  })
+  const frames = parseRpcFrames(result.stdout)
+
+  assert.equal(result.code, 0, result.stderr)
+  assert.equal(frames[0].id, 1)
+  assert.equal(frames[0].result.serverInfo.name, "open-magi")
+  assert.deepEqual(frames[0].result.capabilities.tools, { listChanged: false })
+  assert.equal(frames[1].id, 2)
+  assert.deepEqual(frames[1].result.tools.map((tool) => tool.name), ["run_council"])
 })
 
 test("Codex marketplace metadata can install this repo as a local development plugin", async () => {
@@ -205,11 +263,17 @@ test("Codex documentation describes skill-first experimental support", async () 
   assert.match(docs, /node \/path\/to\/open_magi\/adapters\/codex\/bin\/open-magi\.js setup-codex/)
   assert.match(docs, /--melchior-model/)
   assert.match(docs, /first-use/i)
-  assert.match(docs, /~\/\.codex\/open_magi\/codex\.json/)
-  assert.match(docs, /Leave it blank/)
+  assert.match(docs, /~\/\.codex\/agents\/deliberator-melchior\.toml/)
+  assert.match(docs, /model = "default-model"/)
+  assert.match(docs, /Leave provider unset/)
   assert.match(docs, /custom agents/i)
-  assert.match(docs, /one fixed file/)
-  assert.match(docs, /`deliberator-\*\.toml` lookup/)
+  assert.match(docs, /MCP/i)
+  assert.match(docs, /run-council/)
+  assert.match(docs, /custom MCP tools are\s+not exposed to the model/)
+  assert.match(docs, /codex exec/i)
+  assert.match(docs, /does not overwrite existing/)
+  assert.doesNotMatch(docs, /~\/\.codex\/open_magi\/codex\.json/)
+  assert.doesNotMatch(docs, /`deliberator-\*\.toml` lookup/)
   assert.match(docs, /codex plugin marketplace add/)
   assert.match(docs, /codex plugin add open-magi@open-magi-dev/)
   assert.match(docs, /\.open_magi\/magi-log/)
@@ -333,9 +397,13 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.doesNotMatch(contract, /Codex|setup-codex|spawn_agent/)
   assert.match(codexSkill, /Codex Bootstrap Gate/)
   assert.match(codexSkill, /If running in Codex and a goal tool is available/)
-  assert.match(codexSkill, /setup-codex` with no arguments/)
-  assert.match(codexSkill, /use `open-magi` if in PATH/)
+  assert.match(codexSkill, /~\/\.codex\/agents\/deliberator-melchior\.toml/)
+  assert.match(codexSkill, /default-model/)
+  assert.match(codexSkill, /plugin's cached `bin\/open-magi\.js` first/)
+  assert.match(codexSkill, /Use PATH `open-magi setup-codex` only if no/)
   assert.match(codexSkill, /plugin cache/)
+  assert.match(codexRuntime, /run the bundled plugin-cache\s+CLI/)
+  assert.match(codexRuntime, /open-magi --help \| grep -q run-council/)
   assert.match(codexSkill, /Do not claim that `\/goal` provides runtime artifact repair/)
   assert.match(references["runtime.md"], /OpenCode Runtime Reference/)
   assert.match(references["runtime.md"], /OpenCode `session\.abort`/)
@@ -587,112 +655,194 @@ test("CLI setup-codex dry-run reports generated custom agent paths", async () =>
   assert.equal(output.ok, true)
   assert.equal(output.dryRun, true)
   assert.equal(output.agentsDir, agentsDir)
-  assert.match(output.configPath, /open_magi\/codex\.json$/)
+  assert.equal(output.configPath, undefined)
   assert.equal(output.agentFiles.length, 3)
+  assert.deepEqual(output.written, [])
+  assert.deepEqual(output.skipped, [])
   assert.match(output.agentFiles.join("\n"), /deliberator-melchior\.toml/)
+})
+
+test("Codex postinstall writes editable custom agent templates during plugin install", async () => {
+  const agentsDir = await mkTempProject("open-magi-codex-postinstall-")
+  const { stderr } = await execFile("node", ["adapters/codex/bin/postinstall.js"], {
+    cwd: repoRoot,
+    env: { ...process.env, CODEX_AGENTS_DIR: agentsDir },
+  })
+
+  assert.match(stderr, /Codex templates written/)
+  assert.match(stderr, /Codex MCP config unchanged in source checkout/)
+  assert.match(await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8"), /model = "default-model"/)
+  assert.match(await readFile(join(agentsDir, "deliberator-balthasar.toml"), "utf8"), /model = "default-model"/)
+  assert.match(await readFile(join(agentsDir, "deliberator-casper.toml"), "utf8"), /model = "default-model"/)
 })
 
 test("CLI setup-codex interactive writes custom agent files without long flags", async () => {
   const agentsDir = await mkTempProject("open-magi-codex-cli-interactive-")
-  const configPath = join(agentsDir, "codex.json")
   const result = await runInteractiveCli(
-    ["setup-codex", "--interactive", "--agents-dir", agentsDir, "--config-file", configPath],
+    ["setup-codex", "--interactive", "--agents-dir", agentsDir],
     "y\nlitellm\nmodel-a\nmodel-b\nmodel-c\n\ny\n",
     { script: "adapters/codex/bin/open-magi.js" },
   )
 
   assert.equal(result.code, 0, result.stderr)
-  assert.match(result.stdout, /configPath/)
+  assert.doesNotMatch(result.stdout, /configPath/)
   assert.match(result.stdout, /specific model provider/)
   assert.match(result.stdout, /Melchior model/)
-  assert.equal(JSON.parse(await readFile(configPath, "utf8")).deliberators.melchior.model, "model-a")
   assert.match(await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8"), /model = "model-a"/)
   assert.match(await readFile(join(agentsDir, "deliberator-balthasar.toml"), "utf8"), /model = "model-b"/)
   assert.match(await readFile(join(agentsDir, "deliberator-casper.toml"), "utf8"), /model = "model-c"/)
+  assert.equal(existsSync(join(agentsDir, "codex.json")), false)
 })
 
-test("CLI setup-codex without arguments starts interactive setup", async () => {
-  const agentsDir = await mkTempProject("open-magi-codex-cli-default-interactive-")
-  const configPath = join(agentsDir, "codex.json")
-  const result = await runInteractiveCli(
-    ["setup-codex"],
-    "n\nmodel-a\nmodel-b\nmodel-c\n\ny\n",
+test("CLI setup-codex without arguments writes editable templates", async () => {
+  const agentsDir = await mkTempProject("open-magi-codex-cli-default-template-")
+  const { stdout } = await execFile(
+    "node",
+    ["adapters/codex/bin/open-magi.js", "setup-codex"],
     {
-      script: "adapters/codex/bin/open-magi.js",
+      cwd: repoRoot,
       env: {
+        ...process.env,
         CODEX_AGENTS_DIR: agentsDir,
-        OPEN_MAGI_CODEX_CONFIG: configPath,
       },
     },
   )
+  const output = JSON.parse(stdout)
 
-  assert.equal(result.code, 0, result.stderr)
-  assert.match(result.stdout, /specific model provider/)
-  assert.equal(JSON.parse(await readFile(configPath, "utf8")).deliberators.melchior.model, "model-a")
-  assert.match(await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8"), /model = "model-a"/)
+  assert.equal(output.ok, true)
+  assert.equal(output.agentsDir, agentsDir)
+  assert.equal(output.configPath, undefined)
+  assert.match(await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8"), /model = "default-model"/)
 })
 
-test("CLI setup-codex interactive can clear an existing Codex provider", async () => {
-  const agentsDir = await mkTempProject("open-magi-codex-cli-clear-provider-")
-  const configPath = join(agentsDir, "codex.json")
-  await writeFile(
-    configPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: 1,
-        agentsDir,
-        provider: "o3-mini",
-        deliberators: {
-          melchior: { model: "gpt-4o" },
-          balthasar: { model: "gpt-4o" },
-          casper: { model: "gpt-4o" },
-        },
-      },
-      null,
-      2,
-    )}\n`,
+test("CLI setup-codex preserves existing Codex agent files by default", async () => {
+  const agentsDir = await mkTempProject("open-magi-codex-cli-preserve-")
+  await writeFile(join(agentsDir, "deliberator-casper.toml"), "model = \"user-edited\"\n")
+  const { stdout } = await execFile(
+    "node",
+    [
+      "adapters/codex/bin/open-magi.js",
+      "setup-codex",
+      "--agents-dir",
+      agentsDir,
+      "--melchior-model",
+      "model-a",
+      "--balthasar-model",
+      "model-b",
+      "--casper-model",
+      "model-c",
+    ],
+    { cwd: repoRoot },
   )
-  const result = await runInteractiveCli(
-    ["setup-codex"],
-    "n\nmodel-a\nmodel-b\nmodel-c\n\ny\n",
-    {
-      script: "adapters/codex/bin/open-magi.js",
-      env: {
-        CODEX_AGENTS_DIR: agentsDir,
-        OPEN_MAGI_CODEX_CONFIG: configPath,
-      },
-    },
-  )
-  const config = JSON.parse(await readFile(configPath, "utf8"))
+  const output = JSON.parse(stdout)
   const melchior = await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8")
 
-  assert.equal(result.code, 0, result.stderr)
-  assert.equal(config.provider, undefined)
-  assert.equal(config.deliberators.melchior.model, "model-a")
-  assert.doesNotMatch(melchior, /model_provider/)
+  assert.deepEqual(output.skipped, [join(agentsDir, "deliberator-casper.toml")])
+  assert.match(melchior, /model = "model-a"/)
+  assert.equal(await readFile(join(agentsDir, "deliberator-casper.toml"), "utf8"), "model = \"user-edited\"\n")
+})
+
+test("CLI run-council writes reports through configured Codex subprocesses", async () => {
+  const projectRoot = await mkTempProject("open-magi-codex-cli-run-council-")
+  const agentsDir = await mkTempProject("open-magi-codex-cli-run-council-agents-")
+  const binDir = await mkTempProject("open-magi-codex-cli-run-council-bin-")
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+  const fakeLog = join(projectRoot, "fake-codex.jsonl")
+
+  await mkdir(join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001"), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  for (const [sage, model] of [
+    ["melchior", "model-a"],
+    ["balthasar", "model-b"],
+    ["casper", "model-c"],
+  ]) {
+    await writeFile(
+      join(agentsDir, `deliberator-${sage}.toml`),
+      [
+        `name = "deliberator-${sage}"`,
+        `model = "${model}"`,
+        'model_provider = "litellm"',
+        'sandbox_mode = "read-only"',
+        'developer_instructions = """',
+        `Role: ${sage}.`,
+        '"""',
+        "",
+      ].join("\n"),
+    )
+  }
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { appendFileSync, writeFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "let stdin = ''",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (chunk) => { stdin += chunk })",
+      "process.stdin.on('end', () => {",
+      "  appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify({ args, stdin }) + '\\n')",
+      "  const output = args[args.indexOf('-o') + 1]",
+      "  writeFileSync(output, 'stance: approve\\nblocking_objection: no\\nrecommended_plan: cli\\nverification_plan: true\\nrisk_level: low\\n')",
+      "})",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const { stdout } = await execFile(
+    "node",
+    [
+      "adapters/codex/bin/open-magi.js",
+      "run-council",
+      "--project-root",
+      projectRoot,
+      "--prompt-path",
+      promptPath,
+      "--round",
+      "1",
+      "--pass",
+      "1",
+      "--timeout-ms",
+      "2000",
+      "--agents-dir",
+      agentsDir,
+      "--codex-bin",
+      fakeCodex,
+    ],
+    {
+      cwd: repoRoot,
+      env: { ...process.env, FAKE_CODEX_LOG: fakeLog },
+    },
+  )
+  const output = JSON.parse(stdout)
+
+  assert.equal(output.ok, true)
+  assert.equal((await readFile(fakeLog, "utf8")).trim().split("\n").length, 3)
+  assert.match(
+    await readFile(join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "report-melchior.md"), "utf8"),
+    /report_source: codex_exec/,
+  )
 })
 
 test("CLI setup-codex interactive leaves provider unset when user has no custom provider", async () => {
   const agentsDir = await mkTempProject("open-magi-codex-cli-no-provider-")
-  const configPath = join(agentsDir, "codex.json")
   const result = await runInteractiveCli(
-    ["setup-codex", "--interactive", "--agents-dir", agentsDir, "--config-file", configPath],
+    ["setup-codex", "--interactive", "--agents-dir", agentsDir],
     "n\nmodel-a\nmodel-b\nmodel-c\n\ny\n",
     { script: "adapters/codex/bin/open-magi.js" },
   )
-  const config = JSON.parse(await readFile(configPath, "utf8"))
   const melchior = await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8")
 
   assert.equal(result.code, 0, result.stderr)
-  assert.equal(config.provider, undefined)
+  assert.match(result.stdout, /specific model provider/)
   assert.doesNotMatch(melchior, /model_provider/)
 })
 
 test("CLI setup-codex interactive fails without real setup answers", async () => {
   const agentsDir = await mkTempProject("open-magi-codex-cli-empty-interactive-")
-  const configPath = join(agentsDir, "codex.json")
   const result = await runInteractiveCli(
-    ["setup-codex", "--interactive", "--agents-dir", agentsDir, "--config-file", configPath],
+    ["setup-codex", "--interactive", "--agents-dir", agentsDir],
     "",
     { script: "adapters/codex/bin/open-magi.js", timeoutMs: 500 },
   )
@@ -700,7 +850,7 @@ test("CLI setup-codex interactive fails without real setup answers", async () =>
   assert.notEqual(result.code, "timeout")
   assert.notEqual(result.code, 0)
   assert.match(result.stderr, /interactive setup requires input/i)
-  await assert.rejects(() => readFile(configPath, "utf8"))
+  await assert.rejects(() => readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8"))
 })
 
 test("only README.zh-TW.md contains Chinese characters", async () => {

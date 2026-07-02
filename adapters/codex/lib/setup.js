@@ -1,8 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, writeFile } from "node:fs/promises"
 import { existsSync, readFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import os from "node:os"
+
+export const DEFAULT_CODEX_MODEL_SENTINEL = "default-model"
 
 export const CODEX_AGENT_FILE_NAMES = [
   "deliberator-melchior.toml",
@@ -50,11 +52,10 @@ function readBundledPrompt(fileName) {
   return readFileSync(join(bundledSkillDir, "prompts", fileName), "utf8")
 }
 
-function requireCodexModel(label, model) {
-  if (!model || typeof model !== "string") {
-    throw new Error(`${label} model is required; pass --${label}-model`)
-  }
-  return model
+function codexModel(model) {
+  if (typeof model !== "string") return DEFAULT_CODEX_MODEL_SENTINEL
+  const trimmed = model.trim()
+  return trimmed || DEFAULT_CODEX_MODEL_SENTINEL
 }
 
 function tomlString(value) {
@@ -73,15 +74,18 @@ function tomlMultilineString(value) {
 export function buildCodexAgentConfig(options = {}) {
   return Object.fromEntries(
     CODEX_AGENT_DEFINITIONS.map((agent) => {
-      const model = requireCodexModel(agent.name.replace("deliberator-", ""), options[agent.modelKey])
+      const model = codexModel(options[agent.modelKey])
       const provider = options[agent.providerKey] || options.provider
       const effort = options[agent.effortKey] || options.reasoningEffort
       const lines = [
         `name = ${tomlString(agent.name)}`,
         `description = ${tomlString(agent.description)}`,
-        `model = ${tomlString(model)}`,
       ]
 
+      if (model === DEFAULT_CODEX_MODEL_SENTINEL) {
+        lines.push("# Edit model before using Magi. Add a provider only when this model needs one.")
+      }
+      lines.push(`model = ${tomlString(model)}`)
       if (provider) lines.push(`model_provider = ${tomlString(provider)}`)
       if (effort) lines.push(`model_reasoning_effort = ${tomlString(effort)}`)
 
@@ -100,10 +104,22 @@ export function defaultCodexAgentsDir(env = process.env) {
   return join(os.homedir(), ".codex", "agents")
 }
 
-export function defaultCodexSetupConfigPath(env = process.env) {
-  if (env.OPEN_MAGI_CODEX_CONFIG) return env.OPEN_MAGI_CODEX_CONFIG
-  if (env.CODEX_HOME) return join(env.CODEX_HOME, "open_magi", "codex.json")
-  return join(os.homedir(), ".codex", "open_magi", "codex.json")
+export function buildCodexMcpConfig(root = packageRoot) {
+  return {
+    "open-magi": {
+      command: "node",
+      args: ["bin/mcp-server.js"],
+      cwd: root,
+    },
+  }
+}
+
+export async function writeCodexMcpConfig(options = {}) {
+  const root = options.packageRoot || packageRoot
+  const path = options.path || join(root, ".mcp.json")
+  const config = buildCodexMcpConfig(root)
+  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`)
+  return { path, config }
 }
 
 function mergeDefined(...objects) {
@@ -115,70 +131,8 @@ function mergeDefined(...objects) {
   )
 }
 
-function codexSetupOptionsFromConfig(config = {}) {
-  return mergeDefined(
-    {
-      agentsDir: config.agentsDir,
-      provider: config.provider,
-      reasoningEffort: config.reasoningEffort,
-    },
-    {
-      melchiorModel: config.deliberators?.melchior?.model,
-      balthasarModel: config.deliberators?.balthasar?.model,
-      casperModel: config.deliberators?.casper?.model,
-      melchiorProvider: config.deliberators?.melchior?.provider,
-      balthasarProvider: config.deliberators?.balthasar?.provider,
-      casperProvider: config.deliberators?.casper?.provider,
-      melchiorEffort: config.deliberators?.melchior?.reasoningEffort,
-      balthasarEffort: config.deliberators?.balthasar?.reasoningEffort,
-      casperEffort: config.deliberators?.casper?.reasoningEffort,
-    },
-  )
-}
-
-function codexSetupConfigFromOptions(options) {
-  return JSON.parse(
-    JSON.stringify({
-      schemaVersion: 1,
-      agentsDir: options.agentsDir,
-      provider: options.provider,
-      reasoningEffort: options.reasoningEffort,
-      deliberators: {
-        melchior: {
-          model: options.melchiorModel,
-          provider: options.melchiorProvider,
-          reasoningEffort: options.melchiorEffort,
-        },
-        balthasar: {
-          model: options.balthasarModel,
-          provider: options.balthasarProvider,
-          reasoningEffort: options.balthasarEffort,
-        },
-        casper: {
-          model: options.casperModel,
-          provider: options.casperProvider,
-          reasoningEffort: options.casperEffort,
-        },
-      },
-    }),
-  )
-}
-
-async function readJsonIfExists(path) {
-  if (!existsSync(path)) return {}
-  try {
-    return JSON.parse(await readFile(path, "utf8"))
-  } catch (error) {
-    throw new Error(`Failed to parse ${path}: ${error.message}`)
-  }
-}
-
 export async function setupCodexMagi(options = {}) {
-  const configPath = options.configPath || defaultCodexSetupConfigPath()
-  const savedConfig = await readJsonIfExists(configPath)
-  const savedOptions = codexSetupOptionsFromConfig(savedConfig)
-  const explicitOptions = mergeDefined(options)
-  const resolvedOptions = mergeDefined(savedOptions, explicitOptions)
+  const resolvedOptions = mergeDefined(options)
   if (options.clearProvider) {
     delete resolvedOptions.provider
     delete resolvedOptions.melchiorProvider
@@ -189,26 +143,32 @@ export async function setupCodexMagi(options = {}) {
   const dryRun = Boolean(options.dryRun)
   const setupOptions = { ...resolvedOptions, agentsDir }
   const agents = buildCodexAgentConfig(setupOptions)
-  const config = codexSetupConfigFromOptions(setupOptions)
   const agentFiles = Object.entries(agents).map(([name, content]) => ({
     name,
     path: join(agentsDir, name),
     content,
   }))
+  const written = []
+  const skipped = []
 
   if (!dryRun) {
     await mkdir(agentsDir, { recursive: true })
-    await Promise.all(agentFiles.map((file) => writeFile(file.path, file.content)))
-    await mkdir(dirname(configPath), { recursive: true })
-    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
+    for (const file of agentFiles) {
+      if (!options.force && existsSync(file.path)) {
+        skipped.push(file)
+        continue
+      }
+      await writeFile(file.path, file.content)
+      written.push(file)
+    }
   }
 
   return {
     agentsDir,
-    configPath,
     dryRun,
     agentFiles,
+    written,
+    skipped,
     agents,
-    config,
   }
 }

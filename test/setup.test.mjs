@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -13,9 +13,10 @@ import {
 } from "../lib/setup.js"
 import {
   buildCodexAgentConfig,
-  defaultCodexSetupConfigPath,
+  writeCodexMcpConfig,
   setupCodexMagi,
 } from "../adapters/codex/lib/setup.js"
+import { runCouncil } from "../adapters/codex/lib/codex-runner.js"
 
 const localOnlyModel = ["qw", "en"].join("")
 
@@ -83,17 +84,57 @@ test("buildCodexAgentConfig creates three custom agents with independent model s
   assert.match(agents["deliberator-melchior.toml"], /Evidence|Recommended Next Action|Confidence/)
 })
 
-test("setupCodexMagi writes Codex custom agent files and requires explicit sage models", async () => {
+test("buildCodexAgentConfig creates editable Codex templates when models are not provided", () => {
+  const agents = buildCodexAgentConfig()
+
+  assert.match(agents["deliberator-melchior.toml"], /model = "default-model"/)
+  assert.match(agents["deliberator-balthasar.toml"], /model = "default-model"/)
+  assert.match(agents["deliberator-casper.toml"], /model = "default-model"/)
+  assert.doesNotMatch(agents["deliberator-melchior.toml"], /model_provider/)
+  assert.match(agents["deliberator-melchior.toml"], /Edit model before using Magi/)
+})
+
+test("setupCodexMagi writes editable Codex custom agent templates without a config file", async () => {
   const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-agents-"))
 
-  await assert.rejects(
-    () => setupCodexMagi({ agentsDir, provider: "litellm", melchiorModel: "model-a" }),
-    /balthasar.*model is required/i,
-  )
+  const result = await setupCodexMagi({ agentsDir })
 
+  assert.equal(result.agentsDir, agentsDir)
+  assert.equal(result.configPath, undefined)
+  assert.equal(result.config, undefined)
+  assert.equal(result.dryRun, false)
+  assert.deepEqual(result.agentFiles.map((file) => file.name), [
+    "deliberator-melchior.toml",
+    "deliberator-balthasar.toml",
+    "deliberator-casper.toml",
+  ])
+  assert.deepEqual(result.written.map((file) => file.name), [
+    "deliberator-melchior.toml",
+    "deliberator-balthasar.toml",
+    "deliberator-casper.toml",
+  ])
+  assert.deepEqual(result.skipped, [])
+
+  const melchior = await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8")
+  const balthasar = await readFile(join(agentsDir, "deliberator-balthasar.toml"), "utf8")
+  const casper = await readFile(join(agentsDir, "deliberator-casper.toml"), "utf8")
+
+  assert.match(melchior, /model = "default-model"/)
+  assert.match(balthasar, /model = "default-model"/)
+  assert.match(casper, /model = "default-model"/)
+  assert.doesNotMatch(melchior, /model_provider/)
+  assert.match(melchior, /sandbox_mode = "read-only"/)
+  assert.match(melchior, /developer_instructions = """/)
+  assert.equal(existsSync(join(agentsDir, "codex.json")), false)
+  assert.equal(existsSync(join(agentsDir, "open-magi-codex.json")), false)
+
+  await rm(agentsDir, { recursive: true, force: true })
+})
+
+test("setupCodexMagi writes concrete Codex custom agent files when models are provided", async () => {
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-agents-"))
   const result = await setupCodexMagi({
     agentsDir,
-    configPath: join(agentsDir, "open-magi-codex.json"),
     provider: "litellm",
     melchiorModel: "model-a",
     balthasarModel: "model-b",
@@ -101,7 +142,7 @@ test("setupCodexMagi writes Codex custom agent files and requires explicit sage 
   })
 
   assert.equal(result.agentsDir, agentsDir)
-  assert.equal(result.configPath, join(agentsDir, "open-magi-codex.json"))
+  assert.equal(result.configPath, undefined)
   assert.equal(result.dryRun, false)
   assert.deepEqual(result.agentFiles.map((file) => file.name), [
     "deliberator-melchior.toml",
@@ -112,55 +153,215 @@ test("setupCodexMagi writes Codex custom agent files and requires explicit sage 
   const melchior = await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8")
   const balthasar = await readFile(join(agentsDir, "deliberator-balthasar.toml"), "utf8")
   const casper = await readFile(join(agentsDir, "deliberator-casper.toml"), "utf8")
-  const config = JSON.parse(await readFile(result.configPath, "utf8"))
 
   assert.match(melchior, /model = "model-a"/)
   assert.match(balthasar, /model = "model-b"/)
   assert.match(casper, /model = "model-c"/)
-  assert.equal(config.schemaVersion, 1)
-  assert.equal(config.provider, "litellm")
-  assert.equal(config.deliberators.melchior.model, "model-a")
-  assert.equal(config.deliberators.balthasar.model, "model-b")
-  assert.equal(config.deliberators.casper.model, "model-c")
+  assert.match(casper, /model_provider = "litellm"/)
+  assert.equal(existsSync(join(agentsDir, "open-magi-codex.json")), false)
 
   await rm(agentsDir, { recursive: true, force: true })
 })
 
-test("setupCodexMagi can regenerate custom agents from the single config file", async () => {
-  const configDir = await mkdtemp(join(tmpdir(), "open-magi-codex-config-"))
-  const agentsDir = join(configDir, "agents")
-  const configPath = join(configDir, "codex.json")
-  await writeFile(
-    configPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: 1,
-        agentsDir,
-        provider: "litellm",
-        deliberators: {
-          melchior: { model: "model-a" },
-          balthasar: { model: "model-b" },
-          casper: { model: "model-c" },
-        },
-      },
-      null,
-      2,
-    )}\n`,
-  )
+test("setupCodexMagi preserves existing Codex agent files by default", async () => {
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-existing-"))
+  await writeFile(join(agentsDir, "deliberator-casper.toml"), "model = \"user-edited\"\n")
 
-  const result = await setupCodexMagi({ configPath })
+  const result = await setupCodexMagi({ agentsDir })
 
-  assert.equal(result.configPath, configPath)
   assert.equal(result.agentsDir, agentsDir)
-  assert.match(await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8"), /model = "model-a"/)
-  assert.match(await readFile(join(agentsDir, "deliberator-balthasar.toml"), "utf8"), /model = "model-b"/)
-  assert.match(await readFile(join(agentsDir, "deliberator-casper.toml"), "utf8"), /model = "model-c"/)
+  assert.deepEqual(result.skipped.map((file) => file.name), ["deliberator-casper.toml"])
+  assert.deepEqual(result.written.map((file) => file.name), [
+    "deliberator-melchior.toml",
+    "deliberator-balthasar.toml",
+  ])
+  assert.match(await readFile(join(agentsDir, "deliberator-melchior.toml"), "utf8"), /model = "default-model"/)
+  assert.match(await readFile(join(agentsDir, "deliberator-balthasar.toml"), "utf8"), /model = "default-model"/)
+  assert.equal(await readFile(join(agentsDir, "deliberator-casper.toml"), "utf8"), "model = \"user-edited\"\n")
 
-  await rm(configDir, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
 })
 
-test("defaultCodexSetupConfigPath points at one user-editable Open Magi config file", () => {
-  assert.match(defaultCodexSetupConfigPath({ CODEX_HOME: "/tmp/example-codex" }), /\/tmp\/example-codex\/open_magi\/codex\.json$/)
+test("writeCodexMcpConfig pins the MCP server cwd to the installed package root", async () => {
+  const packageRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-package-"))
+  const result = await writeCodexMcpConfig({ packageRoot })
+  const config = JSON.parse(await readFile(join(packageRoot, ".mcp.json"), "utf8"))
+
+  assert.equal(result.path, join(packageRoot, ".mcp.json"))
+  assert.deepEqual(config["open-magi"], {
+    command: "node",
+    args: ["bin/mcp-server.js"],
+    cwd: packageRoot,
+  })
+
+  await rm(packageRoot, { recursive: true, force: true })
+})
+
+test("runCouncil launches three Codex subprocesses from agent TOML and writes provenance reports", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeLog = join(projectRoot, "fake-codex-calls.jsonl")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001"), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n\nUse the required report format.\n")
+  const agents = buildCodexAgentConfig({
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+    melchiorEffort: "high",
+  })
+  for (const [name, content] of Object.entries(agents)) {
+    await writeFile(join(agentsDir, name), content)
+  }
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { appendFileSync, writeFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "let stdin = ''",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (chunk) => { stdin += chunk })",
+      "process.stdin.on('end', () => {",
+      "  appendFileSync(process.env.OPEN_MAGI_FAKE_LOG, JSON.stringify({ args, stdin }) + '\\n')",
+      "  const outputIndex = args.indexOf('-o')",
+      "  const output = outputIndex >= 0 ? args[outputIndex + 1] : args[args.indexOf('--output-last-message') + 1]",
+      "  writeFileSync(output, 'stance: approve\\nblocking_objection: no\\nrecommended_plan: fake report\\nverification_plan: true\\nrisk_level: low\\n\\n## Summary\\nFake Codex subprocess report.\\n')",
+      "})",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 2000,
+    env: { OPEN_MAGI_FAKE_LOG: fakeLog },
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.results.map((entry) => entry.agent), [
+    "deliberator-melchior",
+    "deliberator-balthasar",
+    "deliberator-casper",
+  ])
+
+  for (const [sage, model] of [
+    ["melchior", "model-a"],
+    ["balthasar", "model-b"],
+    ["casper", "model-c"],
+  ]) {
+    const report = await readFile(
+      join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", `report-${sage}.md`),
+      "utf8",
+    )
+    assert.match(report, /report_source: codex_exec/)
+    assert.match(report, new RegExp(`model: ${model}`))
+    assert.match(report, /model_provider: litellm/)
+    assert.match(report, /codex_exit_code: 0/)
+    assert.match(report, /Fake Codex subprocess report/)
+  }
+
+  const calls = (await readFile(fakeLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
+  assert.equal(calls.length, 3)
+  assert.ok(calls.every((call) => call.args.includes("exec")))
+  assert.ok(calls.every((call) => call.args.includes("--sandbox") && call.args.includes("read-only")))
+  assert.ok(calls.every((call) => call.args.some((arg) => arg.includes('model_provider="litellm"'))))
+  assert.ok(calls.some((call) => call.args.includes("model-a")))
+  assert.ok(calls.some((call) => call.args.includes("model-b")))
+  assert.ok(calls.some((call) => call.args.includes("model-c")))
+  assert.ok(calls.every((call) => call.stdin.includes("REPORT OUTPUT REQUIREMENTS")))
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("runCouncil writes failure provenance reports when a Codex subprocess fails", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-fail-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-fail-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-fail-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001"), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n\nUse the required report format.\n")
+  const agents = buildCodexAgentConfig({
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+  for (const [name, content] of Object.entries(agents)) {
+    await writeFile(join(agentsDir, name), content)
+  }
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { writeFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "const output = args[args.indexOf('-o') + 1]",
+      "const model = args[args.indexOf('--model') + 1]",
+      "process.stdin.resume()",
+      "process.stdin.on('end', () => {",
+      "  if (model === 'model-c') {",
+      "    console.error('casper failed in fake codex')",
+      "    process.exitCode = 7",
+      "    return",
+      "  }",
+      "  writeFileSync(output, 'stance: approve\\nblocking_objection: no\\nrecommended_plan: fake report\\nverification_plan: true\\nrisk_level: low\\n')",
+      "})",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 2000,
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.results.find((entry) => entry.sage === "casper").ok, false)
+  assert.equal(result.results.find((entry) => entry.sage === "casper").exitCode, 7)
+
+  const melchior = await readFile(
+    join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "report-melchior.md"),
+    "utf8",
+  )
+  const balthasar = await readFile(
+    join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "report-balthasar.md"),
+    "utf8",
+  )
+  const casper = await readFile(
+    join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "report-casper.md"),
+    "utf8",
+  )
+
+  assert.match(melchior, /report_source: codex_exec/)
+  assert.match(balthasar, /report_source: codex_exec/)
+  assert.match(casper, /report_source: codex_exec_failed/)
+  assert.match(casper, /codex_exit_code: 7/)
+  assert.match(casper, /casper failed in fake codex/)
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
 })
 
 test("setupOpenMagi merges config and copies the magi skill", async () => {

@@ -1,0 +1,7 @@
+{
+  "open-magi": {
+    "command": "node",
+    "args": ["bin/mcp-server.js"],
+    "cwd": "."
+  }
+}

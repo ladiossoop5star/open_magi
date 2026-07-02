@@ -17,6 +17,7 @@
     "coding-agent"
   ],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Open Magi",
     "shortDescription": "Proposal-first Magi deliberation for coding tasks.",

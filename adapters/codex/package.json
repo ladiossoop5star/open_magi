@@ -13,8 +13,12 @@
   "bin": {
     "open-magi": "bin/open-magi.js"
   },
+  "scripts": {
+    "postinstall": "node bin/postinstall.js"
+  },
   "files": [
     ".codex-plugin",
+    ".mcp.json",
     "bin",
     "hooks",
     "lib",
