@@ -282,6 +282,8 @@ test("English README documents install and avoids local-only model warnings", as
   assert.match(readme, /Please install the public OpenCode plugin `open-magi-opencode`/)
   assert.match(readme, /deliberator-melchior/)
   assert.match(readme, /deepseek-v4-flash/)
+  assert.match(readme, /Use one shared model for all three deliberators|one shared model for all three deliberators/i)
+  assert.match(readme, /--melchior-model model-a/)
   assert.match(readme, /\.open_magi\/magi-log/)
   assert.match(readme, /Development Hygiene/)
   assert.match(readme, /Small changes, documentation edits, and routine debugging may be committed\s+directly on `main`/)
@@ -289,7 +291,6 @@ test("English README documents install and avoids local-only model warnings", as
   assert.match(readme, /Adapter-specific config files should live under that coding agent's own config/)
   assert.doesNotMatch(readme, /setup-codex/)
   assert.doesNotMatch(readme, /~\/\.codex\/open_magi\/codex\.json/)
-  assert.doesNotMatch(readme, /--melchior-model/)
   assert.doesNotMatch(readme, new RegExp(oldExampleModel))
   assert.doesNotMatch(readme, new RegExp(localStatusWarning, "i"))
   assert.doesNotMatch(readme, new RegExp(`--model ${localOnlyModel}`, "i"))
@@ -484,6 +485,60 @@ test("gitignore protects local runtime and scratch artifacts", async () => {
 
 test("CLI entrypoint exists and is executable", async () => {
   await access(new URL("../bin/open-magi.js", import.meta.url), constants.X_OK)
+})
+
+test("CLI setup writes independent OpenCode deliberator models", async () => {
+  const configDir = await mkTempProject("open-magi-opencode-cli-independent-")
+  const { stdout } = await execFile(
+    "node",
+    [
+      "bin/open-magi.js",
+      "setup",
+      "--config-dir",
+      configDir,
+      "--melchior-model",
+      "model-a",
+      "--balthasar-model",
+      "model-b",
+      "--casper-model",
+      "model-c",
+    ],
+    { cwd: repoRoot },
+  )
+  const output = JSON.parse(stdout)
+  const cfg = JSON.parse(await readFile(join(configDir, "opencode.json"), "utf8"))
+
+  assert.equal(output.ok, true)
+  assert.deepEqual(output.models, {
+    melchior: "model-a",
+    balthasar: "model-b",
+    casper: "model-c",
+  })
+  assert.equal(cfg.agent["deliberator-melchior"].model, "model-a")
+  assert.equal(cfg.agent["deliberator-balthasar"].model, "model-b")
+  assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
+})
+
+test("CLI setup without model starts OpenCode interactive setup", async () => {
+  const configDir = await mkTempProject("open-magi-opencode-cli-interactive-")
+  const result = await runInteractiveCli(["setup"], "n\nmodel-a\nmodel-b\nmodel-c\ny\n", {
+    env: {
+      OPENCODE_CONFIG_DIR: configDir,
+    },
+  })
+  const cfg = JSON.parse(await readFile(join(configDir, "opencode.json"), "utf8"))
+
+  assert.equal(result.code, 0, result.stderr)
+  assert.match(result.stderr, /Use one model for all three deliberators/)
+  assert.match(result.stderr, /Melchior model/)
+  assert.deepEqual(JSON.parse(result.stdout).models, {
+    melchior: "model-a",
+    balthasar: "model-b",
+    casper: "model-c",
+  })
+  assert.equal(cfg.agent["deliberator-melchior"].model, "model-a")
+  assert.equal(cfg.agent["deliberator-balthasar"].model, "model-b")
+  assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
 })
 
 test("CLI setup-codex dry-run reports generated custom agent paths", async () => {

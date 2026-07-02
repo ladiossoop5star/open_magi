@@ -31,6 +31,18 @@ test("buildAgentConfig creates three read-only deliberator subagents", () => {
   }
 })
 
+test("buildAgentConfig accepts independent deliberator models", () => {
+  const agents = buildAgentConfig({
+    melchior: "model-a",
+    balthasar: "model-b",
+    casper: "model-c",
+  })
+
+  assert.equal(agents["deliberator-melchior"].model, "model-a")
+  assert.equal(agents["deliberator-balthasar"].model, "model-b")
+  assert.equal(agents["deliberator-casper"].model, "model-c")
+})
+
 test("buildAgentConfig uses bundled prompt files as the single source of truth", async () => {
   const agents = buildAgentConfig("deepseek-v4-flash")
 
@@ -205,6 +217,31 @@ test("setupOpenMagi merges config and copies the magi skill", async () => {
   assert.equal(existsSync(join(configDir, "skills", "magi", "prompts", "melchior.md")), true)
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "protocol.md")), true)
   assert.equal(existsSync(join(configDir, "skills", "magi", "references", "question-firewall.md")), true)
+
+  await rm(configDir, { recursive: true, force: true })
+})
+
+test("setupOpenMagi can write independent deliberator models", async () => {
+  const configDir = await mkdtemp(join(tmpdir(), "open-magi-setup-independent-"))
+
+  const result = await setupOpenMagi({
+    configDir,
+    models: {
+      melchior: "model-a",
+      balthasar: "model-b",
+      casper: "model-c",
+    },
+  })
+  const cfg = JSON.parse(await readFile(result.configPath, "utf8"))
+
+  assert.deepEqual(result.models, {
+    melchior: "model-a",
+    balthasar: "model-b",
+    casper: "model-c",
+  })
+  assert.equal(cfg.agent["deliberator-melchior"].model, "model-a")
+  assert.equal(cfg.agent["deliberator-balthasar"].model, "model-b")
+  assert.equal(cfg.agent["deliberator-casper"].model, "model-c")
 
   await rm(configDir, { recursive: true, force: true })
 })

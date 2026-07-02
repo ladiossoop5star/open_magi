@@ -91,14 +91,14 @@ repo:
 ```bash
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
 npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
-  open-magi setup --model deepseek-v4-flash
+  open-magi setup
 ```
 
 After the npm package is published, the shorter npm install path will be:
 
 ```bash
 opencode plugin open-magi-opencode -g
-npx open-magi-opencode setup --model deepseek-v4-flash
+npx open-magi-opencode setup
 ```
 
 Ask an AI agent to install it:
@@ -108,19 +108,19 @@ Please install the public OpenCode plugin `open-magi-opencode` from the `open_ma
 https://github.com/ladiossoop5star/open_magi. Use these exact commands:
 
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
-npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git open-magi setup --model deepseek-v4-flash
+npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git open-magi setup
 
-After installation, verify that ~/.config/opencode/opencode.json contains the
-plugin entry and the three read-only subagents: deliberator-melchior,
-deliberator-balthasar, and deliberator-casper. Also verify that
-~/.config/opencode/skills/magi/SKILL.md exists.
+During setup, answer the prompts with the OpenCode model or models to use for
+the three deliberators. After installation, verify that
+~/.config/opencode/opencode.json contains the plugin entry and the three
+read-only subagents: deliberator-melchior, deliberator-balthasar, and
+deliberator-casper. Also verify that ~/.config/opencode/skills/magi/SKILL.md
+exists.
 ```
 
-If your provider/model name is different, replace
-`deepseek-v4-flash` with a model already configured in your
-OpenCode `opencode.json`.
-The setup command requires an explicit model; it will not write a placeholder
-default model for you.
+Use a model already configured in your OpenCode `opencode.json`. You can use
+one shared model for all three deliberators, or give Melchior, Balthasar, and
+Casper different models.
 
 ## Codex Experimental Notes
 
@@ -137,7 +137,7 @@ If you installed directly from this GitHub repo, use the same source with
 ```bash
 opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g -f
 npx --yes --package git+https://github.com/ladiossoop5star/open_magi.git \
-  open-magi setup --model deepseek-v4-flash
+  open-magi setup
 ```
 
 After the npm package is published, replace the installed plugin version and
@@ -145,12 +145,12 @@ refresh the local skill files with:
 
 ```bash
 opencode plugin open-magi-opencode -g -f
-npx open-magi-opencode setup --model deepseek-v4-flash
+npx open-magi-opencode setup
 ```
 
 The setup step refreshes `~/.config/opencode/skills/magi` and preserves
-unrelated OpenCode configuration. Replace the model name if your local
-OpenCode config uses a different provider/model.
+unrelated OpenCode configuration. Re-enter the deliberator models when prompted
+or use the non-interactive flags below.
 
 ## What Setup Writes
 
@@ -184,11 +184,28 @@ All three deliberator agents are configured as subagents with `edit=deny` and
 
 ## Setup Options
 
+Interactive setup:
+
+```bash
+open-magi setup
+```
+
+One model for all three deliberators:
+
 ```bash
 open-magi setup \
   --model deepseek-v4-flash \
   --config-dir ~/.config/opencode \
   --plugin-spec open-magi-opencode
+```
+
+Independent deliberator models:
+
+```bash
+open-magi setup \
+  --melchior-model model-a \
+  --balthasar-model model-b \
+  --casper-model model-c
 ```
 
 Dry run:
@@ -201,10 +218,12 @@ Environment overrides:
 
 ```bash
 OPEN_MAGI_MODEL=deepseek-v4-flash open-magi setup
+OPEN_MAGI_MELCHIOR_MODEL=model-a \
+OPEN_MAGI_BALTHASAR_MODEL=model-b \
+OPEN_MAGI_CASPER_MODEL=model-c \
+  open-magi setup
 OPENCODE_CONFIG_DIR=/path/to/opencode-config open-magi setup
 ```
-
-`--model` or `OPEN_MAGI_MODEL` is required.
 
 ## Usage
 
