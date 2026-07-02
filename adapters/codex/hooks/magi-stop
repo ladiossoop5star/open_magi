@@ -7,6 +7,10 @@ const logDir = join(process.cwd(), ".open_magi", "magi-log")
 const statePath = join(logDir, "state.json")
 const finalReportPath = join(logDir, "final-report.md")
 
+if (process.env.OPEN_MAGI_DISABLE_STOP_BACKSTOP === "1") {
+  process.exit(0)
+}
+
 function emitContinuation(text) {
   process.stdout.write(`${JSON.stringify({ decision: "block", reason: text })}\n`)
 }

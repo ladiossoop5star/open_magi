@@ -126,7 +126,7 @@ async function runCodexProcess({ agent, projectRoot, prompt, codexBin, timeoutMs
     let settled = false
     const child = spawn(codexBin, args, {
       cwd: projectRoot,
-      env: { ...process.env, ...env },
+      env: { ...process.env, OPEN_MAGI_DISABLE_STOP_BACKSTOP: "1", ...env },
       stdio: ["pipe", "pipe", "pipe"],
     })
     const killTimer = setTimeout(() => {

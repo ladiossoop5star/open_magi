@@ -55,7 +55,8 @@ The tool reads these Codex custom agent templates:
 
 It launches three independent `codex exec` subprocesses with each TOML file's
 `model`, optional `model_provider`, optional `model_reasoning_effort`, and
-read-only sandbox. It writes:
+read-only sandbox. The runner disables the Magi Stop hook inside those
+subprocesses so deliberators can stop after returning their report. It writes:
 - `round-NNN/council-PPP/report-melchior.md`
 - `round-NNN/council-PPP/report-balthasar.md`
 - `round-NNN/council-PPP/report-casper.md`

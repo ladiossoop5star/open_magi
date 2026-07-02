@@ -227,7 +227,7 @@ test("runCouncil launches three Codex subprocesses from agent TOML and writes pr
       "process.stdin.setEncoding('utf8')",
       "process.stdin.on('data', (chunk) => { stdin += chunk })",
       "process.stdin.on('end', () => {",
-      "  appendFileSync(process.env.OPEN_MAGI_FAKE_LOG, JSON.stringify({ args, stdin }) + '\\n')",
+      "  appendFileSync(process.env.OPEN_MAGI_FAKE_LOG, JSON.stringify({ args, stdin, stopBackstop: process.env.OPEN_MAGI_DISABLE_STOP_BACKSTOP }) + '\\n')",
       "  const outputIndex = args.indexOf('-o')",
       "  const output = outputIndex >= 0 ? args[outputIndex + 1] : args[args.indexOf('--output-last-message') + 1]",
       "  writeFileSync(output, 'stance: approve\\nblocking_objection: no\\nrecommended_plan: fake report\\nverification_plan: true\\nrisk_level: low\\n\\n## Summary\\nFake Codex subprocess report.\\n')",
@@ -276,6 +276,7 @@ test("runCouncil launches three Codex subprocesses from agent TOML and writes pr
   assert.ok(calls.every((call) => call.args.includes("exec")))
   assert.ok(calls.every((call) => call.args.includes("--sandbox") && call.args.includes("read-only")))
   assert.ok(calls.every((call) => call.args.some((arg) => arg.includes('model_provider="litellm"'))))
+  assert.ok(calls.every((call) => call.stopBackstop === "1"))
   assert.ok(calls.some((call) => call.args.includes("model-a")))
   assert.ok(calls.some((call) => call.args.includes("model-b")))
   assert.ok(calls.some((call) => call.args.includes("model-c")))

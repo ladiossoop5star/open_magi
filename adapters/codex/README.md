@@ -107,6 +107,9 @@ three independent `codex exec` subprocesses with the configured model/provider
 settings, and writes `report-melchior.md`, `report-balthasar.md`, and
 `report-casper.md`. Successful reports start with `report_source: codex_exec`;
 failed launches are recorded as `report_source: codex_exec_failed`.
+The runner disables the Magi Stop hook inside deliberator subprocesses so they
+can exit after returning a report instead of being continued by the parent
+loop's active `state.json`.
 
 The plugin also bundles an MCP server for resources and future compatibility.
 On Codex CLI 0.142.5, plugin MCP resources are visible but custom MCP tools are

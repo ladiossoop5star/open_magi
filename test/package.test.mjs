@@ -337,6 +337,20 @@ test("Codex Magi Stop hook is silent when no Magi loop needs continuation", asyn
   assert.equal(finalReportStdout, "")
 })
 
+test("Codex Magi Stop hook is disabled inside deliberator subprocesses", async () => {
+  const project = await mkTempProject("open-magi-codex-stop-disabled-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(join(logDir, "state.json"), `${JSON.stringify({ active: true, currentRound: 1 })}\n`)
+
+  const { stdout } = await execFile(magiStopHookPath, [], {
+    cwd: project,
+    env: { ...process.env, OPEN_MAGI_DISABLE_STOP_BACKSTOP: "1" },
+  })
+
+  assert.equal(stdout, "")
+})
+
 test("English README documents install and avoids local-only model warnings", async () => {
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8")
 
