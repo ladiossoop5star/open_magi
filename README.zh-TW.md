@@ -173,6 +173,56 @@ magi，目標是：完成這個 refactor 並跑驗證。
 deliberation loop until done.
 ```
 
+## 外部 Headless Deliberator
+
+預設三賢者都使用 `agent.deliberator-*` 設定的 OpenCode subagent。你也可以在
+`~/.config/opencode/open_magi.json` 設定任一 sage 改成外部 headless agent：
+
+```json
+{
+  "deliberators": {
+    "melchior": { "runner": "opencode" },
+    "balthasar": {
+      "runner": "command",
+      "command": "codex exec --sandbox read-only -"
+    },
+    "casper": {
+      "runner": "command",
+      "command": "claude -p"
+    }
+  }
+}
+```
+
+規則：
+
+- 不要把這個自訂 block 放進 `opencode.json`；OpenCode 會拒絕未知的頂層
+  config key。
+- 沒設定、`runner: "opencode"`、或 `type: "opencode"` 都使用一般 OpenCode
+  subagent。
+- `runner: "command"` 或 `type: "command"` 會在專案根目錄執行該 command。
+- council prompt 會用 stdin 傳給 command。
+- command 也會收到 `OPEN_MAGI_PROMPT_FILE`、`OPEN_MAGI_REPORT_FILE`、
+  `OPEN_MAGI_SAGE`、`OPEN_MAGI_ROUND`、`OPEN_MAGI_PASS`。
+- 如果 stdout 已包含 `stance:`、`blocking_objection:` 等 Magi report metadata，
+  stdout 會直接寫成 report。
+- 如果 command 自己寫入 `OPEN_MAGI_REPORT_FILE`，Open Magi 會保留該檔案。
+- command 失敗或 timeout 時，plugin 會產生 `needs_evidence` report，讓流程可以
+  繼續，不需要問使用者下一步。
+
+如果某個 CLI 不直接讀 stdin，請自己包 command，例如：
+
+```json
+{
+  "deliberators": {
+    "melchior": {
+      "runner": "command",
+      "command": "sh -lc 'codex exec --sandbox read-only < \"$OPEN_MAGI_PROMPT_FILE\"'"
+    }
+  }
+}
+```
+
 ## Runtime 檔案
 
 Magi 在每個專案中的 runtime log 會寫在：

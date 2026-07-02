@@ -33,7 +33,8 @@ All three deliberators receive the same council prompt.
 
 ## Phase 3: Parallel Deliberation
 
-Start three subtasks using the configured sub-agents:
+Start three subtasks using the configured sub-agents unless the plugin has
+already started an external command runner for that sage:
 
 ```json
 [
@@ -58,6 +59,10 @@ Start three subtasks using the configured sub-agents:
 ]
 ```
 
+If the plugin says an external command runner is handling a sage, do not launch
+the OpenCode subtask for that sage. Wait for the corresponding report file or
+continue with any remaining OpenCode-mode deliberators named by the plugin.
+
 Write results to:
 - `round-NNN/council-PPP/report-melchior.md`;
 - `round-NNN/council-PPP/report-balthasar.md`;
@@ -74,12 +79,28 @@ When the plugin writes a timeout report, do not overwrite it unless the same
 deliberator later produces a complete report for the same council pass before
 synthesis begins. If overwritten, preserve timeout evidence in `synthesis.md`.
 
+## External Command Deliberators
+
+The OpenCode plugin can run a deliberator through a user-defined command in
+`~/.config/opencode/open_magi.json` instead of an OpenCode subagent. The plugin
+passes the council prompt on stdin, sets `OPEN_MAGI_PROMPT_FILE`,
+`OPEN_MAGI_REPORT_FILE`, `OPEN_MAGI_SAGE`, `OPEN_MAGI_ROUND`, and
+`OPEN_MAGI_PASS`, then writes stdout to the correct report file. If the command
+writes `OPEN_MAGI_REPORT_FILE` itself, the plugin preserves that file.
+
+Failed or timed-out external commands still produce a report file with
+`stance: needs_evidence` and `blocking_objection: yes`. Do not ask the user what
+to do after an external command failure; synthesize the failure report through
+the normal Council Pass Gate.
+
 ## Deliberator Timeout Gate
 
-OpenCode does not provide a per-subtask timeout field. The Magi plugin records
-`session.created` events for child sessions whose agent is
-`deliberator-melchior`, `deliberator-balthasar`, or `deliberator-casper`, then
-calls OpenCode `session.abort` after `deliberatorTimeoutMs`.
+OpenCode does not provide a per-subtask timeout field. For OpenCode subagents,
+the Magi plugin records `session.created` events for child sessions whose agent
+is `deliberator-melchior`, `deliberator-balthasar`, or `deliberator-casper`,
+then calls OpenCode `session.abort` after `deliberatorTimeoutMs`. For external
+command deliberators, the plugin kills the command process after the same
+timeout and writes a timeout report.
 
 Rules:
 - Default timeout is 30 minutes per deliberator child session.
