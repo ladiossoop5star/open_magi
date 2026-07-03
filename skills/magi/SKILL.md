@@ -169,10 +169,11 @@ uncertainty into a user question.
 
 Before asking the user anything, write or mentally apply `question_classification`:
 - `procedural`: forbidden to ask; follow the Magi contract.
-- `goal_ambiguity`: ask only during Phase 1 when no reasonable testable default
-  can be inferred from the goal, repository, logs, or test docs.
-- `debug_direction`: forbidden after Phase 1; choose from evidence, reports,
-  verification output, and acceptance criteria.
+- `goal_ambiguity`: ask only in the first round during goal_definition or
+  status_assessment when no reasonable testable default can be inferred.
+- `debug_direction`: ask only in the first round during status_assessment
+  before execution; otherwise choose from evidence, reports, verification
+  output, and acceptance criteria.
 - `execution_blocker`: ask only when local context cannot resolve hardware,
   credential, network, DUT, external service, or command execution blockers.
 - `destructive_or_unrelated_risk`: ask before destructive or unrelated changes.
@@ -195,16 +196,17 @@ If denied, do not repeat the question. Find the answer from local context,
 choose the safest verifiable default action, write the decision into the next
 Magi artifact, and continue.
 
-Allowed requests are limited to early `goal_ambiguity`, early
+Allowed requests are limited to first-round `goal_ambiguity`, first-round
 `debug_direction`, `execution_blocker`, `impossible_verification`,
 `destructive_or_unrelated_risk`, and `ambiguous_file_ownership`. `procedural`
 is always denied.
 
 ## Debug Direction Gate
 
-Direction questions are allowed only during Phase 1, before execution starts.
-During Phase 1, ask only for missing constraints that cannot be inferred from
-the repository, logs, tests, or user goal.
+Direction questions are allowed only during first-round Phase 1, before
+execution starts. During first-round status_assessment, ask only for missing
+constraints that cannot be inferred from the repository, logs, tests, or user
+goal.
 
 From Phase 2 onward: Do not ask the user which debug direction to try next.
 The main agent must choose the next debug direction from evidence, reports,

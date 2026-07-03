@@ -184,17 +184,28 @@ async function runCodexProcess({ agent, projectRoot, prompt, codexBin, timeoutMs
   })
 }
 
+function codexFailureType(processResult) {
+  if (processResult.ok) return null
+  if (processResult.timedOut) return "timeout"
+  return "hard_error"
+}
+
 async function writeReport({ projectRoot, round, pass, agent, processResult }) {
   const path = reportPath(projectRoot, round, pass, agent.sage)
   await mkdir(dirname(path), { recursive: true })
   const source = processResult.ok ? "codex_exec" : "codex_exec_failed"
+  const failureType = codexFailureType(processResult)
+  const status = failureType || "ok"
   const body = [
     `report_source: ${source}`,
+    `status: ${status}`,
+    `failure_type: ${failureType || "none"}`,
     `agent: ${agent.agent}`,
     `model: ${agent.model}`,
     `model_provider: ${agent.provider || "inherit"}`,
     `codex_exit_code: ${processResult.exitCode ?? "null"}`,
     `codex_timed_out: ${processResult.timedOut ? "true" : "false"}`,
+    `codex_failure_type: ${failureType || "none"}`,
     "---",
     processResult.output?.trim() || processResult.stderr?.trim() || processResult.error || "No output returned.",
     "",
@@ -232,6 +243,7 @@ export async function runCouncil(options = {}) {
         model: agent.model,
         provider: agent.provider || null,
         ok: processResult.ok,
+        failureType: codexFailureType(processResult),
         exitCode: processResult.exitCode,
         timedOut: processResult.timedOut,
         reportPath: path,
@@ -240,9 +252,13 @@ export async function runCouncil(options = {}) {
       }
     }),
   )
+  const hardErrors = results.filter((result) => result.failureType === "hard_error")
 
   return {
     ok: results.every((result) => result.ok),
+    halt: hardErrors.length > 0,
+    haltReason: hardErrors.length > 0 ? "hard_error" : null,
+    hardErrors,
     projectRoot,
     promptPath,
     round,

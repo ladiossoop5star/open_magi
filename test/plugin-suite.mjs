@@ -693,6 +693,137 @@ test("running deliberator sessions are not aborted before their deadline", async
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("session.error from a running deliberator writes hard-error report and blocks the loop", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    needsContinue: true,
+    inFlight: false,
+    activeDeliberators: {
+      balthasar: {
+        agent: "deliberator-balthasar",
+        sessionID: "ses-balthasar",
+        parentSessionID: "ses-1",
+        round: 2,
+        pass: 1,
+        startedAt: new Date(Date.now() - 1000).toISOString(),
+        deadlineAt: new Date(Date.now() + 600000).toISOString(),
+        status: "running",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: {
+      type: "session.error",
+      properties: {
+        sessionID: "ses-balthasar",
+        error: {
+          name: "ProviderAuthError",
+          data: { message: "invalid api key" },
+        },
+      },
+    },
+  })
+
+  const report = await readFile(
+    join(project.root, ".open_magi/magi-log/round-002/council-001/report-balthasar.md"),
+    "utf8",
+  )
+  assert.match(report, /status: hard_error/)
+  assert.match(report, /failure_type: hard_error/)
+  assert.match(report, /report_source: opencode_session_error/)
+  assert.match(report, /ProviderAuthError/)
+  assert.match(report, /invalid api key/)
+  assert.match(report, /repair_file: .*opencode\.json/)
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.active, false)
+  assert.equal(updated.currentPhase, "blocked")
+  assert.equal(updated.needsContinue, false)
+  assert.equal(updated.inFlight, false)
+  assert.equal(updated.activeDeliberators.balthasar.status, "hard_error")
+  assert.equal(updated.activeDeliberators.balthasar.failureType, "hard_error")
+  assert.match(updated.lastError, /deliberator hard error/i)
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].path.id, "ses-1")
+  assert.match(calls[0].body.parts[0].text, /Magi deliberator hard error/)
+  assert.match(calls[0].body.parts[0].text, /ProviderAuthError/)
+  assert.match(calls[0].body.parts[0].text, /opencode\.json/)
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+  assert.equal(calls.length, 1)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("session.error after a deliberator timeout does not upgrade timeout into hard error", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    activeDeliberators: {
+      casper: {
+        agent: "deliberator-casper",
+        sessionID: "ses-casper",
+        parentSessionID: "ses-1",
+        round: 2,
+        pass: 1,
+        status: "timed_out",
+        timedOutAt: new Date().toISOString(),
+        reportPath: ".open_magi/magi-log/round-002/council-001/report-casper.md",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/round-002/council-001/report-casper.md", "status: timeout\n")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: {
+      type: "session.error",
+      properties: {
+        sessionID: "ses-casper",
+        error: {
+          name: "MessageAbortedError",
+          data: { message: "aborted by timeout" },
+        },
+      },
+    },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.currentPhase, "parallel_deliberation")
+  assert.equal(updated.activeDeliberators.casper.status, "timed_out")
+  assert.doesNotMatch(updated.lastError || "", /hard error/i)
+  assert.equal(calls.length, 0)
+  assert.equal(
+    await readFile(join(project.root, ".open_magi/magi-log/round-002/council-001/report-casper.md"), "utf8"),
+    "status: timeout\n",
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("child session idle marks a deliberator complete so later sweeps do not timeout it", async () => {
   const project = await makeProject("{}")
   const state = activeState({
@@ -1933,6 +2064,44 @@ test("invalid state json is backed up and prompts repair without crashing hooks"
   )
   assert.equal(backups.length, 1)
   assert.match(await readFile(join(project.logDir, backups[0]), "utf8"), /\{ invalid json/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("repeated corrupt state repair failures escalate to a blocked repair marker", async () => {
+  const project = await makeProject("{ invalid json")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  for (let index = 0; index < 3; index++) {
+    await hooks.event({
+      event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+    })
+  }
+
+  assert.equal(calls.length, 3)
+  assert.match(calls[0].body.parts[0].text, /State file repair required/)
+  assert.match(calls[2].body.parts[0].text, /State file repair halted/)
+  assert.match(calls[2].body.parts[0].text, /state-repair-blocked\.md/)
+
+  const marker = JSON.parse(await readFile(join(project.logDir, ".state-corrupt-count.json"), "utf8"))
+  assert.equal(marker.count, 3)
+  assert.equal(typeof marker.firstSeenAt, "string")
+  assert.equal(typeof marker.lastSeenAt, "string")
+  assert.match(marker.latestBackup, /^state\.json\.corrupt-/)
+
+  const blocked = await readFile(join(project.logDir, "state-repair-blocked.md"), "utf8")
+  assert.match(blocked, /status: hard_error/)
+  assert.match(blocked, /failure_type: hard_error/)
+  assert.match(blocked, /state\.json/)
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+  assert.equal(calls.length, 3)
 
   await rm(project.root, { recursive: true, force: true })
 })

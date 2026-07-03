@@ -17,6 +17,15 @@ If `state.json` is corrupt, the plugin backs it up as a `.corrupt-*.bak` file
 and prompts repair. Rebuild state from existing Magi artifacts and repository
 state, then continue from the safest valid phase.
 
+If corrupt state repair repeats, the plugin may write
+`.open_magi/magi-log/state-repair-blocked.md` with `failure_type: hard_error`
+and stop repeated repair prompts. In that case, manually repair
+`.open_magi/magi-log/state.json` before resuming.
+
+If a deliberator report has `failure_type: hard_error`, do not continue
+synthesis. The loop should be blocked until the user repairs the named model,
+provider, auth, sandbox, runner, or config file.
+
 ## Common Mistakes
 
 | Mistake | Correction |
@@ -33,6 +42,7 @@ state, then continue from the safest valid phase.
 | Leaving uncommitted failed build changes for the next deliberation | Record the failure, then revert this round's uncommitted code changes before writing the next research prompt |
 | Committing runtime logs or unrelated files | Commit only this round's code changes; never stage `.open_magi/` |
 | Waiting indefinitely for a deliberator | The plugin aborts timed-out child sessions; use the timeout report and continue the council gate |
+| Treating a deliberator hard error as a normal veto | Halt the loop, report the repair target to the user, and resume only after the runtime configuration is fixed |
 
 ## Repeated Failure
 

@@ -9,6 +9,8 @@ const FINAL_REPORT_FILE = "final-report.md"
 const ERROR_FILE = "plugin-error.log"
 const QUESTION_REQUEST_FILE = "question-request.md"
 const QUESTION_DENIED_FILE = "question-denied.md"
+const CORRUPT_STATE_MARKER_FILE = ".state-corrupt-count.json"
+const STATE_REPAIR_BLOCKED_FILE = "state-repair-blocked.md"
 const STALE_LOCK_MS = 10 * 60 * 1000
 const DEFAULT_DELIBERATOR_TIMEOUT_MS = 30 * 60 * 1000
 const HARD_MAX_DELIBERATOR_TIMEOUT_MS = 60 * 60 * 1000
@@ -16,6 +18,7 @@ const DEFAULT_MAX_DELIBERATION_PASSES = 3
 const MIN_DELIBERATION_PASSES = 3
 const HARD_MAX_DELIBERATION_PASSES = 5
 const NO_PROGRESS_LIMIT = 5
+const CORRUPT_STATE_BLOCK_THRESHOLD = 3
 const STATE_QUEUES = new Map()
 const PHASE_RANK = {
   goal_definition: 0,
@@ -55,6 +58,14 @@ function questionRequestPath(projectRoot) {
 
 function questionDeniedPath(projectRoot) {
   return join(projectRoot, LOG_DIR, QUESTION_DENIED_FILE)
+}
+
+function corruptStateMarkerPath(projectRoot) {
+  return join(projectRoot, LOG_DIR, CORRUPT_STATE_MARKER_FILE)
+}
+
+function stateRepairBlockedPath(projectRoot) {
+  return join(projectRoot, LOG_DIR, STATE_REPAIR_BLOCKED_FILE)
 }
 
 function escapeRegExp(text) {
@@ -639,11 +650,21 @@ async function safeAppendError(projectRoot, message, error) {
 
 async function readState(projectRoot) {
   try {
-    return JSON.parse(await readFile(statePath(projectRoot), "utf8"))
+    const state = JSON.parse(await readFile(statePath(projectRoot), "utf8"))
+    await clearCorruptStateMarker(projectRoot)
+    return state
   } catch (error) {
     if (error?.code === "ENOENT") return null
     await appendError(projectRoot, "Failed to read state", error)
     return null
+  }
+}
+
+async function clearCorruptStateMarker(projectRoot) {
+  try {
+    await unlink(corruptStateMarkerPath(projectRoot))
+  } catch (error) {
+    if (error?.code !== "ENOENT") await appendError(projectRoot, "Failed to clear corrupt state marker", error)
   }
 }
 
@@ -696,6 +717,75 @@ function stateRepairText(backupPath) {
   ].join("\n")
 }
 
+function stateRepairHaltedText(marker) {
+  return [
+    "[magi] State file repair halted.",
+    "The plugin still cannot parse `.open_magi/magi-log/state.json` after repeated repair prompts.",
+    `count: ${marker.count}`,
+    marker.latestBackup ? `latest_backup: .open_magi/magi-log/${marker.latestBackup}` : "latest_backup: unknown",
+    `blocked_report: .open_magi/magi-log/${STATE_REPAIR_BLOCKED_FILE}`,
+    "Stop auto-continuation and tell the user to manually repair `.open_magi/magi-log/state.json` from the backup files and round artifacts.",
+  ].join("\n")
+}
+
+function stateRepairBlockedContent(marker) {
+  return [
+    "# State Repair Blocked",
+    "",
+    "status: hard_error",
+    "failure_type: hard_error",
+    "report_source: opencode_corrupt_state_guard",
+    `count: ${marker.count}`,
+    `first_seen_at: ${marker.firstSeenAt}`,
+    `last_seen_at: ${marker.lastSeenAt}`,
+    marker.latestBackup ? `latest_backup: ${marker.latestBackup}` : "latest_backup: unknown",
+    "",
+    "## Summary",
+    "The Magi plugin repeatedly failed to parse `.open_magi/magi-log/state.json`. Automatic repair prompts were halted to avoid a continuation livelock.",
+    "",
+    "## Required User Action",
+    "- Manually repair `.open_magi/magi-log/state.json` from the corrupt backups and round artifacts.",
+    "- After state.json is valid JSON again, resume Magi from the recovered phase.",
+    "",
+  ].join("\n")
+}
+
+async function readCorruptStateMarker(projectRoot) {
+  try {
+    return JSON.parse(await readFile(corruptStateMarkerPath(projectRoot), "utf8"))
+  } catch (error) {
+    if (error?.code === "ENOENT") return null
+    await appendError(projectRoot, "Failed to read corrupt state marker", error)
+    return null
+  }
+}
+
+async function recordCorruptState(projectRoot, backupPath, nowIso) {
+  const previous = await readCorruptStateMarker(projectRoot)
+  if (previous?.blockedNotifiedAt) {
+    return { ...previous, alreadyBlocked: true }
+  }
+
+  const count = nonNegativeInteger(previous?.count, 0) + 1
+  const marker = {
+    count,
+    firstSeenAt: previous?.firstSeenAt || nowIso,
+    lastSeenAt: nowIso,
+    latestBackup: backupPath ? backupPath.split("/").pop() : previous?.latestBackup || null,
+    blocked: count >= CORRUPT_STATE_BLOCK_THRESHOLD,
+    blockedNotifiedAt: count >= CORRUPT_STATE_BLOCK_THRESHOLD ? nowIso : null,
+  }
+  const markerPath = corruptStateMarkerPath(projectRoot)
+  await mkdir(dirname(markerPath), { recursive: true })
+  await writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`)
+
+  if (marker.blocked) {
+    await writeFile(stateRepairBlockedPath(projectRoot), stateRepairBlockedContent(marker))
+  }
+
+  return marker
+}
+
 async function sendStateRepairPrompt(client, directory, sessionID, backupPath) {
   if (!sessionID) return
   const session = client?.session
@@ -711,8 +801,26 @@ async function sendStateRepairPrompt(client, directory, sessionID, backupPath) {
   })
 }
 
+async function sendStateRepairHaltedPrompt(client, directory, sessionID, marker) {
+  if (!sessionID) return
+  const session = client?.session
+  const method = session?.promptAsync || session?.prompt
+  if (!method) throw new Error("OpenCode client does not expose session.promptAsync or session.prompt")
+  return method.call(session, {
+    path: { id: sessionID },
+    query: { directory },
+    body: {
+      agent: "build",
+      parts: [{ type: "text", text: stateRepairHaltedText(marker) }],
+    },
+  })
+}
+
 async function handleCorruptState(client, directory, event, nowMs) {
   const nowIso = new Date(nowMs).toISOString()
+  const existingMarker = await readCorruptStateMarker(directory)
+  if (existingMarker?.blockedNotifiedAt) return true
+
   let backupPath = null
   try {
     backupPath = await backupCorruptState(directory, nowIso)
@@ -721,8 +829,14 @@ async function handleCorruptState(client, directory, event, nowMs) {
   }
   if (!backupPath) return false
 
+  const marker = await recordCorruptState(directory, backupPath, nowIso)
+
   try {
-    await sendStateRepairPrompt(client, directory, eventSessionID(event), backupPath)
+    if (marker.blocked) {
+      await sendStateRepairHaltedPrompt(client, directory, eventSessionID(event), marker)
+    } else {
+      await sendStateRepairPrompt(client, directory, eventSessionID(event), backupPath)
+    }
   } catch (error) {
     await appendError(directory, "Failed to send state repair prompt", error)
   }
@@ -911,6 +1025,7 @@ function timeoutReportContent({ sage, entry, nowIso, abortError }) {
     "# Deliberator Timeout Report",
     "",
     "status: timeout",
+    "failure_type: timeout",
     "stance: needs_evidence",
     "blocking_objection: yes",
     "recommended_plan: none",
@@ -944,6 +1059,156 @@ function timeoutReportContent({ sage, entry, nowIso, abortError }) {
     "- None",
     "",
   ].join("\n")
+}
+
+function sessionErrorName(error) {
+  return oneLine(error?.name) || "UnknownError"
+}
+
+function sessionErrorMessage(error) {
+  return oneLine(error?.data?.message || error?.message || JSON.stringify(error?.data || error || {}))
+}
+
+function hardErrorRepairFile() {
+  return "~/.config/opencode/opencode.json"
+}
+
+function hardErrorLastError(sage, error, nowIso) {
+  return `deliberator hard error at ${nowIso}: ${sage} ${sessionErrorName(error)} ${sessionErrorMessage(error)}`
+}
+
+function hardErrorReportContent({ sage, entry, error, nowIso }) {
+  const errorName = sessionErrorName(error)
+  const errorMessage = sessionErrorMessage(error) || "No error message returned."
+  const repairFile = hardErrorRepairFile()
+  return [
+    "# Deliberator Hard Error Report",
+    "",
+    "status: hard_error",
+    "failure_type: hard_error",
+    "report_source: opencode_session_error",
+    "stance: needs_evidence",
+    "blocking_objection: yes",
+    "recommended_plan: none",
+    "verification_plan: none",
+    "risk_level: high",
+    `agent: ${entry.agent || `deliberator-${sage}`}`,
+    `child_session: ${entry.sessionID || "unknown"}`,
+    `error_name: ${errorName}`,
+    `error_message: ${errorMessage}`,
+    `hard_error_at: ${nowIso}`,
+    `repair_file: ${repairFile}`,
+    "",
+    "## Summary",
+    `The ${sage} deliberator hit a hard runtime error. Magi halted because this is likely a model, provider, auth, sandbox, or runtime configuration problem rather than missing task evidence.`,
+    "",
+    "## Evidence",
+    `- child_session: ${entry.sessionID || "unknown"}`,
+    `- error_name: ${errorName}`,
+    `- error_message: ${errorMessage}`,
+    "",
+    "## Risks",
+    "- Continuing without this deliberator can hide a blocking objection.",
+    "- Repeated launches may fail until the model/provider configuration is repaired.",
+    "",
+    "## Recommended Next Action",
+    `- Stop Magi and tell the user to repair ${repairFile} or the configured deliberator provider/model.`,
+    "",
+    "## Confidence",
+    "High: OpenCode emitted session.error for the deliberator child session.",
+    "",
+    "## Blocking Questions",
+    "- User must repair the deliberator runtime configuration before resuming Magi.",
+    "",
+  ].join("\n")
+}
+
+async function writeHardErrorReport(directory, state, sage, entry, error, nowIso) {
+  const relativePath = deliberatorReportArtifact(state, sage, entry)
+  const target = join(directory, relativePath)
+  await mkdir(dirname(target), { recursive: true })
+  await writeFile(target, hardErrorReportContent({ sage, entry, error, nowIso }))
+  return relativePath
+}
+
+function hardErrorPromptText({ sage, entry, error, reportPath }) {
+  return [
+    "[magi] Magi deliberator hard error.",
+    `The ${sage} deliberator (${entry.agent || `deliberator-${sage}`}) failed with ${sessionErrorName(error)}.`,
+    `error: ${sessionErrorMessage(error) || "No error message returned."}`,
+    `report: ${reportPath}`,
+    `repair_file: ${hardErrorRepairFile()}`,
+    "Magi has been halted with currentPhase=blocked and active=false.",
+    "Tell the user to repair the deliberator model/provider/auth configuration, then resume Magi after the configuration is fixed.",
+  ].join("\n")
+}
+
+async function sendHardErrorPrompt(client, state, directory, details) {
+  if (!state?.sessionID) return
+  const session = client?.session
+  const method = session?.promptAsync || session?.prompt
+  if (!method) throw new Error("OpenCode client does not expose session.promptAsync or session.prompt")
+  return method.call(session, {
+    path: { id: state.sessionID },
+    query: { directory },
+    body: {
+      agent: state.mainAgent || "build",
+      parts: [{ type: "text", text: hardErrorPromptText(details) }],
+    },
+  })
+}
+
+async function handleDeliberatorSessionError(client, directory, event, nowMs, clearTimeoutForSession) {
+  if (event?.type !== "session.error") return null
+  const childSessionID = eventSessionID(event)
+  if (!childSessionID) return null
+
+  const state = await readState(directory)
+  if (!state?.active || state.projectRoot !== directory) return null
+  if (!state.activeDeliberators || typeof state.activeDeliberators !== "object") return null
+
+  const match = Object.entries(state.activeDeliberators).find(
+    ([, entry]) => entry?.sessionID === childSessionID && entry.status === "running",
+  )
+  if (!match) return null
+
+  const [sage, entry] = match
+  const nowIso = new Date(nowMs).toISOString()
+  const error = event?.properties?.error
+  const reportPath = await writeHardErrorReport(directory, state, sage, entry, error, nowIso)
+  clearTimeoutForSession?.(childSessionID)
+
+  const nextState = {
+    ...state,
+    active: false,
+    currentPhase: "blocked",
+    needsContinue: false,
+    inFlight: false,
+    inFlightSince: null,
+    activeDeliberators: {
+      ...state.activeDeliberators,
+      [sage]: {
+        ...entry,
+        status: "hard_error",
+        failureType: "hard_error",
+        hardErrorAt: nowIso,
+        errorName: sessionErrorName(error),
+        errorMessage: sessionErrorMessage(error),
+        reportPath,
+      },
+    },
+    lastError: hardErrorLastError(sage, error, nowIso),
+  }
+
+  await writeState(directory, nextState)
+
+  try {
+    await sendHardErrorPrompt(client, nextState, directory, { sage, entry, error, reportPath })
+  } catch (promptError) {
+    await appendError(directory, "Failed to send deliberator hard error prompt", promptError)
+  }
+
+  return nextState
 }
 
 async function writeTimeoutReport(directory, state, sage, entry, nowIso, abortError) {
@@ -1303,6 +1568,14 @@ export const server = async (input) => {
         const now = Date.now()
         await recordDeliberatorSession(directory, event, now, scheduleDeliberatorTimeout)
         await markDeliberatorCompleted(directory, event, now, clearDeliberatorTimeout)
+        const hardErrorState = await handleDeliberatorSessionError(
+          input.client,
+          directory,
+          event,
+          now,
+          clearDeliberatorTimeout,
+        )
+        if (hardErrorState) return
         let state = await readState(directory)
         if (!state) {
           await handleCorruptState(input.client, directory, event, now)

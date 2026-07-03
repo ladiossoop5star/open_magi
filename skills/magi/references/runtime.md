@@ -26,9 +26,24 @@ is per council pass. If the plugin writes a timeout report, treat it as a real
 deliberator report with `stance: needs_evidence` and preserve the evidence in
 `synthesis.md`.
 
+## Hard Error Enforcement
+
+OpenCode emits `session.error` for provider, auth, model, context, and other
+child-session failures. If that event belongs to a running deliberator child
+session, the Magi plugin writes a `status: hard_error` report with
+`failure_type: hard_error`, sets the loop to `currentPhase=blocked`,
+`active=false`, and tells the main agent to report the exact repair target to
+the user.
+
+Do not continue synthesis after a `hard_error`. Fix the deliberator runtime
+configuration first, usually `~/.config/opencode/opencode.json` or the
+configured provider/model credentials.
+
 ## Runtime Backstops
 
 The OpenCode plugin may repair missing artifacts, deny procedural questions,
 resume active loops, and recover corrupt `state.json` files. If the plugin
 writes a repair prompt, follow it and update the Magi artifacts before moving
-to the next phase.
+to the next phase. If corrupt state repair repeats, the plugin writes
+`state-repair-blocked.md` and stops repeated repair prompts until `state.json`
+is manually repaired.

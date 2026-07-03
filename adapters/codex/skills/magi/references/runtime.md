@@ -62,12 +62,29 @@ subprocesses so deliberators can stop after returning their report. It writes:
 - `round-NNN/council-PPP/report-casper.md`
 
 Each report starts with `report_source: codex_exec` on success or
-`report_source: codex_exec_failed` on failure. Treat missing provenance as an
-invalid report.
+`report_source: codex_exec_failed` on failure. Reports also include
+`codex_failure_type: none | timeout | hard_error`. Treat missing provenance or
+missing `codex_failure_type` as an invalid report.
 
 The main agent must not write successful `report-*.md` files itself. If the CLI
 runner is unavailable or fails, record the blocker and stop before synthesis.
 Do not claim that the deliberators reported.
+
+## Failure Handling
+
+`run-council` separates failure classes:
+- `codex_failure_type: timeout`: the subprocess exceeded `timeoutMs`. Treat the
+  report as `status: timeout`, `failure_type: timeout`, and continue through the
+  Magi timeout gate.
+- `codex_failure_type: hard_error`: the subprocess failed for a non-timeout
+  reason, such as model, provider, auth, sandbox, or runner failure. The CLI
+  response sets `halt: true`, `haltReason: hard_error`, and includes
+  `hardErrors`.
+
+If `halt: true`, do not continue to synthesis. Set or preserve
+`currentPhase=blocked`, `active=false`, and `needsContinue=false`; tell the
+user to repair the exact `~/.codex/agents/deliberator-*.toml`, provider, or
+Codex runtime setting shown in the report before resuming.
 
 ## Stop Hook Backstop
 

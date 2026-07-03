@@ -338,7 +338,11 @@ test("runCouncil writes failure provenance reports when a Codex subprocess fails
   })
 
   assert.equal(result.ok, false)
+  assert.equal(result.halt, true)
+  assert.equal(result.haltReason, "hard_error")
+  assert.deepEqual(result.hardErrors.map((entry) => entry.sage), ["casper"])
   assert.equal(result.results.find((entry) => entry.sage === "casper").ok, false)
+  assert.equal(result.results.find((entry) => entry.sage === "casper").failureType, "hard_error")
   assert.equal(result.results.find((entry) => entry.sage === "casper").exitCode, 7)
 
   const melchior = await readFile(
@@ -357,6 +361,8 @@ test("runCouncil writes failure provenance reports when a Codex subprocess fails
   assert.match(melchior, /report_source: codex_exec/)
   assert.match(balthasar, /report_source: codex_exec/)
   assert.match(casper, /report_source: codex_exec_failed/)
+  assert.match(casper, /status: hard_error/)
+  assert.match(casper, /failure_type: hard_error/)
   assert.match(casper, /codex_exit_code: 7/)
   assert.match(casper, /casper failed in fake codex/)
 
@@ -395,13 +401,75 @@ test("runCouncil survives a deliberator that exits before draining a large promp
   })
 
   assert.equal(result.ok, false)
+  assert.equal(result.halt, true)
+  assert.equal(result.haltReason, "hard_error")
+  assert.equal(result.hardErrors.length, 3)
   assert.deepEqual(result.results.map((entry) => entry.ok), [false, false, false])
+  assert.deepEqual(result.results.map((entry) => entry.failureType), ["hard_error", "hard_error", "hard_error"])
   for (const sage of ["melchior", "balthasar", "casper"]) {
     const report = await readFile(
       join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", `report-${sage}.md`),
       "utf8",
     )
     assert.match(report, /report_source: codex_exec_failed/)
+    assert.match(report, /status: hard_error/)
+    assert.match(report, /failure_type: hard_error/)
+  }
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("runCouncil classifies subprocess timeout separately from hard errors", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-timeout-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-timeout-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-codex-timeout-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  for (const [sage, model] of [
+    ["melchior", "model-a"],
+    ["balthasar", "model-b"],
+    ["casper", "model-c"],
+  ]) {
+    await writeFile(join(agentsDir, `deliberator-${sage}.toml`), `name = "deliberator-${sage}"\nmodel = "${model}"\n`)
+  }
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "setTimeout(() => {}, 10000)",
+      "process.stdin.resume()",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 20,
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.halt, false)
+  assert.equal(result.haltReason, null)
+  assert.deepEqual(result.results.map((entry) => entry.failureType), ["timeout", "timeout", "timeout"])
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    const report = await readFile(
+      join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", `report-${sage}.md`),
+      "utf8",
+    )
+    assert.match(report, /status: timeout/)
+    assert.match(report, /failure_type: timeout/)
+    assert.match(report, /codex_timed_out: true/)
   }
 
   await rm(projectRoot, { recursive: true, force: true })

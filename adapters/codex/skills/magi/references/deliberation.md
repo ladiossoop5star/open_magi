@@ -73,21 +73,41 @@ agent's model instead of the configured sage models.
 Each report must be concise and include required metadata fields. During the
 proposal pass, `recommended_plan` is the direction proposal. During a review
 pass, `stance` and `blocking_objection` judge the selected direction. Do not
-proceed to synthesis until all three report files exist. If a deliberator fails
-or times out, write that deliberator's report file with failure evidence and
-`stance: needs_evidence` instead of omitting it.
+proceed to synthesis until all three report files exist. If a deliberator needs
+more task evidence or times out, write that deliberator's report file with
+failure evidence and `stance: needs_evidence` instead of omitting it. If a
+deliberator hits `hard_error`, halt the loop as described below.
 
 When the plugin writes a timeout report, do not overwrite it unless the same
 deliberator later produces a complete report for the same council pass before
 synthesis begins. If overwritten, preserve timeout evidence in `synthesis.md`.
+
+## Deliberator Failure Classification
+
+Classify deliberator failures before synthesis:
+- `needs_evidence`: a normal deliberator report that requests more task data,
+  opposes the selected direction, or sets `blocking_objection: yes`. Continue
+  through the Council Pass Gate.
+- `timeout`: the deliberator exceeded `deliberatorTimeoutMs`. Write or preserve
+  a timeout report with `status: timeout` and `failure_type: timeout`, then
+  continue through the timeout gate.
+- `hard_error`: the deliberator runtime failed, for example provider auth,
+  invalid model, sandbox/config error, missing runner, or a child
+  `session.error`. Write a hard-error report with `status: hard_error` and
+  `failure_type: hard_error`; set `currentPhase=blocked`, `active=false`, and
+  `needsContinue=false`; tell the user which config file or runtime setting to
+  repair before resuming.
+
+Do not treat `hard_error` as an ordinary veto. A hard error means the council
+cannot be trusted because one configured deliberator did not run.
 
 ## Deliberator Timeout Gate
 
 Rules:
 - Default timeout is 30 minutes per deliberator child session.
 - Timeout applies to each council pass independently.
-- A timeout report uses `status: timeout`, `stance: needs_evidence`, and
-  `blocking_objection: yes`.
+- A timeout report uses `status: timeout`, `failure_type: timeout`,
+  `stance: needs_evidence`, and `blocking_objection: yes`.
 - Pass 1 timeout means a missing direction proposal; record it in synthesis.
 - Pass 2 starts veto review, so any timeout report is a veto unless
   `maxDeliberationPasses` has been reached.
