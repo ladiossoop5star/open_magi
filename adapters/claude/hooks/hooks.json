@@ -1,0 +1,17 @@
+{
+  "description": "Open Magi Stop hook backstop for active deliberation loops",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'if [ -n \"${CLAUDE_PLUGIN_ROOT:-}\" ] && [ -x \"${CLAUDE_PLUGIN_ROOT}/hooks/magi-stop\" ]; then exec \"${CLAUDE_PLUGIN_ROOT}/hooks/magi-stop\"; fi; exit 0'",
+            "timeout": 10,
+            "statusMessage": "Checking Magi state"
+          }
+        ]
+      }
+    ]
+  }
+}

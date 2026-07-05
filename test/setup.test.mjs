@@ -1,8 +1,11 @@
 import assert from "node:assert/strict"
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { execFile as execFileCallback } from "node:child_process"
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
+import { fileURLToPath } from "node:url"
+import { promisify } from "node:util"
 import test from "node:test"
 
 import {
@@ -19,6 +22,7 @@ import {
 import { runCouncil } from "../adapters/codex/lib/codex-runner.js"
 
 const localOnlyModel = ["qw", "en"].join("")
+const execFile = promisify(execFileCallback)
 
 test("buildAgentConfig creates three read-only deliberator subagents", () => {
   const agents = buildAgentConfig("deepseek-v4-flash")
@@ -161,6 +165,241 @@ test("setupCodexMagi writes concrete Codex custom agent files when models are pr
   assert.equal(existsSync(join(agentsDir, "open-magi-codex.json")), false)
 
   await rm(agentsDir, { recursive: true, force: true })
+})
+
+test("buildClaudePluginFiles creates a skills-dir plugin with concrete deliberator models", async () => {
+  const { buildClaudePluginFiles } = await import("../adapters/claude/lib/setup.js")
+
+  const files = buildClaudePluginFiles({
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+  const manifest = JSON.parse(files[".claude-plugin/plugin.json"])
+
+  assert.equal(manifest.name, "open-magi")
+  assert.equal(manifest.skills, "./skills/")
+  assert.equal(manifest.defaultEnabled, true)
+  assert.equal(manifest.userConfig, undefined)
+  assert.match(files["agents/deliberator-melchior.md"], /^model: model-a$/m)
+  assert.match(files["agents/deliberator-balthasar.md"], /^model: model-b$/m)
+  assert.match(files["agents/deliberator-casper.md"], /^model: model-c$/m)
+  assert.doesNotMatch(files["agents/deliberator-melchior.md"], /\$\{user_config\./)
+  assert.match(files["skills/magi/SKILL.md"], /Claude Bootstrap Gate/)
+  assert.match(files["hooks/hooks.json"], /magi-stop/)
+  assert.match(files["hooks/magi-stop"], /MAGI_STOP_BACKSTOP/)
+})
+
+test("buildClaudePluginFiles writes editable Claude templates when models are omitted", async () => {
+  const { CLAUDE_DEFAULT_MODEL_SENTINEL, buildClaudePluginFiles } = await import("../adapters/claude/lib/setup.js")
+
+  const files = buildClaudePluginFiles()
+
+  assert.equal(CLAUDE_DEFAULT_MODEL_SENTINEL, "default-model")
+  assert.match(files["agents/deliberator-melchior.md"], /^model: default-model$/m)
+  assert.match(files["agents/deliberator-balthasar.md"], /^model: default-model$/m)
+  assert.match(files["agents/deliberator-casper.md"], /^model: default-model$/m)
+  assert.match(files["agents/deliberator-melchior.md"], /Edit model before using Magi/)
+})
+
+test("setupClaudeMagi writes a generated Claude skills-dir plugin", async () => {
+  const { setupClaudeMagi } = await import("../adapters/claude/lib/setup.js")
+  const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-plugin-"))
+
+  const result = await setupClaudeMagi({
+    pluginDir,
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+
+  assert.equal(result.pluginDir, pluginDir)
+  assert.equal(result.dryRun, false)
+  assert.ok(result.files.some((file) => file.name === "agents/deliberator-melchior.md"))
+  assert.ok(result.files.some((file) => file.name === "skills/magi/SKILL.md"))
+  assert.ok(result.files.some((file) => file.name === "bin/open-magi-claude.js"))
+  assert.ok(result.files.some((file) => file.name === "lib/claude-runner.js"))
+  assert.ok(result.files.some((file) => file.name === "hooks/magi-stop"))
+  assert.match(await readFile(join(pluginDir, ".claude-plugin", "plugin.json"), "utf8"), /"name": "open-magi"/)
+  assert.match(await readFile(join(pluginDir, "agents", "deliberator-melchior.md"), "utf8"), /^model: model-a$/m)
+  assert.match(await readFile(join(pluginDir, "agents", "deliberator-balthasar.md"), "utf8"), /^model: model-b$/m)
+  assert.match(await readFile(join(pluginDir, "agents", "deliberator-casper.md"), "utf8"), /^model: model-c$/m)
+  assert.equal(existsSync(join(pluginDir, "skills", "magi", "references", "runtime.md")), true)
+  assert.equal(existsSync(join(pluginDir, "lib", "claude-runner.js")), true)
+  assert.ok((await stat(join(pluginDir, "bin", "open-magi-claude.js"))).mode & 0o111)
+  assert.ok((await stat(join(pluginDir, "hooks", "magi-stop"))).mode & 0o111)
+
+  await rm(pluginDir, { recursive: true, force: true })
+})
+
+test("defaultClaudePluginDir uses Claude home skills directory", async () => {
+  const { defaultClaudePluginDir } = await import("../adapters/claude/lib/setup.js")
+
+  assert.equal(defaultClaudePluginDir({ CLAUDE_HOME: "/tmp/claude-home" }), join("/tmp/claude-home", "skills", "open-magi"))
+  assert.equal(defaultClaudePluginDir({ CLAUDE_SKILLS_DIR: "/tmp/skills" }), join("/tmp/skills", "open-magi"))
+})
+
+test("runClaudeCouncil launches three Claude subprocesses concurrently and writes reports", async () => {
+  const { runClaudeCouncil } = await import("../adapters/claude/lib/claude-runner.js")
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-claude-runner-project-"))
+  const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-runner-plugin-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-claude-runner-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeClaude = join(binDir, "claude")
+  const fakeLog = join(projectRoot, "fake-claude-calls.jsonl")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await mkdir(join(pluginDir, "agents"), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n\nUse the required report format.\n")
+  for (const [sage, model] of [
+    ["melchior", "model-a"],
+    ["balthasar", "model-b"],
+    ["casper", "model-c"],
+  ]) {
+    await writeFile(
+      join(pluginDir, "agents", `deliberator-${sage}.md`),
+      `---\nname: deliberator-${sage}\nmodel: ${model}\ntools: ["Read", "Grep", "Glob"]\n---\n\nRole ${sage}\n`,
+    )
+  }
+  await writeFile(
+    fakeClaude,
+    [
+      "#!/usr/bin/env node",
+      "import { appendFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "const model = args[args.indexOf('--model') + 1]",
+      "const startedAt = Date.now()",
+      "let prompt = args[args.length - 1] || ''",
+      "appendFileSync(process.env.OPEN_MAGI_FAKE_LOG, JSON.stringify({ event: 'start', model, startedAt, args, prompt }) + '\\n')",
+      "setTimeout(() => {",
+      "  const endedAt = Date.now()",
+      "  appendFileSync(process.env.OPEN_MAGI_FAKE_LOG, JSON.stringify({ event: 'end', model, endedAt }) + '\\n')",
+      "  console.log(`stance: approve\\nblocking_objection: no\\nrecommended_plan: fake ${model}\\nverification_plan: true\\nrisk_level: low\\n\\n## Summary\\nFake Claude report for ${model}.`)",
+      "}, 120)",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeClaude, 0o755)
+
+  const result = await runClaudeCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    pluginDir,
+    claudeBin: fakeClaude,
+    timeoutMs: 2000,
+    env: { OPEN_MAGI_FAKE_LOG: fakeLog },
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.results.map((entry) => entry.agent), [
+    "open-magi:deliberator-melchior",
+    "open-magi:deliberator-balthasar",
+    "open-magi:deliberator-casper",
+  ])
+  assert.deepEqual(result.results.map((entry) => entry.model), ["model-a", "model-b", "model-c"])
+  assert.ok(result.results.every((entry) => Number.isInteger(entry.startedAt)))
+  assert.ok(result.results.every((entry) => Number.isInteger(entry.endedAt)))
+  assert.ok(result.results.every((entry) => Number.isInteger(entry.durationMs)))
+  assert.ok(Math.max(...result.results.map((entry) => entry.startedAt)) < Math.min(...result.results.map((entry) => entry.endedAt)))
+
+  for (const [sage, model] of [
+    ["melchior", "model-a"],
+    ["balthasar", "model-b"],
+    ["casper", "model-c"],
+  ]) {
+    const report = await readFile(
+      join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", `report-${sage}.md`),
+      "utf8",
+    )
+    assert.match(report, /report_source: claude_headless/)
+    assert.match(report, new RegExp(`model: ${model}`))
+    assert.match(report, /claude_exit_code: 0/)
+    assert.match(report, /claude_started_at: \d+/)
+    assert.match(report, /claude_ended_at: \d+/)
+    assert.match(report, /claude_duration_ms: \d+/)
+    assert.match(report, new RegExp(`Fake Claude report for ${model}`))
+  }
+
+  const calls = (await readFile(fakeLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
+  const starts = calls.filter((call) => call.event === "start")
+  const ends = calls.filter((call) => call.event === "end")
+  assert.equal(starts.length, 3)
+  assert.equal(ends.length, 3)
+  assert.ok(starts.every((call) => call.args.includes("-p")))
+  assert.ok(starts.every((call) => call.args.includes("--allowedTools")))
+  assert.ok(starts.every((call) => call.prompt.includes("REPORT OUTPUT REQUIREMENTS")))
+  assert.ok(Math.max(...starts.map((call) => call.startedAt)) < Math.min(...ends.map((call) => call.endedAt)))
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(pluginDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("Claude setup CLI run-council writes reports through the headless runner", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-claude-cli-project-"))
+  const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-cli-plugin-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-claude-cli-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeClaude = join(binDir, "claude")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await mkdir(join(pluginDir, "agents"), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  for (const [sage, model] of [
+    ["melchior", "model-a"],
+    ["balthasar", "model-b"],
+    ["casper", "model-c"],
+  ]) {
+    await writeFile(join(pluginDir, "agents", `deliberator-${sage}.md`), `---\nname: deliberator-${sage}\nmodel: ${model}\n---\n`)
+  }
+  await writeFile(
+    fakeClaude,
+    [
+      "#!/usr/bin/env node",
+      "const args = process.argv.slice(2)",
+      "const model = args[args.indexOf('--model') + 1]",
+      "console.log(`stance: approve\\nblocking_objection: no\\nrecommended_plan: ${model}\\nverification_plan: true\\nrisk_level: low\\n`)",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeClaude, 0o755)
+
+  const cli = await execFile(
+    "node",
+    [
+      fileURLToPath(new URL("../adapters/claude/bin/open-magi-claude.js", import.meta.url)),
+      "run-council",
+      "--project-root",
+      projectRoot,
+      "--prompt-path",
+      promptPath,
+      "--round",
+      "1",
+      "--pass",
+      "1",
+      "--plugin-dir",
+      pluginDir,
+      "--claude-bin",
+      fakeClaude,
+      "--timeout-ms",
+      "2000",
+    ],
+    { cwd: fileURLToPath(new URL("../", import.meta.url)) },
+  )
+  const payload = JSON.parse(cli.stdout)
+
+  assert.equal(payload.ok, true)
+  assert.equal(payload.results.length, 3)
+  assert.deepEqual(payload.results.map((entry) => entry.model), ["model-a", "model-b", "model-c"])
+  assert.ok(payload.results.every((entry) => Number.isInteger(entry.startedAt)))
+  assert.ok(Math.max(...payload.results.map((entry) => entry.startedAt)) < Math.min(...payload.results.map((entry) => entry.endedAt)))
+  assert.equal(existsSync(join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "report-casper.md")), true)
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(pluginDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
 })
 
 test("setupCodexMagi preserves existing Codex agent files by default", async () => {

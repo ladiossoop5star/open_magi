@@ -1,11 +1,11 @@
 # open_magi
 
-English | [Traditional Chinese](README.zh-TW.md) | [Codex experimental notes](adapters/codex/README.md)
+English | [Traditional Chinese](README.zh-TW.md) | [Codex experimental notes](adapters/codex/README.md) | [Claude experimental notes](adapters/claude/README.md)
 
 `open_magi` packages the Magi deliberation loop for coding agents. The stable
-runtime today is the installable OpenCode plugin. Experimental Codex support is
-available as a skill-first Codex plugin, without full runtime backstop parity
-yet.
+runtime today is the installable OpenCode plugin. Experimental Codex and Claude
+Code support are available as skill-first adapter plugins, without full runtime
+backstop parity yet.
 
 ## Support Status
 
@@ -17,14 +17,17 @@ Codex support is experimental. It exposes the `magi` skill through Codex plugin
 discovery, but timeout enforcement, auto-continue, question denial, and artifact
 repair still need a Codex-native runtime adapter.
 
+Claude Code support is experimental. It exposes `/open-magi:magi`, three native
+plugin agents, a headless `run-council` runner, and a conservative Stop hook
+through `adapters/claude`.
+
 Future plan:
 
 1. Stabilize the OpenCode plugin and Magi protocol through real project usage.
 2. Validate Codex-native hooks and subagents for runtime backstop parity.
-3. Add a Copilot CLI adapter if its extension points can support the required
+3. Harden Claude Code native plugin-agent behavior through real usage.
+4. Add a Copilot CLI adapter if its extension points can support the required
    loop control, subagent delegation, and artifact checks.
-4. Add a Claude Code adapter using Claude Code's native installation and
-   workflow mechanisms.
 
 Each future adapter should use the coding agent's own install path and runtime
 model. The shared Magi protocol can be reused where practical, but OpenCode
@@ -51,6 +54,14 @@ adapters/codex/
   hooks/
   lib/
   skills/magi/
+
+adapters/claude/
+  .claude-plugin/
+  agents/
+  bin/
+  hooks/
+  lib/
+  skills/magi/
 ```
 
 `shared/magi` is source-of-truth maintenance material only. It is not installed
@@ -62,6 +73,10 @@ The OpenCode npm package contains only the OpenCode runtime plugin, OpenCode
 setup CLI, and OpenCode `skills/magi`. The Codex marketplace entry points at
 `./adapters/codex`, so Codex installs only the Codex plugin manifest, Codex
 Stop hook, Codex setup CLI, and Codex `skills/magi`.
+
+Claude Code support is packaged separately under `adapters/claude`, so Claude
+installs only the Claude plugin manifest, Claude plugin agents, Claude Stop
+hook, setup/runner CLI, and Claude `skills/magi`.
 
 ## Development Hygiene
 
@@ -123,6 +138,81 @@ Codex support is packaged separately under `adapters/codex`. Do not use the
 OpenCode npm package or OpenCode setup command for Codex. See
 [Codex experimental notes](adapters/codex/README.md) for the current install,
 setup, and limitation details.
+
+## Claude Experimental Notes
+
+Claude Code support is packaged separately under `adapters/claude`. Do not use
+the OpenCode npm package or OpenCode setup command for Claude. From a local
+checkout, add this repo as a Claude plugin marketplace and install the Claude
+adapter:
+
+```bash
+claude plugin marketplace add /path/to/open_magi
+claude plugin install open-magi@open-magi
+```
+
+For local development, validate and load the plugin directly with:
+
+```bash
+claude plugin validate adapters/claude
+claude --plugin-dir /path/to/open_magi/adapters/claude
+```
+
+For separate Melchior, Balthasar, and Casper models, generate a local Claude
+skills-dir plugin with concrete agent `model:` values:
+
+```bash
+node /path/to/open_magi/adapters/claude/bin/open-magi-claude.js setup-claude \
+  --melchior-model model-a \
+  --balthasar-model model-b \
+  --casper-model model-c
+```
+
+If the CLI package is installed, use:
+
+```bash
+open-magi-claude setup-claude \
+  --melchior-model model-a \
+  --balthasar-model model-b \
+  --casper-model model-c
+```
+
+The generated plugin lives under `~/.claude/skills/open-magi`. If
+`open-magi@open-magi` was installed from the marketplace, uninstall it before
+using the generated skills-dir plugin:
+
+```bash
+claude plugin uninstall open-magi@open-magi
+```
+
+Restart Claude Code or run `/reload-plugins` after changing plugin files.
+
+During Magi Phase 3, Claude uses the runner instead of relying on the main
+Claude agent to launch three `Agent` tool calls:
+
+```bash
+node ~/.claude/skills/open-magi/bin/open-magi-claude.js run-council \
+  --project-root "$PWD" \
+  --prompt-path ".open_magi/magi-log/round-NNN/council-PPP/prompt.md" \
+  --round N \
+  --pass P
+```
+
+The runner launches three headless Claude subprocesses concurrently and writes
+`report-melchior.md`, `report-balthasar.md`, and `report-casper.md`.
+If the CLI is on PATH, use `open-magi-claude run-council` with the same
+arguments.
+
+Then invoke:
+
+```text
+/open-magi:magi goal: fix the tests until npm test passes. Verification command: npm test.
+```
+
+If your environment uses a local Claude wrapper for local LLM routing, start
+Claude through that local Claude wrapper. See
+[Claude experimental notes](adapters/claude/README.md) for native plugin agent,
+Stop hook, and limitation details.
 
 ## Update
 

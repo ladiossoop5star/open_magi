@@ -1,0 +1,22 @@
+{
+  "name": "open-magi",
+  "displayName": "Open Magi",
+  "version": "0.1.5",
+  "description": "Magi proposal-first multi-agent deliberation loop for Claude Code.",
+  "author": {
+    "name": "ladiossoop5star",
+    "url": "https://github.com/ladiossoop5star"
+  },
+  "homepage": "https://github.com/ladiossoop5star/open_magi#readme",
+  "repository": "https://github.com/ladiossoop5star/open_magi",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "magi",
+    "deliberation",
+    "multi-agent",
+    "coding-agent"
+  ],
+  "skills": "./skills/",
+  "defaultEnabled": true
+}

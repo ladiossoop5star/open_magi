@@ -1,0 +1,22 @@
+{
+  "name": "open-magi",
+  "version": "0.1.5",
+  "description": "Open Magi Claude Code plugin marketplace.",
+  "owner": {
+    "name": "ladiossoop5star",
+    "url": "https://github.com/ladiossoop5star"
+  },
+  "plugins": [
+    {
+      "name": "open-magi",
+      "description": "Magi proposal-first multi-agent deliberation loop for Claude Code.",
+      "version": "0.1.5",
+      "author": {
+        "name": "ladiossoop5star",
+        "url": "https://github.com/ladiossoop5star"
+      },
+      "source": "./adapters/claude",
+      "category": "development"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "name": "open-magi-opencode",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "OpenCode Magi deliberation loop plugin and setup CLI",
   "type": "module",
   "license": "MIT",

@@ -10,6 +10,7 @@ import test from "node:test"
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url))
 const magiStopHookPath = fileURLToPath(new URL("../adapters/codex/hooks/magi-stop", import.meta.url))
+const claudeMagiStopHookPath = fileURLToPath(new URL("../adapters/claude/hooks/magi-stop", import.meta.url))
 const hanPattern = /\p{Script=Han}/u
 const execFile = promisify(execFileCallback)
 const chars = (...codes) => String.fromCodePoint(...codes)
@@ -283,6 +284,50 @@ test("Codex documentation describes skill-first experimental support", async () 
   assert.doesNotMatch(docs, hanPattern)
 })
 
+test("Claude documentation describes native plugin-agent support", async () => {
+  const docs = await readFile(new URL("../adapters/claude/README.md", import.meta.url), "utf8")
+
+  assert.match(docs, /Claude Code/)
+  assert.match(docs, /experimental/i)
+  assert.match(docs, /native plugin agents/i)
+  assert.match(docs, /claude --plugin-dir/)
+  assert.match(docs, /adapters\/claude/)
+  assert.match(docs, /\/open-magi:magi/)
+  assert.match(docs, /open-magi:deliberator-melchior/)
+  assert.match(docs, /open-magi:deliberator-balthasar/)
+  assert.match(docs, /open-magi:deliberator-casper/)
+  assert.match(docs, /local Claude wrapper/)
+  assert.match(docs, /may not forward extra CLI\s+arguments/)
+  assert.match(docs, /Stop hook/i)
+  assert.match(docs, /<MAGI_STOP_BACKSTOP>/)
+  assert.match(docs, /\.open_magi\/magi-log/)
+  assert.match(docs, /claude plugin marketplace add/)
+  assert.match(docs, /claude plugin install open-magi@open-magi/)
+  assert.match(docs, /open-magi-claude setup-claude/)
+  assert.match(docs, /open-magi-claude run-council/)
+  assert.match(docs, /~\/\.claude\/skills\/open-magi/)
+  assert.match(docs, /claude plugin uninstall open-magi@open-magi/)
+  assert.match(docs, /\/reload-plugins/)
+  assert.match(docs, /claude plugin validate adapters\/claude/)
+  assert.doesNotMatch(docs, /setup-codex|codex exec/)
+  assert.doesNotMatch(docs, hanPattern)
+})
+
+test("Claude marketplace metadata can install this repo as a local plugin marketplace", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
+  const marketplace = JSON.parse(await readFile(new URL("../.claude-plugin/marketplace.json", import.meta.url), "utf8"))
+  const entry = marketplace.plugins.find((plugin) => plugin.name === "open-magi")
+
+  assert.equal(marketplace.name, "open-magi")
+  assert.equal(marketplace.version, pkg.version)
+  assert.equal(marketplace.owner.name, "ladiossoop5star")
+  assert.ok(entry)
+  assert.equal(entry.source, "./adapters/claude")
+  assert.equal(entry.version, pkg.version)
+  assert.equal(entry.category, "development")
+  assert.match(entry.description, /Claude Code/)
+})
+
 test("Codex Stop hook is bundled and points at the Magi stop checker", async () => {
   const hooks = JSON.parse(await readFile(new URL("../adapters/codex/hooks/hooks.json", import.meta.url), "utf8"))
   const stopHooks = hooks.hooks.Stop?.[0]?.hooks || []
@@ -292,6 +337,112 @@ test("Codex Stop hook is bundled and points at the Magi stop checker", async () 
   assert.match(commandHook.command, /hooks\/magi-stop/)
   assert.equal(commandHook.timeout, 10)
   assert.match(commandHook.statusMessage, /Magi/)
+})
+
+test("Claude plugin manifest exposes the portable magi skill, agents, and stop hook", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
+  const claudePkg = JSON.parse(await readFile(new URL("../adapters/claude/package.json", import.meta.url), "utf8"))
+  const manifest = JSON.parse(await readFile(new URL("../adapters/claude/.claude-plugin/plugin.json", import.meta.url), "utf8"))
+  const hooks = JSON.parse(await readFile(new URL("../adapters/claude/hooks/hooks.json", import.meta.url), "utf8"))
+
+  assert.equal(manifest.name, "open-magi")
+  assert.equal(manifest.displayName, "Open Magi")
+  assert.equal(manifest.version, pkg.version)
+  assert.equal(manifest.description.length > 20, true)
+  assert.equal(manifest.repository, "https://github.com/ladiossoop5star/open_magi")
+  assert.equal(manifest.homepage, "https://github.com/ladiossoop5star/open_magi#readme")
+  assert.equal(manifest.license, "MIT")
+  assert.equal(manifest.skills, "./skills/")
+  assert.equal(manifest.agents, undefined)
+  assert.equal(manifest.hooks, undefined)
+  assert.equal(manifest.mcpServers, undefined)
+  assert.equal(manifest.defaultEnabled, true)
+  assert.ok(manifest.keywords.includes("claude-code"))
+  assert.ok(manifest.keywords.includes("multi-agent"))
+  assert.equal(manifest.userConfig, undefined)
+
+  assert.equal(claudePkg.name, "open-magi-claude")
+  assert.equal(claudePkg.files.includes(".claude-plugin"), true)
+  assert.equal(claudePkg.files.includes("agents"), true)
+  assert.equal(claudePkg.files.includes("bin"), true)
+  assert.equal(claudePkg.files.includes("skills"), true)
+  assert.equal(claudePkg.files.includes("hooks"), true)
+  assert.equal(claudePkg.files.includes("lib"), true)
+  assert.equal(claudePkg.files.includes("shared"), false)
+  assert.equal(claudePkg.bin["open-magi-claude"], "bin/open-magi-claude.js")
+
+  const stopHooks = hooks.hooks.Stop?.[0]?.hooks || []
+  const commandHook = stopHooks.find((hook) => hook.type === "command")
+  assert.ok(commandHook)
+  assert.match(commandHook.command, /CLAUDE_PLUGIN_ROOT/)
+  assert.match(commandHook.command, /hooks\/magi-stop/)
+  assert.equal(commandHook.timeout, 10)
+})
+
+test("Claude plugin agents are read-only Magi deliberators that inherit the active model", async () => {
+  const expected = {
+    melchior: "pragmatic engineer",
+    balthasar: "systems architect",
+    casper: "debugging analyst",
+  }
+
+  for (const [sage, role] of Object.entries(expected)) {
+    const text = await readFile(new URL(`../adapters/claude/agents/deliberator-${sage}.md`, import.meta.url), "utf8")
+    assert.match(text, new RegExp(`name: deliberator-${sage}`))
+    assert.match(text, /^model: inherit$/m)
+    assert.doesNotMatch(text, /\$\{user_config\./)
+    assert.match(text, /tools: \["Read", "Grep", "Glob"\]/)
+    assert.match(text, /Do not modify files/)
+    assert.match(text, /Do not run build\/test\/format\/deploy commands/)
+    assert.match(text, /Do not ask procedural questions/)
+    assert.match(text, new RegExp(role))
+    assert.doesNotMatch(text, hanPattern)
+  }
+})
+
+test("Claude setup CLI exposes setup-claude for generated skills-dir plugins", async () => {
+  const result = await runInteractiveCli(["setup-claude", "--dry-run"], "", {
+    script: "adapters/claude/bin/open-magi-claude.js",
+  })
+  const payload = JSON.parse(result.stdout)
+
+  assert.equal(result.code, 0, result.stderr)
+  assert.equal(payload.ok, true)
+  assert.equal(payload.dryRun, true)
+  assert.match(payload.pluginDir, /\.claude\/skills\/open-magi$/)
+  assert.ok(payload.files.some((path) => path.endsWith("agents/deliberator-melchior.md")))
+  assert.ok(payload.files.some((path) => path.endsWith("skills/magi/SKILL.md")))
+})
+
+test("Claude Magi Stop hook returns a continuation decision for active loops", async () => {
+  const project = await mkTempProject("open-magi-claude-stop-active-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify(
+      {
+        active: true,
+        goal: "finish the Claude adapter",
+        currentRound: 3,
+        currentPhase: "parallel_deliberation",
+        needsContinue: true,
+        verificationCommands: ["npm test"],
+      },
+      null,
+      2,
+    )}\n`,
+  )
+
+  const { stdout } = await execFile(claudeMagiStopHookPath, [], { cwd: project })
+  const output = JSON.parse(stdout)
+
+  assert.equal(output.decision, "block")
+  assert.match(output.reason, /Magi loop is still active/)
+  assert.match(output.reason, /currentPhase: parallel_deliberation/)
+  assert.match(output.reason, /currentRound: 3/)
+  assert.match(output.reason, /final-report\.md/)
+  assert.match(output.reason, /npm test/)
 })
 
 test("Codex Magi Stop hook returns a continuation decision for active loops", async () => {
@@ -358,11 +509,18 @@ test("English README documents install and avoids local-only model warnings", as
 
   assert.match(readme, /\[Traditional Chinese\]\(README\.zh-TW\.md\)/)
   assert.match(readme, /\[Codex experimental notes\]\(adapters\/codex\/README\.md\)/)
+  assert.match(readme, /\[Claude experimental notes\]\(adapters\/claude\/README\.md\)/)
   assert.match(readme, /Until the npm package is published, install directly from this public GitHub/)
   assert.match(readme, /opencode plugin open-magi-opencode -g/)
   assert.match(readme, /open-magi setup|npx open-magi-opencode setup/)
   assert.match(readme, /Codex Experimental Notes/)
   assert.match(readme, /packaged separately under `adapters\/codex`/)
+  assert.match(readme, /Claude Experimental Notes/)
+  assert.match(readme, /packaged separately under `adapters\/claude`/)
+  assert.match(readme, /claude --plugin-dir .*adapters\/claude/)
+  assert.match(readme, /open-magi-claude setup-claude/)
+  assert.match(readme, /~\/\.claude\/skills\/open-magi/)
+  assert.match(readme, /\/open-magi:magi/)
   assert.match(readme, /Ask an AI agent to install it/)
   assert.match(readme, /Please install the public OpenCode plugin `open-magi-opencode`/)
   assert.match(readme, /deliberator-melchior/)
@@ -394,6 +552,12 @@ test("Traditional Chinese README exists for zh-TW users", async () => {
   assert.match(readme, /~\/\.codex\/agents\/deliberator-melchior\.toml/)
   assert.match(readme, /\/goal Use the magi skill/)
   assert.match(readme, /run-council/)
+  assert.match(readme, /Claude/)
+  assert.match(readme, /local Claude wrapper/)
+  assert.match(readme, /open-magi-claude setup-claude/)
+  assert.match(readme, /~\/\.claude\/skills\/open-magi/)
+  assert.match(readme, /\/open-magi:magi/)
+  assert.match(readme, /open-magi:deliberator-melchior/)
   assert.match(readme, /<MAGI_STOP_BACKSTOP>/)
   assert.match(readme, new RegExp(chars(0x958b, 0x767c, 0x885b, 0x751f)))
   assert.match(readme, new RegExp(`${chars(0x5c0f, 0x4fee, 0x6539)}[\\s\\S]*debug[\\s\\S]*commit[\\s\\S]*\`main\``))
@@ -406,6 +570,8 @@ test("bundled magi skill assets contain the expected contract", async () => {
   const skill = await readFile(new URL("../skills/magi/SKILL.md", import.meta.url), "utf8")
   const codexSkill = await readFile(new URL("../adapters/codex/skills/magi/SKILL.md", import.meta.url), "utf8")
   const codexRuntime = await readFile(new URL("../adapters/codex/skills/magi/references/runtime.md", import.meta.url), "utf8")
+  const claudeSkill = await readFile(new URL("../adapters/claude/skills/magi/SKILL.md", import.meta.url), "utf8")
+  const claudeRuntime = await readFile(new URL("../adapters/claude/skills/magi/references/runtime.md", import.meta.url), "utf8")
   const references = await readMagiReferences()
   const contract = [skill, ...Object.values(references)].join("\n")
 
@@ -427,6 +593,19 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(codexSkill, /plugin cache/)
   assert.match(codexRuntime, /run the bundled plugin-cache\s+CLI/)
   assert.match(codexRuntime, /open-magi --help \| grep -q run-council/)
+  assert.match(claudeSkill, /Claude Bootstrap Gate/)
+  assert.match(claudeSkill, /open-magi:deliberator-melchior/)
+  assert.match(claudeSkill, /local Claude wrapper/)
+  assert.match(claudeRuntime, /Claude Runtime Reference/)
+  assert.match(claudeRuntime, /plugin agents/)
+  assert.match(claudeRuntime, /open-magi-claude run-council/)
+  assert.match(claudeRuntime, /report_source: claude_headless/)
+  assert.match(claudeRuntime, /do not fall back to generic agents/i)
+  assert.match(claudeRuntime, /skills-dir plugin/)
+  assert.match(claudeRuntime, /concrete `model:`/)
+  assert.match(claudeSkill, /run-council/)
+  assert.match(claudeRuntime, /headless Claude subprocesses/)
+  assert.match(claudeRuntime, /Do not use the Claude `Agent` tool/)
   assert.match(codexSkill, /Do not claim that `\/goal` provides runtime artifact repair/)
   assert.match(references["runtime.md"], /OpenCode Runtime Reference/)
   assert.match(references["runtime.md"], /OpenCode `session\.abort`/)
@@ -546,27 +725,40 @@ test("shared Magi prompts and common references are identical across adapter ski
     const shared = await readFile(new URL(`../shared/magi/references/${name}`, import.meta.url), "utf8")
     const opencode = await readFile(new URL(`../skills/magi/references/${name}`, import.meta.url), "utf8")
     const codex = await readFile(new URL(`../adapters/codex/skills/magi/references/${name}`, import.meta.url), "utf8")
+    const claude = await readFile(new URL(`../adapters/claude/skills/magi/references/${name}`, import.meta.url), "utf8")
 
     assert.equal(opencode, shared, `OpenCode ${name} should match shared source`)
     assert.equal(codex, shared, `Codex ${name} should match shared source`)
+    assert.equal(claude, shared, `Claude ${name} should match shared source`)
   }
 
   const opencodeRuntime = await readFile(new URL("../skills/magi/references/runtime.md", import.meta.url), "utf8")
   const codexRuntime = await readFile(new URL("../adapters/codex/skills/magi/references/runtime.md", import.meta.url), "utf8")
+  const claudeRuntime = await readFile(new URL("../adapters/claude/skills/magi/references/runtime.md", import.meta.url), "utf8")
 
   assert.notEqual(opencodeRuntime, codexRuntime)
+  assert.notEqual(opencodeRuntime, claudeRuntime)
+  assert.notEqual(codexRuntime, claudeRuntime)
   assert.match(opencodeRuntime, /OpenCode Runtime Reference/)
   assert.match(codexRuntime, /Codex Runtime Reference/)
+  assert.match(claudeRuntime, /Claude Runtime Reference/)
   assert.doesNotMatch(opencodeRuntime, /Codex|setup-codex|spawn_agent/)
   assert.doesNotMatch(codexRuntime, /OpenCode `session\.abort`/)
+  assert.doesNotMatch(claudeRuntime, /setup-codex|codex exec|OpenCode `session\.abort`/)
+  assert.doesNotMatch(claudeRuntime, /\$\{user_config\./)
+  assert.match(claudeRuntime, /open-magi-claude run-council/)
+  assert.match(claudeRuntime, /claude_headless/)
+  assert.match(claudeRuntime, /plugin agents/)
 
   for (const name of ["melchior.md", "balthasar.md", "casper.md"]) {
     const shared = await readFile(new URL(`../shared/magi/prompts/${name}`, import.meta.url), "utf8")
     const opencode = await readFile(new URL(`../skills/magi/prompts/${name}`, import.meta.url), "utf8")
     const codex = await readFile(new URL(`../adapters/codex/skills/magi/prompts/${name}`, import.meta.url), "utf8")
+    const claude = await readFile(new URL(`../adapters/claude/skills/magi/prompts/${name}`, import.meta.url), "utf8")
 
     assert.equal(opencode, shared, `OpenCode ${name} should match shared source`)
     assert.equal(codex, shared, `Codex ${name} should match shared source`)
+    assert.equal(claude, shared, `Claude ${name} should match shared source`)
   }
 })
 

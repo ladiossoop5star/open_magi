@@ -1,7 +1,7 @@
 {
-  "name": "open-magi-codex",
+  "name": "open-magi-claude",
   "version": "0.1.5",
-  "description": "Codex Magi skill package and setup CLI",
+  "description": "Claude Code Magi plugin with skill, read-only deliberator agents, and stop hook",
   "type": "module",
   "private": true,
   "license": "MIT",
@@ -10,26 +10,23 @@
     "type": "git",
     "url": "git+https://github.com/ladiossoop5star/open_magi.git"
   },
-  "bin": {
-    "open-magi": "bin/open-magi.js"
-  },
   "scripts": {
-    "postinstall": "node bin/postinstall.js"
+    "validate": "claude plugin validate ."
+  },
+  "bin": {
+    "open-magi-claude": "bin/open-magi-claude.js"
   },
   "files": [
-    ".codex-plugin",
-    ".mcp.json",
+    ".claude-plugin",
+    "agents",
     "bin",
     "hooks",
     "lib",
     "skills",
     "README.md"
   ],
-  "engines": {
-    "node": ">=20"
-  },
   "keywords": [
-    "codex",
+    "claude-code",
     "plugin",
     "magi",
     "deliberation",
