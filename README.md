@@ -181,6 +181,25 @@ The generated plugin lives under `~/.claude/skills/open-magi`. If
 `open-magi@open-magi` was installed from the marketplace, uninstall it before
 using the generated skills-dir plugin:
 
+Manual Claude deliberator model configuration lives in the generated agent
+frontmatter. Edit these three files and change only the `model:` value:
+
+```text
+~/.claude/skills/open-magi/agents/deliberator-melchior.md
+~/.claude/skills/open-magi/agents/deliberator-balthasar.md
+~/.claude/skills/open-magi/agents/deliberator-casper.md
+```
+
+Example:
+
+```yaml
+---
+name: deliberator-melchior
+model: claude-haiku-4-5-20251001
+tools: ["Read", "Grep", "Glob"]
+---
+```
+
 ```bash
 claude plugin uninstall open-magi@open-magi
 ```

@@ -80,6 +80,25 @@ It writes:
 ~/.claude/skills/open-magi/skills/magi/
 ```
 
+Manual deliberator model configuration is in the generated agent frontmatter.
+Edit these three files and change only the `model:` value:
+
+```text
+~/.claude/skills/open-magi/agents/deliberator-melchior.md
+~/.claude/skills/open-magi/agents/deliberator-balthasar.md
+~/.claude/skills/open-magi/agents/deliberator-casper.md
+```
+
+Example:
+
+```yaml
+---
+name: deliberator-melchior
+model: claude-haiku-4-5-20251001
+tools: ["Read", "Grep", "Glob"]
+---
+```
+
 If the marketplace plugin is already installed, disable or uninstall it before
 using the generated skills-dir plugin to avoid duplicate `open-magi` plugin
 entries:

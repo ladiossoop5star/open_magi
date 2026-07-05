@@ -320,6 +320,25 @@ open-magi-claude setup-claude \
 產生的位置是 `~/.claude/skills/open-magi`。如果已經透過 marketplace 安裝
 `open-magi@open-magi`，請先移除，避免同名 plugin 重複：
 
+Claude 三賢者模型的手動設定位置是產生出來的 agent frontmatter。請編輯這三個
+檔案，只改 `model:` 欄位：
+
+```text
+~/.claude/skills/open-magi/agents/deliberator-melchior.md
+~/.claude/skills/open-magi/agents/deliberator-balthasar.md
+~/.claude/skills/open-magi/agents/deliberator-casper.md
+```
+
+範例：
+
+```yaml
+---
+name: deliberator-melchior
+model: claude-haiku-4-5-20251001
+tools: ["Read", "Grep", "Glob"]
+---
+```
+
 ```bash
 claude plugin uninstall open-magi@open-magi
 ```
