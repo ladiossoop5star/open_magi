@@ -7,6 +7,50 @@ runtime today is the installable OpenCode plugin. Experimental Codex and Claude
 Code support are available as skill-first adapter plugins, without full runtime
 backstop parity yet.
 
+## What It Does
+
+Open Magi is for coding tasks where a single agent can get stuck in one line of
+reasoning, skip verification, or stop before the task is actually done. It turns
+one coding agent into a controlled Magi loop:
+
+1. The main agent records the goal, acceptance criteria, and verification
+   commands under `.open_magi/magi-log/`.
+2. The main agent gathers only enough context to write a focused council prompt.
+3. Three read-only deliberators review the problem from different angles:
+   Melchior for implementation risk, Balthasar for architecture, and Casper for
+   root cause and verification gaps.
+4. The main agent synthesizes their reports into a selected direction and, when
+   needed, asks the council for more passes before making code changes.
+5. Only after a clear verdict does the main agent edit code, run verification,
+   record the result, and either continue another round or write
+   `final-report.md`.
+6. Runtime backstops, where supported, keep the loop from silently stopping,
+   asking procedural questions, or accepting missing artifacts.
+
+The important distinction is that the deliberators do not edit files. They
+produce reports. The main agent remains responsible for choosing the direction,
+making changes, running tests, and writing the final report.
+
+## Runtime Flow
+
+```mermaid
+flowchart TD
+    A[User gives a coding goal] --> B[Main agent creates .open_magi/magi-log state]
+    B --> C[Phase 1: assess current status and evidence]
+    C --> D[Phase 2: write focused council prompt]
+    D --> E[Phase 3: launch Melchior, Balthasar, and Casper]
+    E --> F[Read-only deliberator reports]
+    F --> G[Phase 4: synthesize consensus, risks, and selected direction]
+    G --> H{Enough agreement and verification plan?}
+    H -- No --> D
+    H -- Yes --> I[Phase 5: main agent edits code]
+    I --> J[Run build, tests, or requested verification]
+    J --> K{Acceptance criteria met?}
+    K -- No --> L[Record verification and start next round]
+    L --> C
+    K -- Yes --> M[Write final-report.md and close loop]
+```
+
 ## Support Status
 
 OpenCode is the only production-supported coding-agent runtime today. The

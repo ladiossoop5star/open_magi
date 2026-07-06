@@ -6,6 +6,46 @@
 `magi` skill、三個唯讀 deliberator subagent，以及一個 runtime hook，讓長任務
 可以依照明確的驗證指令持續推進，直到完成為止。
 
+## 這是做什麼的
+
+Open Magi 是給比較複雜、容易卡住、需要多輪驗證的 coding task 用的。它不是讓
+三個 subagent 自己改程式，而是把原本單一 coding agent 的工作流程改成受控的
+Magi loop：
+
+1. 主 agent 先把目標、完成條件、驗證指令寫到 `.open_magi/magi-log/`。
+2. 主 agent 只收集足夠上下文，寫出聚焦的 council prompt，不先自己鑽太深。
+3. 三賢者以唯讀方式評議：Melchior 看實作風險，Balthasar 看架構與維護性，
+   Casper 看根因、反例與驗證缺口。
+4. 主 agent 彙整三份 report，選出方向；如果共識不足，就再進下一輪評議，而不是
+   直接猜方向改 code。
+5. 有明確 verdict 後，才由主 agent 修改程式、跑 build/test/驗證指令，並記錄結果。
+6. 如果尚未達成完成條件，就帶著新的 evidence 進下一輪；完成後寫出
+   `final-report.md` 並關閉 loop。
+
+重點是：三賢者只提供 report，不改檔案、不跑建置測試。主 agent 才負責決策、
+改 code、跑驗證、寫 final report。支援 runtime backstop 的環境會額外防止它
+靜默停住、亂問流程問題、或跳過必要 artifact。
+
+## 流程圖
+
+```mermaid
+flowchart TD
+    A[使用者提出 coding 目標] --> B[主 agent 建立 .open_magi/magi-log state]
+    B --> C[Phase 1: 評估目前狀態與 evidence]
+    C --> D[Phase 2: 寫出聚焦的 council prompt]
+    D --> E[Phase 3: 啟動 Melchior、Balthasar、Casper]
+    E --> F[三賢者產生唯讀 report]
+    F --> G[Phase 4: 彙整共識、風險與候選方向]
+    G --> H{是否有足夠共識與 verification plan?}
+    H -- 否 --> D
+    H -- 是 --> I[Phase 5: 主 agent 修改 code]
+    I --> J[執行 build、test 或指定驗證]
+    J --> K{是否達成完成條件?}
+    K -- 否 --> L[記錄 verification，進入下一 round]
+    L --> C
+    K -- 是 --> M[寫 final-report.md 並關閉 loop]
+```
+
 ## 支援狀態
 
 OpenCode 是目前唯一 production-supported runtime。現在最完整的 installer、
