@@ -45,7 +45,7 @@ Universal gate before any user question:
 - [ ] Council Pass Gate was applied before writing a verdict.
 - [ ] If pass 1 just completed, `round-NNN/direction-selection.md` was written, `currentDeliberationPass` was incremented to 2, `currentPhase=research_task`, and no verdict was written yet.
 - [ ] If another later pass is required, `currentDeliberationPass` was incremented, `currentPhase=research_task`, and no verdict was written yet.
-- [ ] If ready for action, `round-NNN/verdict.md` exists with decision, rationale, verification_commands, failure_diagnostic_commands, checkpoint_commit_plan, and rollback_plan.
+- [ ] If ready for action, `round-NNN/verdict.md` exists with decision, rationale, allowed_files, allowed_changes, verification_commands, failure_diagnostic_commands, checkpoint_commit_plan, and rollback_plan.
 - [ ] `state.json.currentPhase` is `synthesis`.
 
 ## Phase 5 -> Phase 6
@@ -55,7 +55,8 @@ Universal gate before any user question:
 - [ ] If build failed, no checkpoint commit was made and the next-round rollback requirement is recorded in verification.md and state.history.
 - [ ] Every verificationCommand was executed.
 - [ ] If verification failed, every applicable failure_diagnostic_command was executed.
-- [ ] `round-NNN/verification.md` exists with command, exit code, and important output.
+- [ ] `round-NNN/verification.md` exists with command, exit code, important output, verdict_reference, verdict_adherence, applied_files, and checkpoint_commit when applicable.
+- [ ] If `verdict_adherence: no`, no final report was written; the divergence evidence is recorded for the next round.
 - [ ] `state.json.currentPhase` is `execution`.
 
 ## Phase 6 -> Next Round or Complete

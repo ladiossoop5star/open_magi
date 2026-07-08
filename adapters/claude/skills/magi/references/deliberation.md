@@ -148,6 +148,8 @@ If ready for action, write `round-NNN/verdict.md` with:
 - `decision`;
 - `rationale`;
 - `expected_progress`;
+- `allowed_files`;
+- `allowed_changes`;
 - `verification_commands`;
 - `failure_diagnostic_commands`;
 - `checkpoint_commit_plan`;

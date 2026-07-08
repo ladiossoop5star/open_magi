@@ -22,8 +22,8 @@ one coding agent into a controlled Magi loop:
 4. The main agent synthesizes their reports into a selected direction and, when
    needed, asks the council for more passes before making code changes.
 5. Only after a clear verdict does the main agent edit code, run verification,
-   record the result, and either continue another round or write
-   `final-report.md`.
+   record `verdict_adherence: yes|no`, and either continue another round or
+   write `final-report.md`.
 6. Runtime backstops, where supported, keep the loop from silently stopping,
    asking procedural questions, or accepting missing artifacts.
 
@@ -440,6 +440,10 @@ Expected layout:
 moving phases, and the plugin can reopen a loop if required artifacts such as
 `council-001/report-melchior.md`, `council-001/report-balthasar.md`, or
 `council-001/report-casper.md` are missing.
+
+`verification.md` must explicitly confirm whether execution followed the
+approved `verdict.md` with `verdict_adherence: yes`. If execution drifted, the
+round cannot be finalized; the new evidence must go to the next council round.
 
 Before code changes, Magi can run multiple bounded council passes in one round:
 the default maximum is 3, the hard maximum is 5, and early passes use veto

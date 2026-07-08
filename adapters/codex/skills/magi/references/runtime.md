@@ -88,9 +88,11 @@ Codex runtime setting shown in the report before resuming.
 
 ## Stop Hook Backstop
 
-The Codex adapter includes a conservative Stop hook. When a Magi loop is still
-active, it returns a Stop `decision: block` continuation prompt so Codex can
-keep working instead of stopping silently.
+The Codex adapter includes a conservative Stop hook. When `state.active=true`,
+it returns a Stop `decision: block` continuation prompt so Codex can keep
+working instead of stopping silently. If `final-report.md` exists while
+`state.active=true`, treat that report as stale or premature until state is
+reconciled.
 
 If a loop was marked complete but `final-report.md` is missing, the hook also
 blocks. If the goal is already complete, write `final-report.md` before
@@ -103,6 +105,11 @@ blocks and lists the missing paths. Repair the Magi log before stopping:
 reconstruct missing artifacts from actual session output if the work truly
 completed, or restore `active=true` and `needsContinue=true` at the earliest
 missing phase.
+
+If required artifacts exist but any completed round's `verification.md` lacks a
+standalone `verdict_adherence: yes`, or explicitly says `verdict_adherence: no`,
+the hook blocks. Divergent execution must be recorded as a failed or divergent
+round, then passed to the next Magi round for council review before finalizing.
 
 This is not equivalent to the full runtime backstop. It does not abort
 subagents, rewrite state, repair missing artifacts by itself, or replace Goal

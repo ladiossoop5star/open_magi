@@ -18,7 +18,8 @@ Magi loop：
    Casper 看根因、反例與驗證缺口。
 4. 主 agent 彙整三份 report，選出方向；如果共識不足，就再進下一輪評議，而不是
    直接猜方向改 code。
-5. 有明確 verdict 後，才由主 agent 修改程式、跑 build/test/驗證指令，並記錄結果。
+5. 有明確 verdict 後，才由主 agent 修改程式、跑 build/test/驗證指令，並記錄
+   `verdict_adherence: yes|no`。
 6. 如果尚未達成完成條件，就帶著新的 evidence 進下一輪；完成後寫出
    `final-report.md` 並關閉 loop。
 
@@ -303,9 +304,11 @@ subprocess，並寫出 `report-melchior.md`、`report-balthasar.md`、
 ### Codex Stop Hook 與限制
 
 Codex plugin 內含一個保守的 Stop hook。當 Codex 準備停止時，它會讀取
-`.open_magi/magi-log/state.json`。如果 `active=true` 且 `final-report.md` 不存在，
-hook 會回傳 `decision: block`，並附上一個 `<MAGI_STOP_BACKSTOP>` continuation
-block，下一行會是 `Magi loop is still active`，讓 Codex 自動續跑而不是靜默停止。
+`.open_magi/magi-log/state.json`。如果 `active=true`，hook 會回傳
+`decision: block`，並附上一個 `<MAGI_STOP_BACKSTOP>` continuation block，下一行會是
+`Magi loop is still active`，讓 Codex 自動續跑而不是靜默停止。如果
+`final-report.md` 已存在但 `state.active=true`，該 final report 會被視為 stale 或
+premature，必須先讓 state 與實際完成狀態一致。
 
 如果 `state.json` 損毀，Stop hook 會採 fail-safe 行為：阻止停止並要求 Codex
 根據 `.open_magi/magi-log` history 修復 state。若 state 持續無法修復，continuation
@@ -596,6 +599,10 @@ Magi 在每個專案中的 runtime log 會寫在：
 它；如果缺少 `council-001/report-melchior.md`、
 `council-001/report-balthasar.md`、`council-001/report-casper.md` 等必要
 artifact，plugin 會重新打開 loop 要求修復。
+
+`verification.md` 必須用 `verdict_adherence: yes` 明確確認實作符合
+`verdict.md`。如果實作偏離 verdict，就不能 finalize；新的 evidence 必須進入
+下一個 council round 重新審議。
 
 修改 code 之前，Magi 可以在同一個 round 內進行多次 bounded council pass：
 預設最多 3 次，困難問題硬上限 5 次。前兩次使用一票否決制，避免太早實作；

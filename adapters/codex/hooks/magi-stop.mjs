@@ -32,6 +32,14 @@ function artifactExists(relativePath) {
   return existsSync(join(logDir, relativePath))
 }
 
+function readArtifact(relativePath) {
+  try {
+    return readFileSync(join(logDir, relativePath), "utf8")
+  } catch {
+    return null
+  }
+}
+
 function existingRoundNumbers() {
   try {
     return readdirSync(logDir, { withFileTypes: true })
@@ -115,6 +123,26 @@ function missingCompletionArtifacts(state) {
   return missing
 }
 
+function verdictAdherenceProblems(state) {
+  const problems = []
+
+  for (const round of roundsToValidate(state)) {
+    const relativePath = `${roundName(round)}/verification.md`
+    const text = readArtifact(relativePath)
+
+    if (text === null) continue
+    if (/^\s*verdict_adherence\s*:\s*yes\s*$/im.test(text)) continue
+
+    if (/^\s*verdict_adherence\s*:\s*no\s*$/im.test(text)) {
+      problems.push(`${relativePath}: verdict_adherence: no`)
+    } else {
+      problems.push(`${relativePath}: missing verdict_adherence: yes`)
+    }
+  }
+
+  return problems
+}
+
 function emitMissingArtifactContinuation(state, missing) {
   const shown = missing.slice(0, 40)
   const lines = [
@@ -139,6 +167,35 @@ function emitMissingArtifactContinuation(state, missing) {
   lines.push(
     "Repair the Magi log before stopping: reconstruct missing artifacts from actual session output if the work is truly complete, or restore active=true and needsContinue=true at the earliest missing phase.",
     "Do not rewrite history to pretend skipped rounds followed Magi. If a round was skipped, record that violation in the repaired artifact and resume the next proper council pass.",
+    "</MAGI_STOP_BACKSTOP>",
+  )
+
+  emitContinuation(lines.join("\n"))
+}
+
+function emitVerdictAdherenceContinuation(state, problems) {
+  const shown = problems.slice(0, 40)
+  const lines = [
+    "<MAGI_STOP_BACKSTOP>",
+    "Magi verification did not confirm verdict adherence.",
+    `statePath: ${statePath}`,
+    `finalReportPath: ${finalReportPath}`,
+    `currentRound: ${state.currentRound ?? "unknown"}`,
+    `currentPhase: ${state.currentPhase ?? "unknown"}`,
+    "verdictAdherenceProblems:",
+  ]
+
+  for (const problem of shown) {
+    lines.push(`- ${problem}`)
+  }
+
+  if (problems.length > shown.length) {
+    lines.push(`- ... ${problems.length - shown.length} more omitted`)
+  }
+
+  lines.push(
+    "Every completed Magi round must have verification.md with a standalone `verdict_adherence: yes` line.",
+    "If execution diverged from verdict, do not finalize. Record the failed or divergent attempt, restore active=true and needsContinue=true, then start the next Magi round with the divergence evidence for council review.",
     "</MAGI_STOP_BACKSTOP>",
   )
 
@@ -172,7 +229,49 @@ if (finalReportExists && state?.active === false && state?.currentPhase === "com
   const missing = missingCompletionArtifacts(state)
   if (missing.length > 0) {
     emitMissingArtifactContinuation(state, missing)
+    process.exit(0)
   }
+
+  const adherenceProblems = verdictAdherenceProblems(state)
+  if (adherenceProblems.length > 0) {
+    emitVerdictAdherenceContinuation(state, adherenceProblems)
+  }
+  process.exit(0)
+}
+
+if (state?.active === true) {
+  const verificationCommands = asList(state.verificationCommands)
+  const lines = [
+    "<MAGI_STOP_BACKSTOP>",
+    "Magi loop is still active. Continue the Magi loop instead of stopping silently.",
+    `statePath: ${statePath}`,
+    `currentRound: ${state.currentRound ?? "unknown"}`,
+    `currentPhase: ${state.currentPhase ?? "unknown"}`,
+    `needsContinue: ${state.needsContinue ?? "unknown"}`,
+    `goal: ${state.goal ?? "unknown"}`,
+  ]
+
+  if (finalReportExists) {
+    lines.push(
+      "final-report.md exists while state.active=true. Treat it as stale or premature until the state is reconciled.",
+      "If the goal is already complete, validate required artifacts and verdict adherence, then set active=false with currentPhase=complete. Otherwise continue the active round.",
+    )
+  }
+
+  if (verificationCommands.length > 0) {
+    lines.push("verificationCommands:")
+    for (const command of verificationCommands) {
+      lines.push(`- ${command}`)
+    }
+  }
+
+  lines.push(
+    "Required next action: read the Magi skill and required references, inspect .open_magi/magi-log/checklist.md, repair any missing current-round artifacts, and continue until verification passes and final-report.md exists.",
+    "Do not ask procedural questions. If a user question seems necessary, follow the Magi question firewall first.",
+    "</MAGI_STOP_BACKSTOP>",
+  )
+
+  emitContinuation(lines.join("\n"))
   process.exit(0)
 }
 
@@ -212,29 +311,3 @@ if (state?.active !== true) {
   }
   process.exit(0)
 }
-
-const verificationCommands = asList(state.verificationCommands)
-const lines = [
-  "<MAGI_STOP_BACKSTOP>",
-  "Magi loop is still active. Continue the Magi loop instead of stopping silently.",
-  `statePath: ${statePath}`,
-  `currentRound: ${state.currentRound ?? "unknown"}`,
-  `currentPhase: ${state.currentPhase ?? "unknown"}`,
-  `needsContinue: ${state.needsContinue ?? "unknown"}`,
-  `goal: ${state.goal ?? "unknown"}`,
-]
-
-if (verificationCommands.length > 0) {
-  lines.push("verificationCommands:")
-  for (const command of verificationCommands) {
-    lines.push(`- ${command}`)
-  }
-}
-
-lines.push(
-  "Required next action: read the Magi skill and required references, inspect .open_magi/magi-log/checklist.md, repair any missing current-round artifacts, and continue until verification passes and final-report.md exists.",
-  "Do not ask procedural questions. If a user question seems necessary, follow the Magi question firewall first.",
-  "</MAGI_STOP_BACKSTOP>",
-)
-
-emitContinuation(lines.join("\n"))

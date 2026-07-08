@@ -28,16 +28,24 @@ Pass that evidence to all three deliberators through the shared prompt.
 
 Only the main agent may act.
 
-1. Apply the verdict.
+1. Apply only the verdict. Do not implement a different fix discovered during
+   verification.
 2. Do not overwrite unrelated user changes.
 3. If code changed, run build or compile verification first.
 4. If code changed and build succeeds, create a local git checkpoint commit and record its hash.
 5. If build fails, do not commit; record failure evidence and mark next-round rollback before Phase 2.
 6. Run remaining `verificationCommand` entries.
 7. If verification fails, run the applicable `failure_diagnostic_commands`.
-8. Write `verification.md` with command, exit code, important output, and any
-   failure diagnostic evidence.
-9. Decide whether acceptance criteria are now satisfied.
+8. Write `verification.md` with command, exit code, important output, any
+   failure diagnostic evidence, and these standalone fields:
+   - `verdict_reference: round-NNN/verdict.md`
+   - `verdict_adherence: yes|no`
+   - `applied_files: ...`
+   - `checkpoint_commit: ...` when code was committed.
+9. If `verdict_adherence: no`, do not write `final-report.md`. Treat the round
+   as failed or divergent, pass the evidence into the next round, and have the
+   council review the new direction before executing it.
+10. Decide whether acceptance criteria are now satisfied.
 
 ## Checkpoint and Rollback Details
 

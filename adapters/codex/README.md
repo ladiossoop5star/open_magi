@@ -118,11 +118,12 @@ not exposed to the model, so the CLI runner is the supported execution path.
 ## Stop Hook Backstop
 
 The plugin bundles a minimal Codex Stop hook. When Codex is about to stop, the
-hook reads `.open_magi/magi-log/state.json`. If `active=true` and
-`final-report.md` does not exist, it returns a Codex Stop decision of
-`decision: block` with a `<MAGI_STOP_BACKSTOP>` continuation block. The next
-line is `Magi loop is still active`. Codex treats that as an automatic
-continuation, so the Magi loop can resume instead of stopping silently.
+hook reads `.open_magi/magi-log/state.json`. If `active=true`, it returns a
+Codex Stop decision of `decision: block` with a `<MAGI_STOP_BACKSTOP>`
+continuation block. The next line is `Magi loop is still active`. Codex treats
+that as an automatic continuation, so the Magi loop can resume instead of
+stopping silently. If `final-report.md` exists while `state.active=true`, the
+hook treats that report as stale or premature until state is reconciled.
 
 If a loop was marked complete but `final-report.md` is missing, the hook also
 blocks. If the goal is truly complete, Codex must write `final-report.md` before
@@ -134,6 +135,12 @@ blocks with the missing paths. Repair the Magi log before stopping: reconstruct
 the missing artifacts from actual session output when the work really completed,
 or restore `active=true`/`needsContinue=true` and resume the earliest missing
 phase.
+
+If the required artifacts exist but a completed round's `verification.md` does
+not contain a standalone `verdict_adherence: yes`, the hook also blocks. If
+execution diverged from the approved `verdict.md`, record
+`verdict_adherence: no`, do not finalize, and start the next Magi round with the
+new evidence so the council can review that direction first.
 
 This hook is intentionally conservative. It does not abort subagents, rewrite
 state, repair missing artifacts by itself, or replace Goal mode.
