@@ -260,6 +260,8 @@ test("Codex documentation describes skill-first experimental support", async () 
   assert.match(docs, /Stop hook/i)
   assert.match(docs, /<MAGI_STOP_BACKSTOP>/)
   assert.match(docs, /Magi loop is still active/)
+  assert.match(docs, /marked complete but `final-report\.md` is missing/)
+  assert.match(docs, /write `final-report\.md` before\s+stopping/)
   assert.match(docs, /corrupt/i)
   assert.match(docs, /setup-codex/)
   assert.match(docs, /`open-magi` is not on PATH/)
@@ -335,6 +337,8 @@ test("Claude marketplace metadata can install this repo as a local plugin market
 
 test("Codex Stop hook is bundled and points at the Magi stop checker", async () => {
   const hooks = JSON.parse(await readFile(new URL("../adapters/codex/hooks/hooks.json", import.meta.url), "utf8"))
+  const hookWrapper = await readFile(new URL("../adapters/codex/hooks/magi-stop", import.meta.url), "utf8")
+  const hookImplementation = await readFile(new URL("../adapters/codex/hooks/magi-stop.mjs", import.meta.url), "utf8")
   const stopHooks = hooks.hooks.Stop?.[0]?.hooks || []
   const commandHook = stopHooks.find((hook) => hook.type === "command")
 
@@ -342,6 +346,10 @@ test("Codex Stop hook is bundled and points at the Magi stop checker", async () 
   assert.match(commandHook.command, /hooks\/magi-stop/)
   assert.equal(commandHook.timeout, 10)
   assert.match(commandHook.statusMessage, /Magi/)
+  assert.match(hookWrapper, /^#!\/bin\/sh/)
+  assert.match(hookWrapper, /OPEN_MAGI_NODE/)
+  assert.match(hookWrapper, /magi-stop\.mjs/)
+  assert.match(hookImplementation, /MAGI_STOP_BACKSTOP/)
 })
 
 test("Claude plugin manifest exposes the portable magi skill, agents, and stop hook", async () => {
@@ -479,6 +487,38 @@ test("Codex Magi Stop hook returns a continuation decision for active loops", as
   assert.match(output.reason, /currentRound: 2/)
   assert.match(output.reason, /final-report\.md/)
   assert.match(output.reason, /npm test/)
+})
+
+test("Codex Magi Stop hook blocks false-complete loops without a final report", async () => {
+  const project = await mkTempProject("open-magi-codex-stop-false-complete-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify(
+      {
+        active: false,
+        goal: "raise throughput above 450 Mbps",
+        currentRound: 2,
+        currentPhase: "complete",
+        needsContinue: false,
+        verificationCommands: ["run throughput test"],
+      },
+      null,
+      2,
+    )}\n`,
+  )
+
+  const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
+  const output = JSON.parse(stdout)
+
+  assert.equal(output.decision, "block")
+  assert.match(output.reason, /Magi loop was marked complete but final-report\.md is missing/)
+  assert.match(output.reason, /If the goal is already complete, write final-report\.md/)
+  assert.match(output.reason, /If the goal is not complete, restore active=true/)
+  assert.match(output.reason, /currentPhase: complete/)
+  assert.match(output.reason, /currentRound: 2/)
+  assert.match(output.reason, /run throughput test/)
 })
 
 test("Codex Magi Stop hook is silent when no Magi loop needs continuation", async () => {
@@ -636,6 +676,8 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(codexRuntime, /spawn_agent/)
   assert.match(codexRuntime, /codex_failure_type/)
   assert.match(codexRuntime, /hard_error/)
+  assert.match(codexRuntime, /marked complete but `final-report\.md` is missing/)
+  assert.match(codexRuntime, /If the goal is already complete, write `final-report\.md`/)
   assert.doesNotMatch(codexRuntime, /OpenCode `session\.abort`/)
   assert.match(skill, /\.open_magi\/magi-log/)
   assert.ok(skill.split("\n").length <= 300, "SKILL.md should stay concise and route detail to references")

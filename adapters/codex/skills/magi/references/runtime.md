@@ -92,6 +92,12 @@ The Codex adapter includes a conservative Stop hook. When a Magi loop is still
 active, it returns a Stop `decision: block` continuation prompt so Codex can
 keep working instead of stopping silently.
 
+If a loop was marked complete but `final-report.md` is missing, the hook also
+blocks. If the goal is already complete, write `final-report.md` before
+stopping. If the goal is not complete, restore `active=true`, set
+`needsContinue=true`, and continue the appropriate next phase or round without
+asking for direction.
+
 This is not equivalent to the full runtime backstop. It does not abort
 subagents, rewrite state, repair missing artifacts by itself, or replace Goal
 mode. The main agent must still enforce the Magi protocol and artifact gates.

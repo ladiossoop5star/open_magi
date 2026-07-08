@@ -124,6 +124,11 @@ hook reads `.open_magi/magi-log/state.json`. If `active=true` and
 line is `Magi loop is still active`. Codex treats that as an automatic
 continuation, so the Magi loop can resume instead of stopping silently.
 
+If a loop was marked complete but `final-report.md` is missing, the hook also
+blocks. If the goal is truly complete, Codex must write `final-report.md` before
+stopping. If the goal is not complete, Codex must restore `active=true` and keep
+the Magi loop moving without asking for direction.
+
 This hook is intentionally conservative. It does not abort subagents, rewrite
 state, repair missing artifacts by itself, or replace Goal mode.
 If `state.json` is corrupt, the hook blocks as a fail-safe and asks Codex to

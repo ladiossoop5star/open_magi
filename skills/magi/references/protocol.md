@@ -106,7 +106,8 @@ Compare current state against `acceptanceCriteria`, latest `verification.md`,
 and current repository/filesystem state. Choose `complete`, `needs_research`,
 `needs_action`, or `blocked`.
 
-If complete, go directly to final report.
+If complete, do not stop immediately. Write `final-report.md` first, then close
+the loop state.
 
 ### Phase 6: Goal Check
 

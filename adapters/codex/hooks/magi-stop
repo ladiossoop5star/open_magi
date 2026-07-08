@@ -1,71 +1,44 @@
-#!/usr/bin/env node
+#!/bin/sh
 
-import { existsSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+set -eu
 
-const logDir = join(process.cwd(), ".open_magi", "magi-log")
-const statePath = join(logDir, "state.json")
-const finalReportPath = join(logDir, "final-report.md")
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_path="$script_dir/magi-stop.mjs"
 
-if (process.env.OPEN_MAGI_DISABLE_STOP_BACKSTOP === "1") {
-  process.exit(0)
+run_with_node() {
+  candidate=$1
+  shift
+
+  if [ -z "$candidate" ]; then
+    return 1
+  fi
+
+  if [ "$candidate" = "node" ]; then
+    node_bin=$(command -v node 2>/dev/null || true)
+  else
+    node_bin=$candidate
+  fi
+
+  if [ ! -x "$node_bin" ]; then
+    return 1
+  fi
+
+  major=$("$node_bin" -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || true)
+  case "$major" in
+    ""|*[!0-9]*)
+      return 1
+      ;;
+  esac
+
+  if [ "$major" -lt 18 ]; then
+    return 1
+  fi
+
+  exec "$node_bin" "$script_path" "$@"
 }
 
-function emitContinuation(text) {
-  process.stdout.write(`${JSON.stringify({ decision: "block", reason: text })}\n`)
-}
+for candidate in "${OPEN_MAGI_NODE:-}" "${NODE:-}" node "$HOME"/.nvm/versions/node/*/bin/node /usr/local/bin/node /usr/bin/node; do
+  run_with_node "$candidate" "$@" || true
+done
 
-function asList(value) {
-  return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.trim()) : []
-}
-
-if (!existsSync(statePath) || existsSync(finalReportPath)) {
-  process.exit(0)
-}
-
-let state
-try {
-  state = JSON.parse(readFileSync(statePath, "utf8"))
-} catch (error) {
-  emitContinuation(
-    [
-      "<MAGI_STOP_BACKSTOP>",
-      "Magi state appears corrupt.",
-      `statePath: ${statePath}`,
-      `error: ${error.message}`,
-      "Read the Magi troubleshooting reference, repair state.json from .open_magi/magi-log history, then continue the Magi loop without asking procedural questions.",
-      "</MAGI_STOP_BACKSTOP>",
-    ].join("\n"),
-  )
-  process.exit(0)
-}
-
-if (state?.active !== true) {
-  process.exit(0)
-}
-
-const verificationCommands = asList(state.verificationCommands)
-const lines = [
-  "<MAGI_STOP_BACKSTOP>",
-  "Magi loop is still active. Continue the Magi loop instead of stopping silently.",
-  `statePath: ${statePath}`,
-  `currentRound: ${state.currentRound ?? "unknown"}`,
-  `currentPhase: ${state.currentPhase ?? "unknown"}`,
-  `needsContinue: ${state.needsContinue ?? "unknown"}`,
-  `goal: ${state.goal ?? "unknown"}`,
-]
-
-if (verificationCommands.length > 0) {
-  lines.push("verificationCommands:")
-  for (const command of verificationCommands) {
-    lines.push(`- ${command}`)
-  }
-}
-
-lines.push(
-  "Required next action: read the Magi skill and required references, inspect .open_magi/magi-log/checklist.md, repair any missing current-round artifacts, and continue until verification passes and final-report.md exists.",
-  "Do not ask procedural questions. If a user question seems necessary, follow the Magi question firewall first.",
-  "</MAGI_STOP_BACKSTOP>",
-)
-
-emitContinuation(lines.join("\n"))
+printf '%s\n' '{"decision":"block","reason":"<MAGI_STOP_BACKSTOP>\nMagi Stop hook requires Node.js 18 or newer, but no compatible node executable was found.\nSet OPEN_MAGI_NODE to a Node.js 18+ binary or start Codex with a PATH that includes modern Node.js.\n</MAGI_STOP_BACKSTOP>"}'
