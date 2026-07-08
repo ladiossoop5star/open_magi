@@ -262,6 +262,8 @@ test("Codex documentation describes skill-first experimental support", async () 
   assert.match(docs, /Magi loop is still active/)
   assert.match(docs, /marked complete but `final-report\.md` is missing/)
   assert.match(docs, /write `final-report\.md` before\s+stopping/)
+  assert.match(docs, /final report exists but required round artifacts are missing/)
+  assert.match(docs, /Repair the Magi log before stopping/)
   assert.match(docs, /corrupt/i)
   assert.match(docs, /setup-codex/)
   assert.match(docs, /`open-magi` is not on PATH/)
@@ -521,6 +523,47 @@ test("Codex Magi Stop hook blocks false-complete loops without a final report", 
   assert.match(output.reason, /run throughput test/)
 })
 
+test("Codex Magi Stop hook blocks completed loops with missing round artifacts", async () => {
+  const project = await mkTempProject("open-magi-codex-stop-missing-artifacts-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(join(logDir, "round-001", "council-001"), { recursive: true })
+  await mkdir(join(logDir, "round-002", "council-001"), { recursive: true })
+  await writeFile(join(logDir, "final-report.md"), "complete\n")
+  await writeFile(join(logDir, "round-001", "research-prompt.md"), "research\n")
+  await writeFile(join(logDir, "round-001", "council-001", "prompt.md"), "prompt\n")
+  await writeFile(join(logDir, "round-001", "council-001", "report-melchior.md"), "report\n")
+  await writeFile(join(logDir, "round-002", "research-prompt.md"), "research\n")
+  await writeFile(join(logDir, "round-002", "council-001", "prompt.md"), "prompt\n")
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify(
+      {
+        active: false,
+        goal: "finish the multi-round fix",
+        currentRound: 2,
+        currentPhase: "complete",
+        needsContinue: false,
+        history: [
+          { round: 1, progress: true, result: "first attempt failed" },
+          { round: 2, progress: true, result: "final attempt passed" },
+        ],
+      },
+      null,
+      2,
+    )}\n`,
+  )
+
+  const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
+  const output = JSON.parse(stdout)
+
+  assert.equal(output.decision, "block")
+  assert.match(output.reason, /Magi final report exists but required round artifacts are missing/)
+  assert.match(output.reason, /round-001\/council-001\/report-balthasar\.md/)
+  assert.match(output.reason, /round-001\/verification\.md/)
+  assert.match(output.reason, /round-002\/council-001\/report-melchior\.md/)
+  assert.match(output.reason, /Repair the Magi log before stopping/)
+})
+
 test("Codex Magi Stop hook is silent when no Magi loop needs continuation", async () => {
   const project = await mkTempProject("open-magi-codex-stop-silent-")
   const { stdout: noStateStdout } = await execFile(magiStopHookPath, [], { cwd: project })
@@ -678,6 +721,8 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(codexRuntime, /hard_error/)
   assert.match(codexRuntime, /marked complete but `final-report\.md` is missing/)
   assert.match(codexRuntime, /If the goal is already complete, write `final-report\.md`/)
+  assert.match(codexRuntime, /final report exists but required round artifacts are missing/)
+  assert.match(codexRuntime, /Repair the Magi log before stopping/)
   assert.doesNotMatch(codexRuntime, /OpenCode `session\.abort`/)
   assert.match(skill, /\.open_magi\/magi-log/)
   assert.ok(skill.split("\n").length <= 300, "SKILL.md should stay concise and route detail to references")

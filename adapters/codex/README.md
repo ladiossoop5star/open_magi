@@ -129,6 +129,12 @@ blocks. If the goal is truly complete, Codex must write `final-report.md` before
 stopping. If the goal is not complete, Codex must restore `active=true` and keep
 the Magi loop moving without asking for direction.
 
+If the final report exists but required round artifacts are missing, the hook
+blocks with the missing paths. Repair the Magi log before stopping: reconstruct
+the missing artifacts from actual session output when the work really completed,
+or restore `active=true`/`needsContinue=true` and resume the earliest missing
+phase.
+
 This hook is intentionally conservative. It does not abort subagents, rewrite
 state, repair missing artifacts by itself, or replace Goal mode.
 If `state.json` is corrupt, the hook blocks as a fail-safe and asks Codex to

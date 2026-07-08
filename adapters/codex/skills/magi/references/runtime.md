@@ -98,6 +98,12 @@ stopping. If the goal is not complete, restore `active=true`, set
 `needsContinue=true`, and continue the appropriate next phase or round without
 asking for direction.
 
+If the final report exists but required round artifacts are missing, the hook
+blocks and lists the missing paths. Repair the Magi log before stopping:
+reconstruct missing artifacts from actual session output if the work truly
+completed, or restore `active=true` and `needsContinue=true` at the earliest
+missing phase.
+
 This is not equivalent to the full runtime backstop. It does not abort
 subagents, rewrite state, repair missing artifacts by itself, or replace Goal
 mode. The main agent must still enforce the Magi protocol and artifact gates.
