@@ -204,12 +204,17 @@ Do not ask the user whether another council pass is needed. The gate decides.
 
 Before the completion claim, run the cleanup gate:
 - set `currentPhase=cleanup`;
-- audit the round's full diff one change at a time, remove redundant or
-  ineffective changes, and verify each kept change individually (what breaks
-  without it, plus the test, output, or trace that proves it is required);
+- split the round's full diff into fix changes and supporting changes
+  (protective mechanisms, defensive checks, refactors, or problem-unrelated
+  implementation);
+- audit every fix change one by one: remove redundant or ineffective fix
+  changes, and verify each kept fix change individually (what breaks without
+  it, plus the test, output, or trace that proves it is required);
+- do not remove supporting changes here; list them for the review council;
 - re-run the verification commands;
-- write `round-NNN/cleanup.md` with per-change keep/remove reasons,
-  individual verification evidence, and post-cleanup verification output.
+- write `round-NNN/cleanup.md` with per-fix-change keep/remove reasons,
+  individual verification evidence, the deferred supporting-change list, and
+  post-cleanup verification output.
 
 Only then, before writing `final-report.md`, run exactly one adversarial
 review pass:

@@ -17,9 +17,9 @@ the review council to approve the actual diff before `final-report.md`.
 
 Proposal-first rule: before any fix direction is selected, the main agent prepares an evidence packet and does not propose a fix. The three deliberators propose directions first; the main agent selects one direction; then the deliberators review that selected direction before execution.
 
-Council modes tracked in `state.json currentCouncilMode`: `recon` (round 1
-parallel evidence gathering), `decision` (Phases 2-4 proposal-first),
-`review` (Phase 6 adversarial diff review).
+Council modes tracked in `currentCouncilMode`: `recon` (round 1 parallel
+evidence gathering), `decision` (Phases 2-4 proposal-first), `review`
+(Phase 6 adversarial diff review).
 
 ## Required Reference Loading
 
@@ -142,9 +142,9 @@ Do not ask the user whether another council pass is needed. The gate decides.
 ## Cleanup and Completion Review Gates
 
 Before the completion claim, set `currentPhase=cleanup` and audit the round's
-full diff: remove redundant or ineffective changes, verify each change one by
-one, re-run verification, and write `round-NNN/cleanup.md` with per-change
-keep/remove evidence and post-cleanup verification output.
+full diff: verify each fix change one by one and remove the rest, list
+supporting changes for the review council, re-run verification, and write
+`round-NNN/cleanup.md` with per-change evidence and verification output.
 
 Then run one adversarial review pass per `references/deliberation.md`: set
 `currentPhase=completion_review` and `currentCouncilMode=review`, write

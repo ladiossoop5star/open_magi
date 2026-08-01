@@ -229,7 +229,9 @@ Write `round-NNN/review-001/prompt.md` with:
   or the full contents of changed files. Never substitute the main agent's
   summary of the diff;
 - the review questions: does the diff implement the verdict, does the
-  verification prove the acceptance criteria, what was missed;
+  verification prove the acceptance criteria, what was missed, and are the
+  supporting changes listed in `cleanup.md` (protective mechanisms, defensive
+  checks, problem-unrelated implementation) justified;
 - forbidden actions for sub-agents;
 - the required report format.
 

@@ -172,17 +172,24 @@ Cleanup gate (`currentPhase=cleanup`):
 
 1. Collect the round's full diff (`git diff` against the round start or
    checkpoint).
-2. Audit every change one by one: remove redundant or ineffective changes;
-   every remaining change must be necessary for the acceptance criteria.
-3. Verify each kept change individually: for every kept change, record what
-   breaks without it and the evidence (targeted test, command output, or
-   trace) that proves it is required.
-4. Re-run the verification commands after cleanup.
-5. Write `round-NNN/cleanup.md` with per-change `kept | removed` entries, each
-   with a reason and its individual verification evidence, plus the
-   post-cleanup verification output (command, exit code, important output).
-   If the round made no code changes, record that explicitly.
-6. Only then set `currentPhase=completion_review` and continue to the review
+2. Split the changes into two groups:
+   - fix changes: the hunks that directly repair the problem;
+   - supporting changes: protective mechanisms, defensive checks, refactors,
+     or implementation not strictly required by the problem.
+3. Audit every fix change one by one: remove redundant or ineffective fix
+   changes; every remaining fix change must be necessary for the acceptance
+   criteria. Verify each kept fix change individually: record what breaks
+   without it and the evidence (targeted test, command output, or trace)
+   that proves it is required.
+4. Do not remove supporting changes here. List them in `cleanup.md` and defer
+   their judgment to the completion review council.
+5. Re-run the verification commands after cleanup.
+6. Write `round-NNN/cleanup.md` with per-fix-change `kept | removed` entries
+   (each with a reason and its individual verification evidence), the list of
+   supporting changes deferred to the review council, and the post-cleanup
+   verification output (command, exit code, important output). If the round
+   made no code changes, record that explicitly.
+7. Only then set `currentPhase=completion_review` and continue to the review
    pass.
 
 Completion review (`currentPhase=completion_review`,
