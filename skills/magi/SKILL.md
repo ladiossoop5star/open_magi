@@ -142,9 +142,9 @@ Do not ask the user whether another council pass is needed. The gate decides.
 ## Cleanup and Completion Review Gates
 
 Before the completion claim, set `currentPhase=cleanup` and audit the round's
-full diff: remove redundant or ineffective changes, verify each remaining
-change, re-run verification, and write `round-NNN/cleanup.md` with per-change
-keep/remove reasons and post-cleanup verification output.
+full diff: remove redundant or ineffective changes, verify each change one by
+one, re-run verification, and write `round-NNN/cleanup.md` with per-change
+keep/remove evidence and post-cleanup verification output.
 
 Then run one adversarial review pass per `references/deliberation.md`: set
 `currentPhase=completion_review` and `currentCouncilMode=review`, write

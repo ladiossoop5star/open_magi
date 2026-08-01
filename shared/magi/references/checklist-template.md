@@ -68,7 +68,8 @@ Universal gate before any user question:
 
 - [ ] Completion was judged against acceptanceCriteria.
 - [ ] Before the completion claim, `state.json.currentPhase` was set to `cleanup`.
-- [ ] The round's full diff was audited; redundant or ineffective changes were removed; every remaining change was verified as necessary.
+- [ ] The round's full diff was audited one change at a time; redundant or ineffective changes were removed.
+- [ ] Every kept change has individual verification evidence (what breaks without it, plus the test, output, or trace that proves it is required).
 - [ ] Verification commands were re-run after cleanup.
 - [ ] `round-NNN/cleanup.md` exists with per-change keep/remove reasons and post-cleanup verification output.
 - [ ] Only after cleanup, `state.json.currentPhase` was set to `completion_review` and `state.json.currentCouncilMode` to `review` before launching review deliberators.

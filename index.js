@@ -727,10 +727,11 @@ function phaseActionText(state, missingArtifacts = []) {
       "",
       "",
       "[magi] Phase 6 cleanup gate before the completion review.",
-      "Collect the round's full diff (git diff against the round start or checkpoint) and audit every change.",
+      "Collect the round's full diff (git diff against the round start or checkpoint) and audit every change one by one.",
       "Remove redundant or ineffective changes; every remaining change must be necessary for the acceptance criteria.",
+      "Verify each kept change individually: record what breaks without it and the test, output, or trace that proves it is required.",
       "Re-run the verification commands after cleanup.",
-      `Write ${prefix}/cleanup.md with per-change keep/remove reasons and post-cleanup verification output.`,
+      `Write ${prefix}/cleanup.md with per-change keep/remove reasons, individual verification evidence, and post-cleanup verification output.`,
       "Then set currentPhase=completion_review and run the adversarial review council. Do not write final-report.md yet.",
     ].join("\n")
   }
