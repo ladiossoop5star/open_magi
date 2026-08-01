@@ -78,7 +78,8 @@ Universal gate before any user question:
 - [ ] If claiming completion, `round-NNN/review-001/prompt.md` exists and contains the actual diff, not only a summary of the diff.
 - [ ] If claiming completion, `round-NNN/review-001/report-melchior.md`, `report-balthasar.md`, and `report-casper.md` exist.
 - [ ] If claiming completion, `round-NNN/review-verdict.md` exists with `outcome`, `verdict_adherence_confirmed`, and all three sage stances.
-- [ ] `final-report.md` was written only after `outcome: approved` with `verdict_adherence_confirmed: yes`; then `state.json.active=false` and `state.json.currentPhase=complete`.
+- [ ] After `outcome: approved`, all checkpoint commits from this loop were squashed into a single commit and verification commands were re-run.
+- [ ] `final-report.md` was written only after the squash and includes a standalone `squash_commit: <hash|none>` line plus post-squash verification output; then `state.json.active=false` and `state.json.currentPhase=complete`.
 - [ ] If the review objected, no final report was written; history was appended, currentRound was incremented, `currentCouncilMode` was reset to `decision`, and `state.json.currentPhase` was set to `status_assessment`.
 - [ ] If incomplete with progress, history was appended with `progress: true|false`, currentRound was incremented, and `state.json.currentPhase` was set to `status_assessment`.
 - [ ] If incomplete with no progress, history was appended with `progress: true|false`, consecutiveNoProgress was incremented and only stops at >= 5.

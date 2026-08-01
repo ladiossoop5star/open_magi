@@ -120,7 +120,7 @@ async function writeCompleteV2MagiRound(project, { reviewVerdictText, skipReview
   await mkdir(councilDir, { recursive: true })
   await mkdir(reconDir, { recursive: true })
   await mkdir(reviewDir, { recursive: true })
-  await writeFile(join(logDir, "final-report.md"), "complete\n")
+  await writeFile(join(logDir, "final-report.md"), "complete\nsquash_commit: abc1234\n")
   await writeFile(join(roundDir, "research-prompt.md"), "research\n")
   await writeFile(join(roundDir, "direction-selection.md"), "direction\n")
   await writeFile(join(roundDir, "verdict.md"), "verdict\n")
@@ -1030,6 +1030,30 @@ test("Claude Magi Stop hook allows v2 completed loops with an approved review co
   const { stdout } = await execFile(claudeMagiStopHookPath, [], { cwd: project })
 
   assert.equal(stdout, "")
+})
+
+test("Codex Magi Stop hook blocks v2 completed loops whose final report lacks squash_commit", async () => {
+  const project = await mkTempProject("open-magi-codex-stop-v2-no-squash-")
+  await writeCompleteV2MagiRound(project)
+  await writeFile(join(project, ".open_magi", "magi-log", "final-report.md"), "complete\n")
+
+  const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
+  const output = JSON.parse(stdout)
+
+  assert.equal(output.decision, "block")
+  assert.match(output.reason, /final-report\.md: missing squash_commit/)
+})
+
+test("Claude Magi Stop hook blocks v2 completed loops whose final report lacks squash_commit", async () => {
+  const project = await mkTempProject("open-magi-claude-stop-v2-no-squash-")
+  await writeCompleteV2MagiRound(project)
+  await writeFile(join(project, ".open_magi", "magi-log", "final-report.md"), "complete\n")
+
+  const { stdout } = await execFile(claudeMagiStopHookPath, [], { cwd: project })
+  const output = JSON.parse(stdout)
+
+  assert.equal(output.decision, "block")
+  assert.match(output.reason, /missing: squash_commit in final-report\.md/)
 })
 
 test("Claude PostToolUse hook reminds on signature change, not on every tool call", async () => {

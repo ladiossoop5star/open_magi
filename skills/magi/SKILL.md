@@ -141,17 +141,19 @@ Do not ask the user whether another council pass is needed. The gate decides.
 
 ## Cleanup and Completion Review Gates
 
-Before the completion claim, set `currentPhase=cleanup` and audit the round's
-full diff: verify each fix change one by one and remove the rest, list
-supporting changes for the review council, re-run verification, and write
-`round-NNN/cleanup.md` with per-change evidence and verification output.
+Before the completion claim, set `currentPhase=cleanup`: verify each fix
+change in the round's diff one by one and remove the rest, list supporting
+changes for the review council, re-run verification, and write
+`round-NNN/cleanup.md`.
 
 Then run one adversarial review pass per `references/deliberation.md`: set
 `currentPhase=completion_review` and `currentCouncilMode=review`, write
 `round-NNN/review-001/prompt.md` with the actual diff (never a summary),
 launch all three deliberators, then write `round-NNN/review-verdict.md`.
 `final-report.md` requires `outcome: approved` and
-`verdict_adherence_confirmed: yes`; then Set `currentPhase=complete` and
+`verdict_adherence_confirmed: yes`; then squash the loop's checkpoint commits
+into one, re-run verification, and write `final-report.md` with
+`squash_commit: <hash|none>`; then Set `currentPhase=complete` and
 `active=false`. An objected review starts the next round.
 
 ## Procedural Autonomy Gate
@@ -167,8 +169,8 @@ files belong; whether to create `synthesis.md`, `verdict.md`, or
 `verification.md`; whether verification failure should start the next round;
 whether another council pass is needed.
 
-When unsure about a procedural step, read `checklist.md`, this skill, and the
-required reference, then do the specified action instead of asking.
+When unsure about a procedural step, read `checklist.md` and the required
+reference, then do the specified action instead of asking.
 
 ## Before Asking User Gate
 
@@ -186,7 +188,7 @@ Before asking the user anything, write or mentally apply `question_classificatio
   ownership of changed files is unclear.
 
 If classification is not allowed for the current phase, do not ask; execute the
-next Magi step and record the decision in the appropriate artifact.
+next Magi step and record the decision.
 
 ## Question Request Firewall
 
@@ -198,8 +200,7 @@ any user-facing question, read `references/question-firewall.md`, then write
 
 The plugin may deny the request and write `.open_magi/magi-log/question-denied.md`.
 If denied, do not repeat the question; self-answer from local context, choose
-the safest verifiable default action, record the decision in the next Magi
-artifact, and continue.
+the safest verifiable default, record it in the next artifact, and continue.
 
 Allowed requests are limited to first-round `goal_ambiguity`, first-round
 `debug_direction`, `execution_blocker`, `impossible_verification`,
@@ -209,8 +210,8 @@ is always denied.
 ## Debug Direction Gate
 
 Direction questions are allowed only during first-round Phase 1, before
-execution starts. During first-round status_assessment, ask only for missing
-constraints that cannot be inferred from the repository, logs, tests, or goal.
+execution starts. During first-round status_assessment, ask only for
+constraints not inferable from the repository, logs, tests, or goal.
 
 From Phase 2 onward: Do not ask the user which debug direction to try next;
 choose from evidence, reports, verification output, and acceptance criteria.

@@ -202,8 +202,11 @@ review pass:
   `verdict_adherence_confirmed`, and all three stances.
 
 `final-report.md` is allowed only when `outcome: approved` and
-`verdict_adherence_confirmed: yes`. An objected review starts the next round
-with the objections as evidence. Full contract is in
+`verdict_adherence_confirmed: yes`. After approval, squash the loop's
+checkpoint commits into a single commit, re-run the verification commands,
+then write `final-report.md` with a standalone `squash_commit: <hash|none>`
+line and the post-squash verification output. An objected review starts the
+next round with the objections as evidence. Full contract is in
 `references/deliberation.md`.
 
 ## Procedural Autonomy Gate

@@ -158,17 +158,23 @@ function reviewOutcomeProblems(state) {
   const closingRound = positiveInteger(state?.currentRound)
   if (closingRound === null) return []
 
+  const problems = []
   const relativePath = `${roundName(closingRound)}/review-verdict.md`
   const text = readArtifact(relativePath)
-  if (text === null) return []
+  if (text !== null) {
+    if (!/^\s*outcome\s*:\s*approved\s*$/im.test(text)) {
+      problems.push(`${relativePath}: missing outcome: approved`)
+    }
+    if (!/^\s*verdict_adherence_confirmed\s*:\s*yes\s*$/im.test(text)) {
+      problems.push(`${relativePath}: missing verdict_adherence_confirmed: yes`)
+    }
+  }
 
-  const problems = []
-  if (!/^\s*outcome\s*:\s*approved\s*$/im.test(text)) {
-    problems.push(`${relativePath}: missing outcome: approved`)
+  const finalReport = readArtifact("final-report.md")
+  if (finalReport !== null && !/^\s*squash_commit\s*:\s*\S+\s*$/im.test(finalReport)) {
+    problems.push("final-report.md: missing squash_commit: <hash|none>")
   }
-  if (!/^\s*verdict_adherence_confirmed\s*:\s*yes\s*$/im.test(text)) {
-    problems.push(`${relativePath}: missing verdict_adherence_confirmed: yes`)
-  }
+
   return problems
 }
 
@@ -267,7 +273,7 @@ function emitReviewOutcomeContinuation(state, problems) {
   }
 
   lines.push(
-    "A schemaVersion 2 Magi loop may close only when review-verdict.md records outcome: approved and verdict_adherence_confirmed: yes from the adversarial review council.",
+    "A schemaVersion 2 Magi loop may close only when review-verdict.md records outcome: approved and verdict_adherence_confirmed: yes from the adversarial review council, and final-report.md records squash_commit after the loop's commits were squashed and verification re-run.",
     "If the review objected, restore active=true and needsContinue=true, then start the next round with the objections as evidence. Do not finalize on the main agent's own judgment.",
     "</MAGI_STOP_BACKSTOP>",
   )

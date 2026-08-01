@@ -206,9 +206,17 @@ Completion review (`currentPhase=completion_review`,
    blocking objections.
 4. `outcome: approved` requires all three review reports at `stance: approve`
    with `blocking_objection: no`, plus `verdict_adherence_confirmed: yes`.
-5. If approved: write `final-report.md`, set `currentPhase=complete`,
-   `active=false`, `needsContinue=false`, `inFlight=false`, and
-   `inFlightSince=null`.
+5. If approved, squash before the final report:
+   - combine all checkpoint commits created by this loop into a single commit
+     (for example `git reset --soft <base>` plus one commit); do not leave the
+     fix scattered across several checkpoint commits;
+   - re-run the verification commands after the squash;
+   - then write `final-report.md` in the user's preferred language, including
+     a standalone `squash_commit: <hash>` line and the post-squash
+     verification output. Use `squash_commit: none` only when the loop made
+     no code commits;
+   - set `currentPhase=complete`, `active=false`, `needsContinue=false`,
+     `inFlight=false`, and `inFlightSince=null`.
 6. If objected: treat the objections as new evidence. Append a history entry,
    increment `currentRound`, reset `currentDeliberationPass=1`, reset
    `deliberationStatus=not_started`, reset `currentCouncilMode=decision`, set

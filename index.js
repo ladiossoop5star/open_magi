@@ -1204,14 +1204,31 @@ async function reviewOutcomeProblems(directory, state) {
   return problems
 }
 
+async function finalReportProblems(directory, state) {
+  if (!usesCouncilModes(state) || state?.currentPhase !== "complete") return []
+
+  const relativePath = `${LOG_DIR}/${FINAL_REPORT_FILE}`
+  let text
+  try {
+    text = await readFile(join(directory, relativePath), "utf8")
+  } catch {
+    return []
+  }
+
+  if (!/^\s*squash_commit\s*:\s*\S+\s*$/im.test(text)) {
+    return [`${relativePath}: missing squash_commit: <hash|none>`]
+  }
+  return []
+}
+
 function reviewOutcomeRepairText(problems) {
   if (problems.length === 0) return ""
   return [
     "",
     "",
-    "[magi] Review verdict content check failed.",
+    "[magi] Completion content check failed.",
     ...problems.map((problem) => `- ${problem}`),
-    "The loop may close only with outcome: approved and verdict_adherence_confirmed: yes from the adversarial review council.",
+    "The loop may close only with outcome: approved, verdict_adherence_confirmed: yes, and final-report.md recording squash_commit after the checkpoint commits were squashed and verification re-run.",
     "Restore active=true, rerun the completion review pass, or start the next round with the objections as evidence.",
   ].join("\n")
 }
@@ -1781,7 +1798,10 @@ async function repairClosedStateArtifacts(client, directory, toolInput) {
   if (state.sessionID && state.sessionID !== sessionID) return
 
   const missingArtifacts = await findMissingArtifacts(directory, state)
-  const outcomeProblems = await reviewOutcomeProblems(directory, state)
+  const outcomeProblems = [
+    ...(await reviewOutcomeProblems(directory, state)),
+    ...(await finalReportProblems(directory, state)),
+  ]
   if (missingArtifacts.length === 0 && outcomeProblems.length === 0) return
 
   const nowIso = new Date().toISOString()
@@ -1798,7 +1818,7 @@ async function repairClosedStateArtifacts(client, directory, toolInput) {
     lastError:
       missingArtifacts.length > 0
         ? artifactRepairError(missingArtifacts, nowIso)
-        : `review verdict content repair required at ${nowIso}: ${outcomeProblems.join(", ")}`,
+        : `completion content repair required at ${nowIso}: ${outcomeProblems.join(", ")}`,
   }
 
   await writeState(directory, repairState)

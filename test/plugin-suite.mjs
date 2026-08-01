@@ -2472,7 +2472,11 @@ test("state write keeps a v2 loop closed when the review council approved", asyn
     needsContinue: false,
   })
   await writeFile(project.statePath, JSON.stringify(state, null, 2))
-  await writeArtifact(project.root, ".open_magi/magi-log/final-report.md")
+  await writeArtifact(
+    project.root,
+    ".open_magi/magi-log/final-report.md",
+    "complete\nsquash_commit: abc1234\n",
+  )
   await writeArtifact(project.root, ".open_magi/magi-log/round-001/cleanup.md")
   for (const artifact of [
     "review-001/prompt.md",
@@ -2674,13 +2678,66 @@ test("state write reopens a v2 loop whose review verdict lacks approval content"
 
   assert.equal(calls.length, 1)
   const prompt = calls[0].body.parts[0].text
-  assert.match(prompt, /Review verdict content check failed/)
+  assert.match(prompt, /Completion content check failed/)
   assert.match(prompt, /missing outcome: approved/)
   assert.match(prompt, /missing verdict_adherence_confirmed: yes/)
 
   const updated = JSON.parse(await readFile(project.statePath, "utf8"))
   assert.equal(updated.active, true)
-  assert.match(updated.lastError, /review verdict content repair required/i)
+  assert.match(updated.lastError, /completion content repair required/i)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("state write reopens a v2 loop whose final report lacks squash_commit", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "decision",
+    currentRound: 1,
+    currentPhase: "complete",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "ready_for_verdict",
+    active: false,
+    needsContinue: false,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/final-report.md", "complete\n")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-001/cleanup.md")
+  for (const artifact of [
+    "review-001/prompt.md",
+    "review-001/report-melchior.md",
+    "review-001/report-balthasar.md",
+    "review-001/report-casper.md",
+  ]) {
+    await writeArtifact(project.root, `.open_magi/magi-log/round-001/${artifact}`)
+  }
+  await writeArtifact(
+    project.root,
+    ".open_magi/magi-log/round-001/review-verdict.md",
+    "outcome: approved\nverdict_adherence_confirmed: yes\n",
+  )
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks["tool.execute.after"]({
+    sessionID: "ses-1",
+    tool: "write",
+    args: { filePath: project.statePath },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.match(prompt, /Completion content check failed/)
+  assert.match(prompt, /final-report\.md: missing squash_commit/)
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.active, true)
 
   await rm(project.root, { recursive: true, force: true })
 })
