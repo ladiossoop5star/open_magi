@@ -25,6 +25,19 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'if [ -n \"${CLAUDE_PLUGIN_ROOT:-}\" ] && [ -x \"${CLAUDE_PLUGIN_ROOT}/hooks/magi-guard\" ]; then exec \"${CLAUDE_PLUGIN_ROOT}/hooks/magi-guard\"; fi; exit 0'",
+            "timeout": 5,
+            "statusMessage": "Guarding Magi phases"
+          }
+        ]
+      }
     ]
   }
 }

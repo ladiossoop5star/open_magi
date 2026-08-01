@@ -13,6 +13,8 @@ const magiStopHookPath = fileURLToPath(new URL("../adapters/codex/hooks/magi-sto
 const codexMagiToolReminderPath = fileURLToPath(new URL("../adapters/codex/hooks/magi-tool-reminder", import.meta.url))
 const claudeMagiStopHookPath = fileURLToPath(new URL("../adapters/claude/hooks/magi-stop", import.meta.url))
 const claudeMagiToolReminderPath = fileURLToPath(new URL("../adapters/claude/hooks/magi-tool-reminder", import.meta.url))
+const codexMagiGuardPath = fileURLToPath(new URL("../adapters/codex/hooks/magi-guard", import.meta.url))
+const claudeMagiGuardPath = fileURLToPath(new URL("../adapters/claude/hooks/magi-guard", import.meta.url))
 const hanPattern = /\p{Script=Han}/u
 const execFile = promisify(execFileCallback)
 const chars = (...codes) => String.fromCodePoint(...codes)
@@ -304,24 +306,47 @@ test("Codex plugin manifest exposes the portable magi skill", async () => {
   assert.equal(manifest.interface.defaultPrompt.length, 3)
 })
 
-test("Codex PostToolUse hook reminds the Magi contract only for active loops", async () => {
+test("Codex PostToolUse hook reminds on signature change, not on every tool call", async () => {
   const project = await mkTempProject("open-magi-codex-tool-reminder-active-")
   const logDir = join(project, ".open_magi", "magi-log")
   await mkdir(logDir, { recursive: true })
+  const statePath = join(logDir, "state.json")
   await writeFile(
-    join(logDir, "state.json"),
-    `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "completion_review", currentCouncilMode: "review" })}\n`,
+    statePath,
+    `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "completion_review", currentCouncilMode: "review", currentDeliberationPass: 1 })}\n`,
   )
 
-  const result = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+  const first = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
     script: "adapters/codex/hooks/magi-tool-reminder",
   })
-  const output = JSON.parse(result.stdout)
-
+  const output = JSON.parse(first.stdout)
   assert.equal(output.hookSpecificOutput.hookEventName, "PostToolUse")
   assert.match(output.hookSpecificOutput.additionalContext, /round=1 phase=completion_review mode=review/)
   assert.match(output.hookSpecificOutput.additionalContext, /follow the open_magi process/)
   assert.ok(output.hookSpecificOutput.additionalContext.length < 120)
+
+  const repeat = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/codex/hooks/magi-tool-reminder",
+  })
+  assert.equal(repeat.stdout, "")
+
+  await writeFile(
+    statePath,
+    `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "execution", currentCouncilMode: "decision", currentDeliberationPass: 1 })}\n`,
+  )
+  const changed = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/codex/hooks/magi-tool-reminder",
+  })
+  assert.match(JSON.parse(changed.stdout).hookSpecificOutput.additionalContext, /phase=execution/)
+
+  await writeFile(
+    join(logDir, ".reminder-state.json"),
+    `${JSON.stringify({ signature: "1|execution|decision|1", remindedAt: Date.now() - 11 * 60 * 1000 })}\n`,
+  )
+  const heartbeat = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/codex/hooks/magi-tool-reminder",
+  })
+  assert.match(JSON.parse(heartbeat.stdout).hookSpecificOutput.additionalContext, /follow the open_magi process/)
 })
 
 test("Codex PostToolUse hook is silent without an active loop", async () => {
@@ -492,6 +517,98 @@ test("Codex Stop hook is bundled and points at the Magi stop checker", async () 
   assert.ok(reminderHook)
   assert.match(reminderHook.command, /hooks\/magi-tool-reminder/)
   assert.equal(reminderHook.timeout, 5)
+
+  const guardHooks = hooks.hooks.PreToolUse?.[0]?.hooks || []
+  const guardHook = guardHooks.find((hook) => hook.type === "command")
+  assert.ok(guardHook)
+  assert.match(guardHook.command, /hooks\/magi-guard/)
+  assert.equal(guardHook.timeout, 5)
+})
+
+test("Codex PreToolUse guard denies code changes before the execution phase", async () => {
+  const project = await mkTempProject("open-magi-codex-guard-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  const roundDir = join(logDir, "round-001")
+  await mkdir(roundDir, { recursive: true })
+  const statePath = join(logDir, "state.json")
+  await writeFile(
+    statePath,
+    `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "research_task" })}\n`,
+  )
+
+  function run(payload) {
+    return runInteractiveCli([], JSON.stringify({ cwd: project, ...payload }), {
+      script: "adapters/codex/hooks/magi-guard",
+    })
+  }
+
+  const editProject = await run({ tool_name: "Write", tool_input: { file_path: "src/main.c" } })
+  assert.equal(
+    JSON.parse(editProject.stdout).hookSpecificOutput.permissionDecision,
+    "deny",
+  )
+  assert.match(
+    JSON.parse(editProject.stdout).hookSpecificOutput.permissionDecisionReason,
+    /only allowed in the execution phase after verdict\.md/,
+  )
+
+  const editArtifact = await run({ tool_name: "Write", tool_input: { file_path: ".open_magi/magi-log/state.json" } })
+  assert.equal(editArtifact.stdout, "")
+
+  const runTests = await run({ tool_name: "shell", tool_input: { command: "npm test" } })
+  assert.match(
+    JSON.parse(runTests.stdout).hookSpecificOutput.permissionDecisionReason,
+    /build\/test commands are only allowed in the execution phase/,
+  )
+
+  const redirectOut = await run({ tool_name: "shell", tool_input: { command: "grep foo src > /tmp/x.txt" } })
+  assert.equal(redirectOut.stdout, "")
+
+  const readOnly = await run({ tool_name: "Read", tool_input: { file_path: "src/main.c" } })
+  assert.equal(readOnly.stdout, "")
+
+  await writeFile(statePath, `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "execution" })}\n`)
+  const noVerdict = await run({ tool_name: "Write", tool_input: { file_path: "src/main.c" } })
+  assert.match(
+    JSON.parse(noVerdict.stdout).hookSpecificOutput.permissionDecisionReason,
+    /round-001\/verdict\.md is missing/,
+  )
+
+  await writeFile(join(roundDir, "verdict.md"), "verdict\n")
+  const withVerdict = await run({ tool_name: "Write", tool_input: { file_path: "src/main.c" } })
+  assert.equal(withVerdict.stdout, "")
+
+  await writeFile(statePath, `${JSON.stringify({ active: false })}\n`)
+  const inactive = await run({ tool_name: "Write", tool_input: { file_path: "src/main.c" } })
+  assert.equal(inactive.stdout, "")
+})
+
+test("Claude PreToolUse guard denies code changes before the execution phase", async () => {
+  const project = await mkTempProject("open-magi-claude-guard-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "parallel_deliberation" })}\n`,
+  )
+
+  const denied = await runInteractiveCli(
+    [],
+    JSON.stringify({ cwd: project, tool_name: "Edit", tool_input: { file_path: "src/main.c" } }),
+    { script: "adapters/claude/hooks/magi-guard" },
+  )
+  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny")
+  assert.match(
+    JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason,
+    /Follow the open_magi process/,
+  )
+
+  const allowed = await runInteractiveCli(
+    [],
+    JSON.stringify({ cwd: project, tool_name: "Edit", tool_input: { file_path: ".open_magi/magi-log/checklist.md" } }),
+    { script: "adapters/claude/hooks/magi-guard" },
+  )
+  assert.equal(allowed.stdout, "")
 })
 
 test("Claude plugin manifest exposes the portable magi skill, agents, and stop hook", async () => {
@@ -539,6 +656,13 @@ test("Claude plugin manifest exposes the portable magi skill, agents, and stop h
   assert.match(reminderHook.command, /CLAUDE_PLUGIN_ROOT/)
   assert.match(reminderHook.command, /hooks\/magi-tool-reminder/)
   assert.equal(reminderHook.timeout, 5)
+
+  const guardHooks = hooks.hooks.PreToolUse?.[0]?.hooks || []
+  const guardHook = guardHooks.find((hook) => hook.type === "command")
+  assert.ok(guardHook)
+  assert.match(guardHook.command, /CLAUDE_PLUGIN_ROOT/)
+  assert.match(guardHook.command, /hooks\/magi-guard/)
+  assert.equal(guardHook.timeout, 5)
 })
 
 test("Claude plugin agents are read-only Magi deliberators that inherit the active model", async () => {
@@ -907,24 +1031,47 @@ test("Claude Magi Stop hook allows v2 completed loops with an approved review co
   assert.equal(stdout, "")
 })
 
-test("Claude PostToolUse hook reminds the Magi contract only for active loops", async () => {
+test("Claude PostToolUse hook reminds on signature change, not on every tool call", async () => {
   const project = await mkTempProject("open-magi-claude-tool-reminder-active-")
   const logDir = join(project, ".open_magi", "magi-log")
   await mkdir(logDir, { recursive: true })
+  const statePath = join(logDir, "state.json")
   await writeFile(
-    join(logDir, "state.json"),
-    `${JSON.stringify({ active: true, currentRound: 2, currentPhase: "research_task", currentCouncilMode: "decision" })}\n`,
+    statePath,
+    `${JSON.stringify({ active: true, currentRound: 2, currentPhase: "research_task", currentCouncilMode: "decision", currentDeliberationPass: 1 })}\n`,
   )
 
-  const result = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+  const first = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
     script: "adapters/claude/hooks/magi-tool-reminder",
   })
-  const output = JSON.parse(result.stdout)
-
+  const output = JSON.parse(first.stdout)
   assert.equal(output.hookSpecificOutput.hookEventName, "PostToolUse")
   assert.match(output.hookSpecificOutput.additionalContext, /round=2 phase=research_task mode=decision/)
   assert.match(output.hookSpecificOutput.additionalContext, /follow the open_magi process/)
   assert.ok(output.hookSpecificOutput.additionalContext.length < 120)
+
+  const repeat = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/claude/hooks/magi-tool-reminder",
+  })
+  assert.equal(repeat.stdout, "")
+
+  await writeFile(
+    statePath,
+    `${JSON.stringify({ active: true, currentRound: 2, currentPhase: "synthesis", currentCouncilMode: "decision", currentDeliberationPass: 1 })}\n`,
+  )
+  const changed = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/claude/hooks/magi-tool-reminder",
+  })
+  assert.match(JSON.parse(changed.stdout).hookSpecificOutput.additionalContext, /phase=synthesis/)
+
+  await writeFile(
+    join(logDir, ".reminder-state.json"),
+    `${JSON.stringify({ signature: "2|synthesis|decision|1", remindedAt: Date.now() - 11 * 60 * 1000 })}\n`,
+  )
+  const heartbeat = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/claude/hooks/magi-tool-reminder",
+  })
+  assert.match(JSON.parse(heartbeat.stdout).hookSpecificOutput.additionalContext, /follow the open_magi process/)
 })
 
 test("Claude PostToolUse hook is silent without an active loop", async () => {

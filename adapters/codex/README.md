@@ -165,6 +165,12 @@ active, it injects a one-line reminder with the current round, phase, and
 council mode. It is silent when no loop is active. Codex may ask once to trust
 the new hook after upgrading the plugin.
 
+A PreToolUse guard enforces the phases: while a loop is active, project code
+changes and build/test commands are denied outside the execution phase, and
+execution-phase edits require `round-NNN/verdict.md` to exist. Writes under
+`.open_magi/` are always allowed, and the guard is fully silent for inactive
+loops. Set `OPEN_MAGI_DISABLE_STOP_BACKSTOP=1` to bypass it.
+
 This hook is intentionally conservative. It does not abort subagents, rewrite
 state, repair missing artifacts by itself, or replace Goal mode.
 If `state.json` is corrupt, the hook blocks as a fail-safe and asks Codex to

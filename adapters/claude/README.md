@@ -8,6 +8,7 @@ This is the experimental Claude Code adapter for Open Magi. It packages:
 - `open-magi:deliberator-casper` plugin agent
 - a conservative Stop hook that emits `<MAGI_STOP_BACKSTOP>` when a Magi loop is still active
 - a PostToolUse hook that injects a one-line `follow the open_magi process` reminder after every tool call while a loop is active
+- a PreToolUse guard that denies project code changes and build/test commands outside the execution phase while a loop is active
 - `open-magi-claude run-council`, a headless runner that launches all three deliberators concurrently
 
 Unlike the OpenCode adapter, this adapter cannot rely on a runtime hook to
@@ -229,6 +230,12 @@ Magi loop is still active and `final-report.md` is not present, the hook returns
 A PostToolUse hook complements it: after every tool call while a loop is
 active, it injects a one-line reminder with the current round, phase, and
 council mode. It is silent when no loop is active.
+
+A PreToolUse guard enforces the phases: while a loop is active, project code
+changes and build/test commands are denied outside the execution phase, and
+execution-phase edits require `round-NNN/verdict.md` to exist. Writes under
+`.open_magi/` are always allowed, and the guard is fully silent for inactive
+loops. Set `OPEN_MAGI_DISABLE_STOP_BACKSTOP=1` to bypass it.
 
 This hook is a backstop only. The main Claude agent must still enforce the Magi
 phase gates and write the required artifacts.
