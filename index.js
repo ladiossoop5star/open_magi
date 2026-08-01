@@ -19,6 +19,12 @@ const MIN_DELIBERATION_PASSES = 3
 const HARD_MAX_DELIBERATION_PASSES = 5
 const NO_PROGRESS_LIMIT = 5
 const CORRUPT_STATE_BLOCK_THRESHOLD = 3
+const REMINDER_CACHE_FILE = ".reminder-state.json"
+const REMINDER_HEARTBEAT_MS = 10 * 60 * 1000
+const GUARD_BUILD_TEST_PATTERN =
+  /(?:^|[\s;&|])(?:make|ninja|cargo\s+(?:build|test)|npm\s+(?:test|run|build|ci)|pnpm\s+(?:test|run|build)|yarn\s+(?:test|build)|pytest|go\s+(?:test|build|vet)|mvn|gradle|tox)(?=[\s;&|]|$)/
+const GUARD_SED_INPLACE_PATTERN = /(?:^|[\s;&|])sed\s+(?:-[a-zA-Z]+\s+)*-i(?:\s|=)/
+const GUARD_APPLY_PATCH_PATTERN = /(?:^|[\s;&|])apply_patch(?=[\s;&|]|$)/
 const STATE_QUEUES = new Map()
 const PHASE_RANK = {
   goal_definition: 0,
@@ -1055,6 +1061,161 @@ function isStateWriteTool(toolInput, directory) {
   return resolve(directory, filePath) === statePath(directory)
 }
 
+function guardIsUnder(child, parent) {
+  const relative = child.slice(parent.length)
+  return child.startsWith(parent) && (relative === "" || relative.startsWith("/"))
+}
+
+function guardResolveTarget(directory, target) {
+  if (typeof target !== "string" || !target) return null
+  return resolve(directory, target)
+}
+
+function guardIsMagiPath(directory, target) {
+  const resolved = guardResolveTarget(directory, target)
+  return resolved !== null && guardIsUnder(resolved, join(directory, LOG_DIR.split("/")[0]))
+}
+
+function guardIsProjectPath(directory, target) {
+  const resolved = guardResolveTarget(directory, target)
+  return (
+    resolved !== null &&
+    guardIsUnder(resolved, resolve(directory)) &&
+    !guardIsMagiPath(directory, resolved)
+  )
+}
+
+function guardShellTouchesProject(directory, command) {
+  if (typeof command !== "string") return false
+  if (GUARD_SED_INPLACE_PATTERN.test(command)) return true
+  if (GUARD_APPLY_PATCH_PATTERN.test(command)) return true
+
+  const redirectPattern = /(?:>|>>)\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
+  for (const match of command.matchAll(redirectPattern)) {
+    const target = match[1] || match[2] || match[3]
+    if (guardIsProjectPath(directory, target)) return true
+  }
+
+  const teePattern = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
+  for (const match of command.matchAll(teePattern)) {
+    const target = match[1] || match[2] || match[3]
+    if (guardIsProjectPath(directory, target)) return true
+  }
+
+  return false
+}
+
+function guardToolAction(directory, tool, args) {
+  if (["write", "edit", "multi_edit", "apply_patch"].includes(tool)) {
+    const filePath = args?.filePath ?? args?.file_path ?? args?.path
+    if (typeof filePath === "string" && filePath) {
+      return { mutation: guardIsProjectPath(directory, filePath), buildTest: false }
+    }
+    return { mutation: true, buildTest: false }
+  }
+  if (tool === "bash") {
+    const command = args?.command || args?.cmd
+    return {
+      mutation: guardShellTouchesProject(directory, command),
+      buildTest: typeof command === "string" && GUARD_BUILD_TEST_PATTERN.test(command),
+    }
+  }
+  return { mutation: false, buildTest: false }
+}
+
+async function enforcePhaseGuard(directory, tool, args) {
+  const { mutation, buildTest } = guardToolAction(directory, tool, args)
+  if (!mutation && !buildTest) return
+
+  const state = await readState(directory)
+  if (!state?.active || state.projectRoot !== directory) return
+
+  const round = roundNumber(state)
+  const phase = state.currentPhase
+  const what = buildTest && !mutation ? "build/test commands" : "code changes"
+
+  if (phase !== "execution") {
+    throw new Error(
+      `[magi] Magi loop active (round=${round} phase=${phase}). ${what} are only allowed in the execution phase after verdict.md. Follow the open_magi process: write the required artifacts for the current phase instead.`,
+    )
+  }
+
+  const verdictPath = `${roundPrefix(round)}/verdict.md`
+  if (!(await fileExists(directory, verdictPath))) {
+    throw new Error(
+      `[magi] phase=execution but ${verdictPath} is missing. Produce the verdict through the council process before editing code.`,
+    )
+  }
+}
+
+async function appendMagiReminder(directory, input, output) {
+  if (typeof output?.output !== "string") return
+  const sessionID = input?.sessionID
+  if (!sessionID) return
+
+  const state = await readState(directory)
+  if (!state?.active || state.projectRoot !== directory) return
+  if (state.sessionID !== sessionID) return
+
+  const round = roundNumber(state)
+  const phase = state.currentPhase
+  const mode = currentCouncilMode(state)
+  const signature = `${round}|${phase}|${mode}|${deliberationPassNumber(state)}`
+  const cachePath = join(directory, LOG_DIR, REMINDER_CACHE_FILE)
+
+  let cache = null
+  try {
+    cache = JSON.parse(await readFile(cachePath, "utf8"))
+  } catch {
+    cache = null
+  }
+
+  const now = Date.now()
+  const remindedAt = Number(cache?.remindedAt) || 0
+  if (cache?.signature === signature && now - remindedAt < REMINDER_HEARTBEAT_MS) return
+
+  try {
+    await writeFile(cachePath, `${JSON.stringify({ signature, remindedAt: now })}\n`)
+  } catch {
+    // A read-only log directory must not block the reminder.
+  }
+
+  output.output += `\n[magi] round=${round} phase=${phase} mode=${mode} — follow the open_magi process.`
+}
+
+async function reviewOutcomeProblems(directory, state) {
+  if (!usesCouncilModes(state) || state?.currentPhase !== "complete") return []
+
+  const relativePath = `${roundPrefix(roundNumber(state))}/review-verdict.md`
+  let text
+  try {
+    text = await readFile(join(directory, relativePath), "utf8")
+  } catch {
+    return []
+  }
+
+  const problems = []
+  if (!/^\s*outcome\s*:\s*approved\s*$/im.test(text)) {
+    problems.push(`${relativePath}: missing outcome: approved`)
+  }
+  if (!/^\s*verdict_adherence_confirmed\s*:\s*yes\s*$/im.test(text)) {
+    problems.push(`${relativePath}: missing verdict_adherence_confirmed: yes`)
+  }
+  return problems
+}
+
+function reviewOutcomeRepairText(problems) {
+  if (problems.length === 0) return ""
+  return [
+    "",
+    "",
+    "[magi] Review verdict content check failed.",
+    ...problems.map((problem) => `- ${problem}`),
+    "The loop may close only with outcome: approved and verdict_adherence_confirmed: yes from the adversarial review council.",
+    "Restore active=true, rerun the completion review pass, or start the next round with the objections as evidence.",
+  ].join("\n")
+}
+
 function canRebindActiveSession(state, sessionID, agent, directory, nowMs = Date.now()) {
   if (!sessionID) return false
   if (!state?.active || state.projectRoot !== directory) return false
@@ -1620,7 +1781,8 @@ async function repairClosedStateArtifacts(client, directory, toolInput) {
   if (state.sessionID && state.sessionID !== sessionID) return
 
   const missingArtifacts = await findMissingArtifacts(directory, state)
-  if (missingArtifacts.length === 0) return
+  const outcomeProblems = await reviewOutcomeProblems(directory, state)
+  if (missingArtifacts.length === 0 && outcomeProblems.length === 0) return
 
   const nowIso = new Date().toISOString()
   const repairState = {
@@ -1633,13 +1795,22 @@ async function repairClosedStateArtifacts(client, directory, toolInput) {
     inFlightSince: nowIso,
     lastPromptedRound: state.currentRound,
     lastPromptedAt: nowIso,
-    lastError: artifactRepairError(missingArtifacts, nowIso),
+    lastError:
+      missingArtifacts.length > 0
+        ? artifactRepairError(missingArtifacts, nowIso)
+        : `review verdict content repair required at ${nowIso}: ${outcomeProblems.join(", ")}`,
   }
 
   await writeState(directory, repairState)
 
   try {
-    await sendContinuePrompt(client, repairState, directory, missingArtifacts)
+    await sendContinuePrompt(
+      client,
+      repairState,
+      directory,
+      missingArtifacts,
+      reviewOutcomeRepairText(outcomeProblems),
+    )
   } catch (error) {
     await appendError(directory, "Failed to send artifact repair prompt", error)
     await writeState(directory, {
@@ -1789,7 +1960,13 @@ export const server = async (input) => {
       })
     },
 
-    "tool.execute.after": async (toolInput) => {
+    "tool.execute.before": async (input, output) => {
+      // The guard only reads state; it must not go through the state queue,
+      // whose guarded chain would swallow the blocking throw.
+      await enforcePhaseGuard(directory, input?.tool, output?.args || {})
+    },
+
+    "tool.execute.after": async (toolInput, output) => {
       return enqueueStateWork(directory, async () => {
         await bindSessionOnStateWrite(directory, toolInput)
         await repairActiveRoundTransitionState(directory, toolInput)
@@ -1797,6 +1974,7 @@ export const server = async (input) => {
         const state = await readState(directory)
         await enforceNoProgressLimit(directory, state)
         await sweepExpiredDeliberators(input.client, directory)
+        await appendMagiReminder(directory, toolInput, output)
       })
     },
 

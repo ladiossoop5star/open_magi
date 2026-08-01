@@ -2507,6 +2507,184 @@ test("state write keeps a v2 loop closed when the review council approved", asyn
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("tool.execute.before denies code changes outside the execution phase", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 1,
+    currentPhase: "research_task",
+    needsContinue: true,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await assert.rejects(
+    () => hooks["tool.execute.before"]({ tool: "write", sessionID: "ses-1" }, { args: { filePath: "src/main.c" } }),
+    /only allowed in the execution phase after verdict\.md/,
+  )
+  await assert.rejects(
+    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "npm test" } }),
+    /build\/test commands are only allowed in the execution phase/,
+  )
+  await assert.rejects(
+    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "echo x > src/out.txt" } }),
+    /only allowed in the execution phase/,
+  )
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"]({ tool: "write", sessionID: "ses-1" }, { args: { filePath: project.statePath } }),
+  )
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "grep foo src > /tmp/x.txt" } }),
+  )
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"]({ tool: "read", sessionID: "ses-1" }, { args: { filePath: "src/main.c" } }),
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("tool.execute.before requires verdict.md during the execution phase", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 1,
+    currentPhase: "execution",
+    needsContinue: true,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await assert.rejects(
+    () => hooks["tool.execute.before"]({ tool: "write", sessionID: "ses-1" }, { args: { filePath: "src/main.c" } }),
+    /round-001\/verdict\.md is missing/,
+  )
+
+  await writeArtifact(project.root, ".open_magi/magi-log/round-001/verdict.md")
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"]({ tool: "write", sessionID: "ses-1" }, { args: { filePath: "src/main.c" } }),
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("tool.execute.before ignores inactive loops", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    active: false,
+    currentPhase: "complete",
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"]({ tool: "write", sessionID: "ses-1" }, { args: { filePath: "src/main.c" } }),
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("tool.execute.after appends the Magi reminder on signature change only", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "decision",
+    currentRound: 1,
+    currentPhase: "research_task",
+    needsContinue: true,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  const first = { title: "", output: "tool result", metadata: {} }
+  await hooks["tool.execute.after"]({ tool: "read", sessionID: "ses-1", callID: "c1", args: {} }, first)
+  assert.match(first.output, /\[magi\] round=1 phase=research_task mode=decision — follow the open_magi process\./)
+
+  const repeat = { title: "", output: "tool result", metadata: {} }
+  await hooks["tool.execute.after"]({ tool: "read", sessionID: "ses-1", callID: "c2", args: {} }, repeat)
+  assert.equal(repeat.output, "tool result")
+
+  const otherSession = { title: "", output: "tool result", metadata: {} }
+  await writeFile(join(project.logDir, ".reminder-state.json"), `${JSON.stringify({ signature: "1|research_task|decision|1", remindedAt: Date.now() - 11 * 60 * 1000 })}\n`)
+  await hooks["tool.execute.after"]({ tool: "read", sessionID: "ses-other", callID: "c3", args: {} }, otherSession)
+  assert.equal(otherSession.output, "tool result")
+
+  const heartbeat = { title: "", output: "tool result", metadata: {} }
+  await hooks["tool.execute.after"]({ tool: "read", sessionID: "ses-1", callID: "c4", args: {} }, heartbeat)
+  assert.match(heartbeat.output, /follow the open_magi process/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("state write reopens a v2 loop whose review verdict lacks approval content", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "decision",
+    currentRound: 1,
+    currentPhase: "complete",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "ready_for_verdict",
+    active: false,
+    needsContinue: false,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/final-report.md")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-001/cleanup.md")
+  for (const artifact of [
+    "review-001/prompt.md",
+    "review-001/report-melchior.md",
+    "review-001/report-balthasar.md",
+    "review-001/report-casper.md",
+  ]) {
+    await writeArtifact(project.root, `.open_magi/magi-log/round-001/${artifact}`)
+  }
+  await writeArtifact(
+    project.root,
+    ".open_magi/magi-log/round-001/review-verdict.md",
+    "outcome: objected\nverdict_adherence_confirmed: no\n",
+  )
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks["tool.execute.after"]({
+    sessionID: "ses-1",
+    tool: "write",
+    args: { filePath: project.statePath },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.match(prompt, /Review verdict content check failed/)
+  assert.match(prompt, /missing outcome: approved/)
+  assert.match(prompt, /missing verdict_adherence_confirmed: yes/)
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.active, true)
+  assert.match(updated.lastError, /review verdict content repair required/i)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("session.created records the active council mode on deliberator entries", async () => {
   const project = await makeProject("{}")
   const state = activeState({

@@ -499,6 +499,16 @@ Timeout reports use `status: timeout`, `stance: needs_evidence`, and
 `blocking_objection: yes`, so the council gate can continue deterministically
 without asking the user what to do.
 
+The plugin also guards the phases in real time. Before each tool call
+(`tool.execute.before`), an active loop denies project code changes and
+build/test commands outside the execution phase, and execution-phase edits
+require `round-NNN/verdict.md`; writes under `.open_magi/` are always allowed.
+After each tool call (`tool.execute.after`), it appends a one-line
+`follow the open_magi process` reminder to the tool result when the loop
+signature changes or after a ten-minute heartbeat. Closed v2 loops whose
+`review-verdict.md` lacks `outcome: approved` or
+`verdict_adherence_confirmed: yes` are reopened for repair.
+
 ## Test
 
 ```bash

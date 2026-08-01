@@ -651,6 +651,15 @@ timeout report 會使用 `status: timeout`、`stance: needs_evidence`、
 `blocking_objection: yes`，讓 council gate 可以繼續判定，不需要詢問使用者
 下一步方向。
 
+plugin 也會即時把關 phase。每個 tool call 之前（`tool.execute.before`），
+啟動中的 loop 會拒絕 execution phase 以外的專案程式修改與 build/test 指令，
+且 execution phase 的修改必須先有 `round-NNN/verdict.md`；寫入 `.open_magi/`
+永遠放行。每個 tool call 之後（`tool.execute.after`），當 loop 簽名改變或
+距上次提醒超過十分鐘時，會在 tool 結果尾端附上一行
+`follow the open_magi process` 提醒。關閉的 v2 loop 若 `review-verdict.md`
+缺少 `outcome: approved` 或 `verdict_adherence_confirmed: yes`，會被重新
+打開要求修復。
+
 ## 測試
 
 ```bash
