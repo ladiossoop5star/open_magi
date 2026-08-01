@@ -17,15 +17,13 @@ the review council to approve the actual diff before `final-report.md`.
 
 Proposal-first rule: before any fix direction is selected, the main agent prepares an evidence packet and does not propose a fix. The three deliberators propose directions first; the main agent selects one direction; then the deliberators review that selected direction before execution.
 
-Council modes: one launch and report mechanism, three modes tracked in
-`state.json currentCouncilMode`: `recon` (round 1 parallel evidence
-gathering), `decision` (Phases 2-4 proposal-first), `review` (Phase 6
-adversarial diff review).
+Council modes tracked in `state.json currentCouncilMode`: `recon` (round 1
+parallel evidence gathering), `decision` (Phases 2-4 proposal-first),
+`review` (Phase 6 adversarial diff review).
 
 ## Required Reference Loading
 
-These files are part of the skill contract. Load the listed reference before
-acting in that situation:
+Load the listed reference before acting in that situation:
 
 | Situation | Required reference |
 |---|---|
@@ -101,15 +99,14 @@ file with failure evidence and a blocking question instead of omitting the file.
 
 Before ending a turn while `active=true`, verify log files match state:
 - `research_task` has `round-NNN/research-prompt.md`.
-- Round 1 `research_task` or later has the `round-NNN/recon-001/` reports and
-  `round-NNN/evidence-base.md`.
+- Round 1 `research_task` or later has the `recon-001/` reports and `evidence-base.md`.
 - Synthesis or later has all three current council reports.
 - `synthesis` or later has current `synthesis.md`.
 - Review pass 2 or later has `round-NNN/direction-selection.md`.
 - `ready_for_verdict`, `execution`, or later has `verdict.md`.
 - Any executed command has `verification.md` with command, exit code, and important output.
-- `completion_review` has the `round-NNN/review-001/` reports; closing adds
-  `round-NNN/review-verdict.md` with `outcome: approved`.
+- `completion_review` has `cleanup.md` and the `review-001/` reports; closing
+  adds `review-verdict.md` with `outcome: approved`.
 - Satisfied acceptance criteria have an approved review verdict and
   `final-report.md` before `active=false`.
 
@@ -142,14 +139,19 @@ Rules:
 
 Do not ask the user whether another council pass is needed. The gate decides.
 
-## Completion Review Gate
+## Cleanup and Completion Review Gates
 
-Before `final-report.md`, run one adversarial review pass per
-`references/deliberation.md`: set `currentPhase=completion_review` and
-`currentCouncilMode=review`, write `round-NNN/review-001/prompt.md` with the
-actual diff (never only a summary), launch all three deliberators, then write
-`round-NNN/review-verdict.md`. `final-report.md` requires `outcome: approved`
-and `verdict_adherence_confirmed: yes`; then Set `currentPhase=complete` and
+Before the completion claim, set `currentPhase=cleanup` and audit the round's
+full diff: remove redundant or ineffective changes, verify each remaining
+change, re-run verification, and write `round-NNN/cleanup.md` with per-change
+keep/remove reasons and post-cleanup verification output.
+
+Then run one adversarial review pass per `references/deliberation.md`: set
+`currentPhase=completion_review` and `currentCouncilMode=review`, write
+`round-NNN/review-001/prompt.md` with the actual diff (never a summary),
+launch all three deliberators, then write `round-NNN/review-verdict.md`.
+`final-report.md` requires `outcome: approved` and
+`verdict_adherence_confirmed: yes`; then Set `currentPhase=complete` and
 `active=false`. An objected review starts the next round.
 
 ## Procedural Autonomy Gate
@@ -183,7 +185,7 @@ Before asking the user anything, write or mentally apply `question_classificatio
 - `ambiguous_file_ownership`: ask before staging or modifying files when
   ownership of changed files is unclear.
 
-If classification is not allowed for the current phase, do not ask. Execute the
+If classification is not allowed for the current phase, do not ask; execute the
 next Magi step and record the decision in the appropriate artifact.
 
 ## Question Request Firewall
@@ -212,16 +214,16 @@ constraints that cannot be inferred from the repository, logs, tests, or goal.
 
 From Phase 2 onward: Do not ask the user which debug direction to try next;
 choose from evidence, reports, verification output, and acceptance criteria.
-Ask after Phase 1 only when verification is impossible (hardware, credentials,
-network, devices, external services), an execution blocker cannot be resolved
-locally, or proceeding risks destructive or unrelated changes. Otherwise write
-the chosen direction into `verdict.md`, execute, verify, and continue.
+Ask after Phase 1 only when verification is impossible, an execution blocker
+cannot be resolved locally, or proceeding risks destructive or unrelated
+changes. Otherwise write the direction into `verdict.md`, execute, verify,
+and continue.
 
 ## Checkpoint Commit and Rollback Gate
 
-If Phase 5 changes code: run build or compile verification first; on success
-create a local git checkpoint commit (stage only this round's files;
-do not stage `.open_magi/` runtime logs or unrelated user changes; message
+If Phase 5 changes code: run build verification first; on success create a
+local git checkpoint commit (stage only this round's files;
+do not stage `.open_magi/` logs or unrelated changes; message
 `magi: round-NNN checkpoint - <summary>`) and write its hash into
 `round-NNN/verification.md`.
 
@@ -230,9 +232,9 @@ output into `verification.md`; record that the next round must
 revert this round's uncommitted code changes before the next
 `research-prompt.md`.
 
-If build succeeds but later runtime verification fails, keep the checkpoint
-commit and pass the hash plus failure evidence to the next round. The next
-`verdict.md` must choose either continue from the checkpoint or revert it.
+If build succeeds but runtime verification fails, keep the checkpoint commit
+and pass the hash plus failure evidence to the next round; the next
+`verdict.md` must choose continue from the checkpoint or revert it.
 
 ## Round Transition Gate
 
@@ -248,8 +250,8 @@ When a round fails and the goal is still incomplete:
 - clear `inFlight` and `inFlightSince`.
 
 If build failed before a checkpoint commit, revert this round's uncommitted
-code changes before the next Phase 2 research prompt. Phase 1 in later rounds
-is a short status check only; Phase 2 only writes the next prompt artifacts.
+code changes before the next Phase 2 research prompt. Later-round Phase 1 is a
+short status check only; Phase 2 only writes the next prompt artifacts.
 Do not perform extended single-agent debugging between failed verification and
 the next deliberator pass.
 
@@ -261,8 +263,7 @@ the next deliberator pass.
 1. Status Assessment: compare criteria, latest `verification.md`, and current
    filesystem. Round 1 adds Phase 1a minimal scoping (`recon-001/prompt.md`)
    and Phase 1b parallel recon (three read-only reports, then
-   `evidence-base.md`); later rounds skip recon. If already complete, go to
-   the Phase 6 completion review instead of writing `final-report.md`.
+   `evidence-base.md`); later rounds skip recon.
 2. Research Task: write `round-NNN/research-prompt.md` (round 1 draws from
    `evidence-base.md`) and `round-NNN/council-PPP/prompt.md`; pass 1 is an
    evidence packet, not a proposed fix; pass 2+ includes direction-selection.
@@ -276,6 +277,7 @@ the next deliberator pass.
    checkpoint if build succeeds, verify, run fail-only diagnostics, and write
    `verification.md`.
 6. Goal Check: judge acceptance criteria; on a completion claim run the
-   Completion Review Gate (`completion_review`, `review-verdict.md`); complete
-   only on `outcome: approved`, otherwise next round, or block after the
+   Cleanup Gate (`cleanup.md`), then the Completion Review Gate
+   (`completion_review`, `review-verdict.md`); complete only on
+   `outcome: approved`, otherwise next round, or block after the
    no-progress limit.

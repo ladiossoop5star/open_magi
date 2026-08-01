@@ -162,9 +162,9 @@ Before ending a turn while `active=true`, verify log files match state:
 - Review pass 2 or later has `round-NNN/direction-selection.md`.
 - `ready_for_verdict`, `execution`, or later has `verdict.md`.
 - Any executed command has `verification.md` with command, exit code, and important output.
-- `completion_review` has `round-NNN/review-001/prompt.md` and all three
-  review reports; closing adds `round-NNN/review-verdict.md` with
-  `outcome: approved` and `verdict_adherence_confirmed: yes`.
+- `completion_review` has `round-NNN/cleanup.md`, `review-001/prompt.md`,
+  and all three review reports; closing adds `round-NNN/review-verdict.md`
+  with `outcome: approved` and `verdict_adherence_confirmed: yes`.
 - Satisfied acceptance criteria have an approved review verdict and
   `final-report.md` before `active=false`.
 
@@ -200,12 +200,22 @@ Rules:
 
 Do not ask the user whether another council pass is needed. The gate decides.
 
-## Completion Review Gate
+## Cleanup and Completion Review Gates
 
-Before writing `final-report.md`, run exactly one adversarial review pass:
+Before the completion claim, run the cleanup gate:
+- set `currentPhase=cleanup`;
+- audit the round's full diff, remove redundant or ineffective changes, and
+  verify each remaining change is necessary;
+- re-run the verification commands;
+- write `round-NNN/cleanup.md` with per-change keep/remove reasons and
+  post-cleanup verification output.
+
+Only then, before writing `final-report.md`, run exactly one adversarial
+review pass:
 - set `currentPhase=completion_review` and `currentCouncilMode=review`;
 - write `round-NNN/review-001/prompt.md` with the acceptance criteria,
-  `verdict.md`, `verification.md`, and the actual diff, never only a summary;
+  `verdict.md`, `verification.md`, `cleanup.md`, and the actual diff, never
+  only a summary;
 - launch all three deliberators and write the three
   `round-NNN/review-001/report-*.md` files;
 - write `round-NNN/review-verdict.md` with `outcome`,
@@ -362,6 +372,7 @@ failed verification and the next deliberator pass.
    if build succeeds, verify, run fail-only diagnostics if needed, and write
    `verification.md`.
 6. Goal Check: judge acceptance criteria; on a completion claim run the
-   Completion Review Gate (`completion_review` phase, review council,
-   `review-verdict.md`); complete only on `outcome: approved`, otherwise
-   continue next round, or block only after the no-progress limit.
+   Cleanup Gate (`cleanup.md`), then the Completion Review Gate
+   (`completion_review` phase, review council, `review-verdict.md`); complete
+   only on `outcome: approved`, otherwise continue next round, or block only
+   after the no-progress limit.

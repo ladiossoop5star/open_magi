@@ -2293,6 +2293,7 @@ test("completion_review phase requires review council reports", async () => {
   assert.equal(calls.length, 1)
   const prompt = calls[0].body.parts[0].text
   assert.match(prompt, /Artifact integrity repair required/)
+  assert.match(prompt, /round-001\/cleanup\.md/)
   assert.match(prompt, /round-001\/review-001\/report-melchior\.md/)
   assert.match(prompt, /round-001\/review-001\/report-casper\.md/)
 
@@ -2331,6 +2332,7 @@ test("completion_review with review reports present gets the review gate action 
     "direction-selection.md",
     "verdict.md",
     "verification.md",
+    "cleanup.md",
     "review-001/prompt.md",
     "review-001/report-melchior.md",
     "review-001/report-balthasar.md",
@@ -2354,6 +2356,61 @@ test("completion_review with review reports present gets the review gate action 
   assert.match(prompt, /completion review gate/)
   assert.match(prompt, /review-verdict\.md/)
   assert.match(prompt, /outcome: approved/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("cleanup phase gets the cleanup gate action text", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "decision",
+    currentRound: 1,
+    currentPhase: "cleanup",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "ready_for_verdict",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 1,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  for (const artifact of [
+    "recon-001/prompt.md",
+    "recon-001/report-melchior.md",
+    "recon-001/report-balthasar.md",
+    "recon-001/report-casper.md",
+    "evidence-base.md",
+    "research-prompt.md",
+    "council-001/prompt.md",
+    "council-001/report-melchior.md",
+    "council-001/report-balthasar.md",
+    "council-001/report-casper.md",
+    "council-001/synthesis.md",
+    "direction-selection.md",
+    "verdict.md",
+    "verification.md",
+  ]) {
+    await writeArtifact(project.root, `.open_magi/magi-log/round-001/${artifact}`)
+  }
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.doesNotMatch(prompt, /Artifact integrity repair required/)
+  assert.match(prompt, /cleanup gate before the completion review/)
+  assert.match(prompt, /round-001\/cleanup\.md/)
+  assert.match(prompt, /Do not write final-report\.md yet/)
 
   await rm(project.root, { recursive: true, force: true })
 })
@@ -2416,6 +2473,7 @@ test("state write keeps a v2 loop closed when the review council approved", asyn
   })
   await writeFile(project.statePath, JSON.stringify(state, null, 2))
   await writeArtifact(project.root, ".open_magi/magi-log/final-report.md")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-001/cleanup.md")
   for (const artifact of [
     "review-001/prompt.md",
     "review-001/report-melchior.md",

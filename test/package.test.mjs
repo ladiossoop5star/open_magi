@@ -136,6 +136,7 @@ async function writeCompleteV2MagiRound(project, { reviewVerdictText, skipReview
     ].join("\n"),
   )
   await writeFile(join(roundDir, "evidence-base.md"), "evidence\n")
+  await writeFile(join(roundDir, "cleanup.md"), "cleanup audit\n")
   for (const dir of [councilDir, reconDir]) {
     await writeFile(join(dir, "prompt.md"), "prompt\n")
     await writeFile(join(dir, "report-melchior.md"), "report\n")

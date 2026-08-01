@@ -606,6 +606,7 @@ Magi 在每個專案中的 runtime log 會寫在：
 │   │   └── synthesis.md
 │   ├── verdict.md
 │   ├── verification.md
+│   ├── cleanup.md
 │   ├── review-001/
 │   │   ├── prompt.md
 │   │   ├── report-melchior.md
@@ -626,7 +627,8 @@ artifact，plugin 會重新打開 loop 要求修復。
 
 `recon-001/` 只出現在第一輪：主 agent 先做最小範圍定位，三賢者再平行蒐集
 evidence，之後才選方向。`review-001/` 與 `review-verdict.md` 是完成條件的
-gate：主 agent 宣稱達成目標時，council 會對抗審查實際 diff，只有
+gate：主 agent 宣稱達成目標時，cleanup gate 會先稽核整個 round 的 diff、
+移除冗餘或無效的改動（`cleanup.md`），council 再對抗審查實際 diff。只有
 `outcome: approved` 且 `verdict_adherence_confirmed: yes` 才能寫
 `final-report.md`。沒有核准 review verdict 就關閉的 loop，會被 plugin 與
 stop hook 重新打開。

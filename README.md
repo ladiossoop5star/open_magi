@@ -450,6 +450,7 @@ Expected layout:
 │   │   └── synthesis.md
 │   ├── verdict.md
 │   ├── verification.md
+│   ├── cleanup.md
 │   ├── review-001/
 │   │   ├── prompt.md
 │   │   ├── report-melchior.md
@@ -471,10 +472,12 @@ round cannot be finalized; the new evidence must go to the next council round.
 `recon-001/` exists only in round 1: the main agent does minimal scoping, then
 all three deliberators gather evidence in parallel before any direction is
 chosen. `review-001/` and `review-verdict.md` gate completion: when the main
-agent claims the goal is met, the council adversarially reviews the actual
-diff, and `final-report.md` is allowed only after `outcome: approved` with
-`verdict_adherence_confirmed: yes`. Loops that close without an approved
-review verdict are reopened by the plugin and the stop hooks.
+agent claims the goal is met, the cleanup gate first audits the round's full
+diff and removes redundant or ineffective changes (`cleanup.md`), then the
+council adversarially reviews the actual diff. `final-report.md` is allowed
+only after `outcome: approved` with `verdict_adherence_confirmed: yes`. Loops
+that close without an approved review verdict are reopened by the plugin and
+the stop hooks.
 
 Before code changes, Magi can run multiple bounded council passes in one round:
 the default maximum is 3, the hard maximum is 5, and early passes use veto

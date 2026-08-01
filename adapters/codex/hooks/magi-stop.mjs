@@ -133,6 +133,7 @@ function missingCompletionArtifacts(state) {
 
     if (usesCouncilModes(state) && round === closingRound) {
       required.push(
+        `${prefix}/cleanup.md`,
         `${prefix}/review-001/prompt.md`,
         `${prefix}/review-001/report-melchior.md`,
         `${prefix}/review-001/report-balthasar.md`,

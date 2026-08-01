@@ -28,8 +28,9 @@ const PHASE_RANK = {
   synthesis: 4,
   execution: 5,
   goal_check: 6,
-  completion_review: 7,
-  complete: 8,
+  cleanup: 7,
+  completion_review: 8,
+  complete: 9,
 }
 
 const NO_PROCEDURAL_QUESTIONS_TEXT = [
@@ -283,6 +284,10 @@ function currentCouncilRoundArtifacts(state) {
     required.push(`${prefix}/verification.md`)
   }
 
+  if (modes && phaseAtLeast(phase, "completion_review")) {
+    required.push(`${prefix}/cleanup.md`)
+  }
+
   if (modes && phase === "completion_review") {
     required.push(...reviewReportArtifacts(round))
   }
@@ -339,9 +344,11 @@ function requiredArtifacts(state) {
   if (state.active && isTerminalPhase(state.currentPhase)) return []
   if (!state.active) {
     if (usesCouncilModes(state) && state.currentPhase === "complete") {
+      const round = roundNumber(state)
       return [
         `${LOG_DIR}/${FINAL_REPORT_FILE}`,
-        ...completeReviewArtifacts(roundNumber(state)),
+        `${roundPrefix(round)}/cleanup.md`,
+        ...completeReviewArtifacts(round),
       ]
     }
     return [`${LOG_DIR}/${FINAL_REPORT_FILE}`]
@@ -712,6 +719,19 @@ function phaseActionText(state, missingArtifacts = []) {
         ? ""
         : `If ready, write ${prefix}/verdict.md and set deliberationStatus=ready_for_verdict.`,
       "Do not ask the user whether another council pass is needed.",
+    ].join("\n")
+  }
+
+  if (state.currentPhase === "cleanup" && usesCouncilModes(state)) {
+    return [
+      "",
+      "",
+      "[magi] Phase 6 cleanup gate before the completion review.",
+      "Collect the round's full diff (git diff against the round start or checkpoint) and audit every change.",
+      "Remove redundant or ineffective changes; every remaining change must be necessary for the acceptance criteria.",
+      "Re-run the verification commands after cleanup.",
+      `Write ${prefix}/cleanup.md with per-change keep/remove reasons and post-cleanup verification output.`,
+      "Then set currentPhase=completion_review and run the adversarial review council. Do not write final-report.md yet.",
     ].join("\n")
   }
 

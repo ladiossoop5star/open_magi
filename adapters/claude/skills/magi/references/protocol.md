@@ -104,6 +104,7 @@ the round did not reduce uncertainty or move acceptance criteria closer.
 │   ├── direction-selection.md
 │   ├── verdict.md
 │   ├── verification.md
+│   ├── cleanup.md
 │   ├── review-001/
 │   │   ├── prompt.md
 │   │   ├── report-melchior.md
@@ -115,8 +116,8 @@ the round did not reduce uncertainty or move acceptance criteria closer.
 
 `recon-001/` exists only in round 1. Later rounds reuse the previous round's
 verification and diagnostic evidence instead of running a new recon pass.
-`review-001/` and `review-verdict.md` exist only in the round where the main
-agent claims completion.
+`cleanup.md`, `review-001/`, and `review-verdict.md` exist only in the round
+where the main agent claims completion.
 
 ## Phase Details
 
@@ -164,23 +165,41 @@ check only.
 ### Phase 6: Goal Check
 
 If the main agent judges acceptance criteria satisfied, do not write
-`final-report.md` yet. Run the adversarial completion review first:
+`final-report.md` yet. First run the cleanup gate, then the adversarial
+completion review.
 
-1. Set `currentPhase=completion_review` and `currentCouncilMode=review`.
-2. Write `round-NNN/review-001/prompt.md` containing the acceptance criteria,
-   `verdict.md`, `verification.md`, and the actual diff (`git diff` output or
-   the changed-file list with contents), never only a summary of the diff.
-3. Launch all three deliberators for the review pass and write the three
+Cleanup gate (`currentPhase=cleanup`):
+
+1. Collect the round's full diff (`git diff` against the round start or
+   checkpoint).
+2. Audit every change: remove redundant or ineffective changes; every
+   remaining change must be necessary for the acceptance criteria. Verify each
+   kept change individually.
+3. Re-run the verification commands after cleanup.
+4. Write `round-NNN/cleanup.md` with per-change `kept | removed` reasons and
+   the post-cleanup verification output (command, exit code, important
+   output). If the round made no code changes, record that explicitly.
+5. Only then set `currentPhase=completion_review` and continue to the review
+   pass.
+
+Completion review (`currentPhase=completion_review`,
+`currentCouncilMode=review`):
+
+1. Write `round-NNN/review-001/prompt.md` containing the acceptance criteria,
+   `verdict.md`, `verification.md`, `cleanup.md`, and the actual diff (`git
+   diff` output or the changed-file list with contents), never only a summary
+   of the diff.
+2. Launch all three deliberators for the review pass and write the three
    `round-NNN/review-001/report-*.md` files.
-4. Write `round-NNN/review-verdict.md` with `outcome: approved | objected`,
+3. Write `round-NNN/review-verdict.md` with `outcome: approved | objected`,
    `verdict_adherence_confirmed: yes | no`, each sage's stance, and any
    blocking objections.
-5. `outcome: approved` requires all three review reports at `stance: approve`
+4. `outcome: approved` requires all three review reports at `stance: approve`
    with `blocking_objection: no`, plus `verdict_adherence_confirmed: yes`.
-6. If approved: write `final-report.md`, set `currentPhase=complete`,
+5. If approved: write `final-report.md`, set `currentPhase=complete`,
    `active=false`, `needsContinue=false`, `inFlight=false`, and
    `inFlightSince=null`.
-7. If objected: treat the objections as new evidence. Append a history entry,
+6. If objected: treat the objections as new evidence. Append a history entry,
    increment `currentRound`, reset `currentDeliberationPass=1`, reset
    `deliberationStatus=not_started`, reset `currentCouncilMode=decision`, set
    `currentPhase=status_assessment`, set `needsContinue=true`, and start the

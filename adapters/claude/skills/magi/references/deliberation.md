@@ -216,11 +216,15 @@ direct, verifiable decision over long analysis.
 
 ## Phase 6: Completion Review Pass
 
-Run exactly one review pass per completion claim, before `final-report.md`.
+Run the cleanup gate first (see `references/protocol.md`): audit the round's
+full diff, remove redundant or ineffective changes, re-run verification, and
+write `round-NNN/cleanup.md`. Only then run exactly one review pass per
+completion claim, before `final-report.md`.
 
 Write `round-NNN/review-001/prompt.md` with:
 - the acceptance criteria and verification commands;
-- `round-NNN/verdict.md` and `round-NNN/verification.md`;
+- `round-NNN/verdict.md`, `round-NNN/verification.md`, and
+  `round-NNN/cleanup.md`;
 - the actual diff: `git diff` output against the round start or checkpoint,
   or the full contents of changed files. Never substitute the main agent's
   summary of the diff;

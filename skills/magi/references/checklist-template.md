@@ -64,10 +64,14 @@ Universal gate before any user question:
 - [ ] If `verdict_adherence: no`, no final report was written; the divergence evidence is recorded for the next round.
 - [ ] `state.json.currentPhase` is `execution`.
 
-## Phase 6 -> Completion Review -> Next Round or Complete
+## Phase 6 -> Cleanup -> Completion Review -> Next Round or Complete
 
 - [ ] Completion was judged against acceptanceCriteria.
-- [ ] If claiming completion, `state.json.currentPhase` was set to `completion_review` and `state.json.currentCouncilMode` to `review` before launching review deliberators.
+- [ ] Before the completion claim, `state.json.currentPhase` was set to `cleanup`.
+- [ ] The round's full diff was audited; redundant or ineffective changes were removed; every remaining change was verified as necessary.
+- [ ] Verification commands were re-run after cleanup.
+- [ ] `round-NNN/cleanup.md` exists with per-change keep/remove reasons and post-cleanup verification output.
+- [ ] Only after cleanup, `state.json.currentPhase` was set to `completion_review` and `state.json.currentCouncilMode` to `review` before launching review deliberators.
 - [ ] If claiming completion, `round-NNN/review-001/prompt.md` exists and contains the actual diff, not only a summary of the diff.
 - [ ] If claiming completion, `round-NNN/review-001/report-melchior.md`, `report-balthasar.md`, and `report-casper.md` exist.
 - [ ] If claiming completion, `round-NNN/review-verdict.md` exists with `outcome`, `verdict_adherence_confirmed`, and all three sage stances.
