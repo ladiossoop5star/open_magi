@@ -1,6 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { spawn } from "node:child_process"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { mkdtemp } from "node:fs/promises"
 
@@ -28,12 +28,12 @@ function appendLimited(current, chunk) {
   return next.slice(next.length - MAX_CAPTURE_CHARS)
 }
 
-function reportPath(projectRoot, round, pass, sage) {
-  return join(projectRoot, ".open_magi", "magi-log", `round-${padNumber(round)}`, `council-${padNumber(pass)}`, `report-${sage}.md`)
-}
-
 function councilPromptPath(projectRoot, round, pass) {
   return join(projectRoot, ".open_magi", "magi-log", `round-${padNumber(round)}`, `council-${padNumber(pass)}`, "prompt.md")
+}
+
+function reportPathForPrompt(promptPath, sage) {
+  return join(dirname(promptPath), `report-${sage}.md`)
 }
 
 function frontmatter(text) {
@@ -176,8 +176,8 @@ function claudeFailureType(processResult) {
   return "hard_error"
 }
 
-async function writeReport({ projectRoot, round, pass, agent, processResult }) {
-  const path = reportPath(projectRoot, round, pass, agent.sage)
+async function writeReport({ promptPath, agent, processResult }) {
+  const path = reportPathForPrompt(promptPath, agent.sage)
   await mkdir(dirname(path), { recursive: true })
   const source = processResult.ok ? "claude_headless" : "claude_headless_failed"
   const failureType = claudeFailureType(processResult)
@@ -206,7 +206,7 @@ export async function runClaudeCouncil(options = {}) {
   const projectRoot = options.projectRoot || process.cwd()
   const round = Number(options.round || 1)
   const pass = Number(options.pass || options.deliberationPass || 1)
-  const promptPath = options.promptPath || councilPromptPath(projectRoot, round, pass)
+  const promptPath = resolve(projectRoot, options.promptPath || councilPromptPath(projectRoot, round, pass))
   const pluginDir = options.pluginDir || defaultClaudePluginDir(options.env || process.env)
   const claudeBin = options.claudeBin || process.env.OPEN_MAGI_CLAUDE_BIN || "claude"
   const timeoutMs = Number(options.timeoutMs || process.env.OPEN_MAGI_DELIBERATOR_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)
@@ -224,7 +224,7 @@ export async function runClaudeCouncil(options = {}) {
         timeoutMs,
         env: options.env,
       })
-      const path = await writeReport({ projectRoot, round, pass, agent, processResult })
+      const path = await writeReport({ promptPath, agent, processResult })
       return {
         agent: agent.agent,
         sage: agent.sage,

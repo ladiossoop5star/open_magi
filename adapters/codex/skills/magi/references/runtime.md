@@ -15,6 +15,12 @@ run `setup-codex` through the adapter CLI to recreate templates. If any file
 contains `model = "default-model"`, stop before project work and tell the user
 to edit the exact file path.
 
+When the main Codex session runs under a profile (for example
+`codex --profile local`), each deliberator TOML should also set
+`profile = "local"` so `run-council` can forward `--profile` to the
+`codex exec` subprocesses; without the field, no `--profile` is passed and the
+subprocesses read only the base config.
+
 Do not silently use the main agent model as all three deliberators. If setup
 cannot be completed, report the blocker instead of starting a same-model
 fallback.
@@ -56,10 +62,12 @@ The tool reads these Codex custom agent templates:
 It launches three independent `codex exec` subprocesses with each TOML file's
 `model`, optional `model_provider`, optional `model_reasoning_effort`, and
 read-only sandbox. The runner disables the Magi Stop hook inside those
-subprocesses so deliberators can stop after returning their report. It writes:
-- `round-NNN/council-PPP/report-melchior.md`
-- `round-NNN/council-PPP/report-balthasar.md`
-- `round-NNN/council-PPP/report-casper.md`
+subprocesses so deliberators can stop after returning their report. It writes
+`report-melchior.md`, `report-balthasar.md`, and `report-casper.md` next to the
+prompt file, for example `round-NNN/council-PPP/report-melchior.md`. Recon and
+review passes use the same command with `--prompt-path` pointing at
+`round-NNN/recon-001/prompt.md` or `round-NNN/review-001/prompt.md`; the reports
+land in the same mode directory.
 
 Each report starts with `report_source: codex_exec` on success or
 `report_source: codex_exec_failed` on failure. Reports also include

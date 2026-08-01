@@ -232,6 +232,47 @@ test("setupClaudeMagi writes a generated Claude skills-dir plugin", async () => 
   await rm(pluginDir, { recursive: true, force: true })
 })
 
+test("setupClaudeMagi overwrites existing generated files by default", async () => {
+  const { setupClaudeMagi } = await import("../adapters/claude/lib/setup.js")
+  const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-plugin-overwrite-"))
+  const skillPath = join(pluginDir, "skills", "magi", "SKILL.md")
+  await mkdir(dirname(skillPath), { recursive: true })
+  await writeFile(skillPath, "stale skill content\n")
+
+  const result = await setupClaudeMagi({
+    pluginDir,
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+
+  assert.deepEqual(result.skipped, [])
+  assert.match(await readFile(skillPath, "utf8"), /Claude Bootstrap Gate/)
+
+  await rm(pluginDir, { recursive: true, force: true })
+})
+
+test("setupClaudeMagi preserves existing generated files when force is false", async () => {
+  const { setupClaudeMagi } = await import("../adapters/claude/lib/setup.js")
+  const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-plugin-preserve-"))
+  const skillPath = join(pluginDir, "skills", "magi", "SKILL.md")
+  await mkdir(dirname(skillPath), { recursive: true })
+  await writeFile(skillPath, "stale skill content\n")
+
+  const result = await setupClaudeMagi({
+    pluginDir,
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+    force: false,
+  })
+
+  assert.deepEqual(result.skipped.map((file) => file.name), ["skills/magi/SKILL.md"])
+  assert.equal(await readFile(skillPath, "utf8"), "stale skill content\n")
+
+  await rm(pluginDir, { recursive: true, force: true })
+})
+
 test("defaultClaudePluginDir uses Claude home skills directory", async () => {
   const { defaultClaudePluginDir } = await import("../adapters/claude/lib/setup.js")
 
@@ -337,6 +378,75 @@ test("runClaudeCouncil launches three Claude subprocesses concurrently and write
   await rm(binDir, { recursive: true, force: true })
 })
 
+test("runClaudeCouncil resolves a relative prompt path against the project root", async () => {
+  const { runClaudeCouncil } = await import("../adapters/claude/lib/claude-runner.js")
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-claude-runner-relative-project-"))
+  const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-runner-relative-plugin-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-claude-runner-relative-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "recon-001", "prompt.md")
+  const fakeClaude = join(binDir, "claude")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await mkdir(join(pluginDir, "agents"), { recursive: true })
+  await writeFile(promptPath, "# Recon Prompt\n\nGather evidence read-only.\n")
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await writeFile(
+      join(pluginDir, "agents", `deliberator-${sage}.md`),
+      `---\nname: deliberator-${sage}\nmodel: model-a\ntools: ["Read", "Grep", "Glob"]\n---\n\nRole ${sage}\n`,
+    )
+  }
+  await writeFile(
+    fakeClaude,
+    [
+      "#!/usr/bin/env node",
+      "console.log('stance: approve\\nblocking_objection: no\\nrecommended_plan: none\\nverification_plan: true\\nrisk_level: low\\n\\n## Summary\\nFake recon report.')",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeClaude, 0o755)
+
+  const result = await runClaudeCouncil({
+    projectRoot,
+    promptPath: ".open_magi/magi-log/round-001/recon-001/prompt.md",
+    round: 1,
+    pass: 1,
+    pluginDir,
+    claudeBin: fakeClaude,
+    timeoutMs: 2000,
+  })
+
+  assert.equal(result.ok, true)
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    const report = await readFile(
+      join(projectRoot, ".open_magi", "magi-log", "round-001", "recon-001", `report-${sage}.md`),
+      "utf8",
+    )
+    assert.match(report, /report_source: claude_headless/)
+    assert.match(report, /Fake recon report/)
+  }
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(pluginDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("generated Claude plugin CLI reports its version without a package.json", async () => {
+  const { setupClaudeMagi } = await import("../adapters/claude/lib/setup.js")
+  const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-version-"))
+  await setupClaudeMagi({
+    pluginDir,
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+
+  const { stdout } = await execFile("node", [join(pluginDir, "bin", "open-magi-claude.js"), "--version"])
+
+  assert.equal(stdout.trim(), "0.1.5")
+
+  await rm(pluginDir, { recursive: true, force: true })
+})
+
 test("Claude setup CLI run-council writes reports through the headless runner", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-claude-cli-project-"))
   const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-cli-plugin-"))
@@ -400,6 +510,83 @@ test("Claude setup CLI run-council writes reports through the headless runner", 
   await rm(projectRoot, { recursive: true, force: true })
   await rm(pluginDir, { recursive: true, force: true })
   await rm(binDir, { recursive: true, force: true })
+})
+
+test("runCouncil passes --profile to codex exec only when the agent file sets it", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-profile-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-profile-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-profile-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeLog = join(projectRoot, "fake-codex-calls.jsonl")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  const agents = buildCodexAgentConfig({
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+  for (const [name, content] of Object.entries(agents)) {
+    await writeFile(join(agentsDir, name), content)
+  }
+  await writeFile(
+    join(agentsDir, "deliberator-casper.toml"),
+    `${agents["deliberator-casper.toml"]}profile = "local"\n`,
+  )
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { appendFileSync, writeFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "let stdin = ''",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (chunk) => { stdin += chunk })",
+      "process.stdin.on('end', () => {",
+      "  appendFileSync(process.env.OPEN_MAGI_FAKE_LOG, JSON.stringify({ args }) + '\\n')",
+      "  const outputIndex = args.indexOf('-o')",
+      "  const output = outputIndex >= 0 ? args[outputIndex + 1] : args[args.indexOf('--output-last-message') + 1]",
+      "  writeFileSync(output, 'stance: approve\\nblocking_objection: no\\nrecommended_plan: fake\\nverification_plan: true\\nrisk_level: low\\n')",
+      "})",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 2000,
+    env: { OPEN_MAGI_FAKE_LOG: fakeLog },
+  })
+
+  assert.equal(result.ok, true)
+  const calls = (await readFile(fakeLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
+  assert.equal(calls.length, 3)
+
+  const withProfile = calls.filter((call) => call.args.includes("--profile"))
+  assert.equal(withProfile.length, 1)
+  assert.equal(withProfile[0].args[withProfile[0].args.indexOf("--profile") + 1], "local")
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("buildCodexAgentConfig writes a profile field only when provided", () => {
+  const withProfile = buildCodexAgentConfig({ profile: "local" })
+  assert.match(withProfile["deliberator-melchior.toml"], /^profile = "local"$/m)
+  assert.match(withProfile["deliberator-casper.toml"], /^profile = "local"$/m)
+
+  const withoutProfile = buildCodexAgentConfig()
+  assert.doesNotMatch(withoutProfile["deliberator-melchior.toml"], /^profile =/m)
+  assert.doesNotMatch(withoutProfile["deliberator-casper.toml"], /^profile =/m)
 })
 
 test("setupCodexMagi preserves existing Codex agent files by default", async () => {
@@ -520,6 +707,68 @@ test("runCouncil launches three Codex subprocesses from agent TOML and writes pr
   assert.ok(calls.some((call) => call.args.includes("model-b")))
   assert.ok(calls.some((call) => call.args.includes("model-c")))
   assert.ok(calls.every((call) => call.stdin.includes("REPORT OUTPUT REQUIREMENTS")))
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("runCouncil writes reports next to a recon or review mode prompt", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-recon-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-recon-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-recon-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "recon-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(join(projectRoot, ".open_magi", "magi-log", "round-001", "recon-001"), { recursive: true })
+  await writeFile(promptPath, "# Recon Prompt\n\nGather evidence read-only.\n")
+  const agents = buildCodexAgentConfig({
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+  for (const [name, content] of Object.entries(agents)) {
+    await writeFile(join(agentsDir, name), content)
+  }
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { writeFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "let stdin = ''",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (chunk) => { stdin += chunk })",
+      "process.stdin.on('end', () => {",
+      "  const outputIndex = args.indexOf('-o')",
+      "  const output = outputIndex >= 0 ? args[outputIndex + 1] : args[args.indexOf('--output-last-message') + 1]",
+      "  writeFileSync(output, 'stance: approve\\nblocking_objection: no\\nrecommended_plan: none\\nverification_plan: true\\nrisk_level: low\\n\\n## Summary\\nFake recon report.\\n')",
+      "})",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 2000,
+  })
+
+  assert.equal(result.ok, true)
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    const report = await readFile(
+      join(projectRoot, ".open_magi", "magi-log", "round-001", "recon-001", `report-${sage}.md`),
+      "utf8",
+    )
+    assert.match(report, /report_source: codex_exec/)
+    assert.match(report, /Fake recon report/)
+  }
 
   await rm(projectRoot, { recursive: true, force: true })
   await rm(agentsDir, { recursive: true, force: true })

@@ -13,27 +13,32 @@ Open Magi 是給比較複雜、容易卡住、需要多輪驗證的 coding task 
 Magi loop：
 
 1. 主 agent 先把目標、完成條件、驗證指令寫到 `.open_magi/magi-log/`。
-2. 主 agent 只收集足夠上下文，寫出聚焦的 council prompt，不先自己鑽太深。
+2. 第一輪時，主 agent 只做最小範圍定位，然後進行 recon council pass：三賢者
+   平行唯讀偵查，主 agent 把發現彙整成 `evidence-base.md`。
 3. 三賢者以唯讀方式評議：Melchior 看實作風險，Balthasar 看架構與維護性，
    Casper 看根因、反例與驗證缺口。
 4. 主 agent 彙整三份 report，選出方向；如果共識不足，就再進下一輪評議，而不是
    直接猜方向改 code。
 5. 有明確 verdict 後，才由主 agent 修改程式、跑 build/test/驗證指令，並記錄
    `verdict_adherence: yes|no`。
-6. 如果尚未達成完成條件，就帶著新的 evidence 進下一輪；完成後寫出
-   `final-report.md` 並關閉 loop。
+6. 宣稱完成時會觸發一次對抗性 review council pass：三賢者拿實際 diff 對照
+   verdict、驗證輸出與完成條件審查。只有 `review-verdict.md` 核准才能寫
+   `final-report.md` 並關閉 loop；有異議就帶著異議進下一輪。
+7. 支援 runtime backstop 的環境會額外防止 loop 靜默停住、亂問流程問題、或跳過
+   必要 artifact。
 
 重點是：三賢者只提供 report，不改檔案、不跑建置測試。主 agent 才負責決策、
-改 code、跑驗證、寫 final report。支援 runtime backstop 的環境會額外防止它
-靜默停住、亂問流程問題、或跳過必要 artifact。
+改 code、跑驗證、寫 final report。
 
 ## 流程圖
 
 ```mermaid
 flowchart TD
     A[使用者提出 coding 目標] --> B[主 agent 建立 .open_magi/magi-log state]
-    B --> C[Phase 1: 評估目前狀態與 evidence]
-    C --> D[Phase 2: 寫出聚焦的 council prompt]
+    B --> C[Phase 1a: 最小範圍定位，寫 recon prompt]
+    C --> R[Phase 1b: recon council 平行蒐集 evidence]
+    R --> R2[主 agent 彙整 evidence-base.md]
+    R2 --> D[Phase 2: 寫出聚焦的 council prompt]
     D --> E[Phase 3: 啟動 Melchior、Balthasar、Casper]
     E --> F[三賢者產生唯讀 report]
     F --> G[Phase 4: 彙整共識、風險與候選方向]
@@ -44,7 +49,10 @@ flowchart TD
     J --> K{是否達成完成條件?}
     K -- 否 --> L[記錄 verification，進入下一 round]
     L --> C
-    K -- 是 --> M[寫 final-report.md 並關閉 loop]
+    K -- 是 --> V[Completion review: council 對抗審查實際 diff]
+    V --> W{review-verdict 核准?}
+    W -- 否 --> L
+    W -- 是 --> M[寫 final-report.md 並關閉 loop]
 ```
 
 ## 支援狀態
@@ -583,6 +591,12 @@ Magi 在每個專案中的 runtime log 會寫在：
 ├── state.json
 ├── checklist.md
 ├── round-001/
+│   ├── recon-001/
+│   │   ├── prompt.md
+│   │   ├── report-melchior.md
+│   │   ├── report-balthasar.md
+│   │   └── report-casper.md
+│   ├── evidence-base.md
 │   ├── research-prompt.md
 │   ├── council-001/
 │   │   ├── prompt.md
@@ -591,7 +605,13 @@ Magi 在每個專案中的 runtime log 會寫在：
 │   │   ├── report-casper.md
 │   │   └── synthesis.md
 │   ├── verdict.md
-│   └── verification.md
+│   ├── verification.md
+│   ├── review-001/
+│   │   ├── prompt.md
+│   │   ├── report-melchior.md
+│   │   ├── report-balthasar.md
+│   │   └── report-casper.md
+│   └── review-verdict.md
 └── final-report.md
 ```
 
@@ -603,6 +623,13 @@ artifact，plugin 會重新打開 loop 要求修復。
 `verification.md` 必須用 `verdict_adherence: yes` 明確確認實作符合
 `verdict.md`。如果實作偏離 verdict，就不能 finalize；新的 evidence 必須進入
 下一個 council round 重新審議。
+
+`recon-001/` 只出現在第一輪：主 agent 先做最小範圍定位，三賢者再平行蒐集
+evidence，之後才選方向。`review-001/` 與 `review-verdict.md` 是完成條件的
+gate：主 agent 宣稱達成目標時，council 會對抗審查實際 diff，只有
+`outcome: approved` 且 `verdict_adherence_confirmed: yes` 才能寫
+`final-report.md`。沒有核准 review verdict 就關閉的 loop，會被 plugin 與
+stop hook 重新打開。
 
 修改 code 之前，Magi 可以在同一個 round 內進行多次 bounded council pass：
 預設最多 3 次，困難問題硬上限 5 次。前兩次使用一票否決制，避免太早實作；

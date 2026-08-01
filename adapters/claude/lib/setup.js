@@ -86,6 +86,7 @@ export function buildClaudePluginFiles(options = {}) {
     ".claude-plugin/plugin.json": readText(".claude-plugin/plugin.json"),
     "hooks/hooks.json": readText("hooks/hooks.json"),
     "hooks/magi-stop": readText("hooks/magi-stop"),
+    "hooks/magi-tool-reminder": readText("hooks/magi-tool-reminder"),
   }
 
   for (const agent of agentDefinitions) {
@@ -113,13 +114,13 @@ async function writeGeneratedFiles(pluginDir, files, options) {
   await mkdir(pluginDir, { recursive: true })
   for (const [name, content] of Object.entries(files)) {
     const path = join(pluginDir, name)
-    if (!options.force && existsSync(path)) {
+    if (options.force === false && existsSync(path)) {
       skipped.push({ name, path, content })
       continue
     }
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, content)
-    if (name === "hooks/magi-stop" || name === "bin/open-magi-claude.js") await chmod(path, 0o755)
+    if (name.startsWith("hooks/magi-") || name === "bin/open-magi-claude.js") await chmod(path, 0o755)
     written.push({ name, path, content })
   }
 

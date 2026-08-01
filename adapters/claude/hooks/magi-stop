@@ -19,7 +19,55 @@ function asList(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.trim()) : []
 }
 
-if (!existsSync(statePath) || existsSync(finalReportPath)) {
+if (!existsSync(statePath)) {
+  process.exit(0)
+}
+
+if (existsSync(finalReportPath)) {
+  let closedState = null
+  try {
+    closedState = JSON.parse(readFileSync(statePath, "utf8"))
+  } catch {
+    process.exit(0)
+  }
+
+  const usesCouncilModes =
+    closedState?.currentCouncilMode !== undefined || Number(closedState?.schemaVersion) >= 2
+
+  if (closedState?.active !== true && usesCouncilModes && closedState?.currentPhase === "complete") {
+    const round = Number(closedState?.currentRound)
+    const roundName = `round-${String(Number.isInteger(round) && round > 0 ? round : 1).padStart(3, "0")}`
+    let reviewVerdict = null
+    try {
+      reviewVerdict = readFileSync(join(logDir, roundName, "review-verdict.md"), "utf8")
+    } catch {
+      reviewVerdict = null
+    }
+
+    const approved = reviewVerdict !== null && /^\s*outcome\s*:\s*approved\s*$/im.test(reviewVerdict)
+    const adherenceConfirmed =
+      reviewVerdict !== null && /^\s*verdict_adherence_confirmed\s*:\s*yes\s*$/im.test(reviewVerdict)
+
+    if (!approved || !adherenceConfirmed) {
+      emitContinuation(
+        [
+          "<MAGI_STOP_BACKSTOP>",
+          "Magi completion review did not approve the actual diff.",
+          `statePath: ${statePath}`,
+          `finalReportPath: ${finalReportPath}`,
+          `currentRound: ${closedState.currentRound ?? "unknown"}`,
+          `currentPhase: ${closedState.currentPhase ?? "unknown"}`,
+          approved ? "" : `missing: ${roundName}/review-verdict.md with outcome: approved`,
+          adherenceConfirmed ? "" : `missing: verdict_adherence_confirmed: yes in ${roundName}/review-verdict.md`,
+          "A schemaVersion 2 Magi loop may close only when review-verdict.md records outcome: approved and verdict_adherence_confirmed: yes from the adversarial review council.",
+          "If the review objected, restore active=true and needsContinue=true, then start the next round with the objections as evidence. Do not finalize on the main agent's own judgment.",
+          "</MAGI_STOP_BACKSTOP>",
+        ]
+          .filter((line) => line !== "")
+          .join("\n"),
+      )
+    }
+  }
   process.exit(0)
 }
 

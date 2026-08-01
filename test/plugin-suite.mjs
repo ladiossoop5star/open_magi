@@ -2145,4 +2145,345 @@ test("event hook contains unexpected filesystem errors instead of rejecting", as
 
   await rm(rootFile, { force: true })
 })
+
+test("council modes v2 round-one research task requires recon artifacts", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "decision",
+    currentRound: 1,
+    currentPhase: "research_task",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "not_started",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 1,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-001/research-prompt.md")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.match(prompt, /Artifact integrity repair required/)
+  assert.match(prompt, /round-001\/recon-001\/report-melchior\.md/)
+  assert.match(prompt, /round-001\/recon-001\/report-casper\.md/)
+  assert.match(prompt, /round-001\/evidence-base\.md/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("recon-mode deliberator timeout writes the report into recon-001", async () => {
+  const project = await makeProject("{}")
+  const expiredDeadline = new Date(Date.now() - 1000).toISOString()
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "recon",
+    currentRound: 1,
+    currentPhase: "status_assessment",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "not_started",
+    needsContinue: true,
+    inFlight: false,
+    activeDeliberators: {
+      melchior: {
+        agent: "deliberator-melchior",
+        sessionID: "ses-melchior",
+        parentSessionID: "ses-1",
+        round: 1,
+        pass: 1,
+        mode: "recon",
+        startedAt: new Date(Date.now() - 700000).toISOString(),
+        deadlineAt: expiredDeadline,
+        status: "running",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient(calls, { aborts }),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(aborts.length, 1)
+  assert.equal(aborts[0].path.id, "ses-melchior")
+
+  const report = await readFile(
+    join(project.root, ".open_magi/magi-log/round-001/recon-001/report-melchior.md"),
+    "utf8",
+  )
+  assert.match(report, /status: timeout/)
+  assert.match(report, /stance: needs_evidence/)
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.activeDeliberators.melchior.status, "timed_out")
+  assert.equal(
+    updated.activeDeliberators.melchior.reportPath,
+    ".open_magi/magi-log/round-001/recon-001/report-melchior.md",
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("completion_review phase requires review council reports", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "review",
+    currentRound: 1,
+    currentPhase: "completion_review",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "ready_for_verdict",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 1,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  for (const artifact of [
+    "recon-001/prompt.md",
+    "recon-001/report-melchior.md",
+    "recon-001/report-balthasar.md",
+    "recon-001/report-casper.md",
+    "evidence-base.md",
+    "research-prompt.md",
+    "council-001/prompt.md",
+    "council-001/report-melchior.md",
+    "council-001/report-balthasar.md",
+    "council-001/report-casper.md",
+    "council-001/synthesis.md",
+    "direction-selection.md",
+    "verdict.md",
+    "verification.md",
+  ]) {
+    await writeArtifact(project.root, `.open_magi/magi-log/round-001/${artifact}`)
+  }
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.match(prompt, /Artifact integrity repair required/)
+  assert.match(prompt, /round-001\/review-001\/report-melchior\.md/)
+  assert.match(prompt, /round-001\/review-001\/report-casper\.md/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("completion_review with review reports present gets the review gate action text", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "review",
+    currentRound: 1,
+    currentPhase: "completion_review",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "ready_for_verdict",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 1,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  for (const artifact of [
+    "recon-001/prompt.md",
+    "recon-001/report-melchior.md",
+    "recon-001/report-balthasar.md",
+    "recon-001/report-casper.md",
+    "evidence-base.md",
+    "research-prompt.md",
+    "council-001/prompt.md",
+    "council-001/report-melchior.md",
+    "council-001/report-balthasar.md",
+    "council-001/report-casper.md",
+    "council-001/synthesis.md",
+    "direction-selection.md",
+    "verdict.md",
+    "verification.md",
+    "review-001/prompt.md",
+    "review-001/report-melchior.md",
+    "review-001/report-balthasar.md",
+    "review-001/report-casper.md",
+  ]) {
+    await writeArtifact(project.root, `.open_magi/magi-log/round-001/${artifact}`)
+  }
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.doesNotMatch(prompt, /Artifact integrity repair required/)
+  assert.match(prompt, /completion review gate/)
+  assert.match(prompt, /review-verdict\.md/)
+  assert.match(prompt, /outcome: approved/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("state write reopens a v2 loop closed without review council artifacts", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "decision",
+    currentRound: 1,
+    currentPhase: "complete",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "ready_for_verdict",
+    active: false,
+    needsContinue: false,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/final-report.md")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks["tool.execute.after"]({
+    sessionID: "ses-1",
+    tool: "write",
+    args: { filePath: project.statePath },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.match(prompt, /Artifact integrity repair required/)
+  assert.match(prompt, /round-001\/review-001\/report-melchior\.md/)
+  assert.match(prompt, /round-001\/review-verdict\.md/)
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.active, true)
+  assert.equal(updated.needsContinue, true)
+  assert.match(updated.lastError, /artifact integrity repair required/i)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("state write keeps a v2 loop closed when the review council approved", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "decision",
+    currentRound: 1,
+    currentPhase: "complete",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "ready_for_verdict",
+    active: false,
+    needsContinue: false,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/final-report.md")
+  for (const artifact of [
+    "review-001/prompt.md",
+    "review-001/report-melchior.md",
+    "review-001/report-balthasar.md",
+    "review-001/report-casper.md",
+  ]) {
+    await writeArtifact(project.root, `.open_magi/magi-log/round-001/${artifact}`)
+  }
+  await writeArtifact(
+    project.root,
+    ".open_magi/magi-log/round-001/review-verdict.md",
+    "outcome: approved\nverdict_adherence_confirmed: yes\n",
+  )
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks["tool.execute.after"]({
+    sessionID: "ses-1",
+    tool: "write",
+    args: { filePath: project.statePath },
+  })
+
+  assert.equal(calls.length, 0)
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.active, false)
+  assert.equal(updated.currentPhase, "complete")
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("session.created records the active council mode on deliberator entries", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "review",
+    currentRound: 1,
+    currentPhase: "completion_review",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    activeDeliberators: {},
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: {
+      type: "session.created",
+      properties: {
+        info: {
+          id: "ses-casper",
+          parentID: "ses-1",
+          agent: "deliberator-casper",
+        },
+      },
+    },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.activeDeliberators.casper.mode, "review")
+  assert.equal(updated.activeDeliberators.casper.status, "running")
+
+  await rm(project.root, { recursive: true, force: true })
+})
 }

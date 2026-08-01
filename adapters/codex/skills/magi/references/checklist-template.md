@@ -17,6 +17,11 @@ Universal gate before any user question:
 
 - [ ] acceptanceCriteria, latest verification.md, and current filesystem state were compared.
 - [ ] Status is `needs_research` before entering Phase 2.
+- [ ] Round 1 only: `round-NNN/recon-001/prompt.md` exists and `state.json.currentCouncilMode` was set to `recon` before launching recon deliberators.
+- [ ] Round 1 only: `round-NNN/recon-001/report-melchior.md`, `report-balthasar.md`, and `report-casper.md` exist.
+- [ ] Round 1 only: `round-NNN/evidence-base.md` exists with confirmed facts, open questions, key files, and constraints.
+- [ ] Round 1 only: `state.json.currentCouncilMode` was reset to `decision`.
+- [ ] Later rounds: previous round's verification.md and diagnostic evidence were reviewed instead of running a new recon pass.
 
 ## Phase 2 -> Phase 3
 
@@ -59,10 +64,15 @@ Universal gate before any user question:
 - [ ] If `verdict_adherence: no`, no final report was written; the divergence evidence is recorded for the next round.
 - [ ] `state.json.currentPhase` is `execution`.
 
-## Phase 6 -> Next Round or Complete
+## Phase 6 -> Completion Review -> Next Round or Complete
 
 - [ ] Completion was judged against acceptanceCriteria.
-- [ ] If complete, `final-report.md` exists before `state.json.active=false` and `state.json.currentPhase` was set to `complete`.
+- [ ] If claiming completion, `state.json.currentPhase` was set to `completion_review` and `state.json.currentCouncilMode` to `review` before launching review deliberators.
+- [ ] If claiming completion, `round-NNN/review-001/prompt.md` exists and contains the actual diff, not only a summary of the diff.
+- [ ] If claiming completion, `round-NNN/review-001/report-melchior.md`, `report-balthasar.md`, and `report-casper.md` exist.
+- [ ] If claiming completion, `round-NNN/review-verdict.md` exists with `outcome`, `verdict_adherence_confirmed`, and all three sage stances.
+- [ ] `final-report.md` was written only after `outcome: approved` with `verdict_adherence_confirmed: yes`; then `state.json.active=false` and `state.json.currentPhase=complete`.
+- [ ] If the review objected, no final report was written; history was appended, currentRound was incremented, `currentCouncilMode` was reset to `decision`, and `state.json.currentPhase` was set to `status_assessment`.
 - [ ] If incomplete with progress, history was appended with `progress: true|false`, currentRound was incremented, and `state.json.currentPhase` was set to `status_assessment`.
 - [ ] If incomplete with no progress, history was appended with `progress: true|false`, consecutiveNoProgress was incremented and only stops at >= 5.
 - [ ] `state.json.needsContinue` is correct.

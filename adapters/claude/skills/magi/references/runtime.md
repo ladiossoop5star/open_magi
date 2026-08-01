@@ -31,6 +31,10 @@ emit multiple `Agent` tool calls in one turn. In Phase 3, do not use the Claude
 
 Do not use the Claude `Agent` tool for Magi council launch.
 
+Launch the runner as a background Bash task (`run_in_background: true`) so the
+council is not bounded by the 600000 ms foreground Bash ceiling and Claude
+Code notifies you when it finishes:
+
 ```bash
 open-magi-claude run-council \
   --project-root "$PWD" \
@@ -38,6 +42,19 @@ open-magi-claude run-council \
   --round N \
   --pass P
 ```
+
+When the background completion notification arrives, read the runner output
+and verify the three `report-*.md` files next to the prompt. Do not poll every
+few seconds; wait for the notification. If the session ends before the runner
+finishes, treat missing reports as deliberator failures per
+`references/deliberation.md` and rerun the council after resuming.
+
+Foreground fallback: if background execution is unavailable, run the same
+command in the foreground with `--timeout-ms 540000` and set the Bash call's
+own timeout to 600000 ms. If the host kills the runner first, the runner
+cannot write timeout reports and the council loses its failure evidence. When
+the runner enforces the timeout itself, it writes `status: timeout` reports
+and the loop continues through the normal timeout gate.
 
 If `open-magi-claude` is not on PATH, use the generated plugin-local CLI:
 
@@ -84,11 +101,15 @@ agents.
 
 ## Report Ownership
 
-The Claude headless runner writes Magi artifacts directly. After it returns,
-the main agent must verify these files exist:
+The Claude headless runner writes Magi artifacts directly, next to the prompt
+file. After it returns, the main agent must verify these files exist:
 - `round-NNN/council-PPP/report-melchior.md`
 - `round-NNN/council-PPP/report-balthasar.md`
 - `round-NNN/council-PPP/report-casper.md`
+
+Recon and review passes use the same `run-council` command with `--prompt-path`
+pointing at `round-NNN/recon-001/prompt.md` or `round-NNN/review-001/prompt.md`;
+the three reports land in the same mode directory.
 
 Each successful report must start with:
 

@@ -12,9 +12,17 @@ decisions, edits, verification, commits, rollback, and final reporting. Three
 read-only sub-agents only research and report.
 
 Core rule: completion requires explicit `acceptanceCriteria` and
-`verificationCommands`, not confidence.
+`verificationCommands`, not confidence, plus an approved adversarial review of
+the actual diff before `final-report.md`.
 
 Proposal-first rule: before any fix direction is selected, the main agent prepares an evidence packet and does not propose a fix. The deliberators propose directions first; the main agent selects one, then they review it before execution.
+
+Council modes: the council runs in three modes sharing one launch and report
+mechanism. `recon` (round 1 Phase 1b) gathers evidence in parallel before the
+main agent commits to a direction. `decision` (Phases 2-4) selects the
+direction proposal-first. `review` (Phase 6) adversarially reviews the actual
+diff before completion. Track the active mode in `state.json
+currentCouncilMode`.
 
 ## Required Reference Loading
 
@@ -94,7 +102,8 @@ Sub-agent restrictions:
 
 In Claude Phase 3, do not use the Claude `Agent` tool for Magi deliberation.
 Use `references/runtime.md` and run the plugin-cache CLI command
-`open-magi-claude run-council` so the three deliberators execute as separate
+`open-magi-claude run-council` as a background Bash task
+(`run_in_background: true`) so the three deliberators execute as separate
 headless Claude subprocesses. This is the only supported way to guarantee
 parallel launch and separate model selection in Claude.
 
@@ -111,10 +120,11 @@ State file path: `.open_magi/magi-log/state.json`.
 Create it before the first research round with `schemaVersion`, `goal`,
 `acceptanceCriteria`, `verificationCommands`, `active`, `projectRoot`,
 `currentRound`, `currentPhase`, `currentDeliberationPass`,
-`maxDeliberationPasses`, `deliberationStatus`, `deliberatorTimeoutMs`,
-`activeDeliberators`, `deliberatorTimeoutCounts`, `needsContinue`, `inFlight`,
-`inFlightSince`, `consecutiveNoProgress`, `verdict`, `lastError`, and
-`history`. Full schema and artifact layout are in `references/protocol.md`.
+`maxDeliberationPasses`, `deliberationStatus`, `currentCouncilMode`,
+`deliberatorTimeoutMs`, `activeDeliberators`, `deliberatorTimeoutCounts`,
+`needsContinue`, `inFlight`, `inFlightSince`, `consecutiveNoProgress`,
+`verdict`, `lastError`, and `history`. Use `schemaVersion: 2`. Full schema and
+artifact layout are in `references/protocol.md`.
 
 Runtime-adapter-owned fields: `inFlight`, `inFlightSince`, `lastPromptedRound`,
 `lastPromptedAt`, `activeDeliberators`, and `deliberatorTimeoutCounts`.
@@ -145,12 +155,18 @@ instead of omitting the file.
 
 Before ending a turn while `active=true`, verify log files match state:
 - `research_task` has `round-NNN/research-prompt.md`.
+- Round 1 at `research_task` or later has `round-NNN/recon-001/prompt.md`, all
+  three recon reports, and `round-NNN/evidence-base.md`.
 - Synthesis or later has all three current council reports.
 - `synthesis` or later has current `synthesis.md`.
 - Review pass 2 or later has `round-NNN/direction-selection.md`.
 - `ready_for_verdict`, `execution`, or later has `verdict.md`.
 - Any executed command has `verification.md` with command, exit code, and important output.
-- Satisfied acceptance criteria have `final-report.md` before `active=false`.
+- `completion_review` has `round-NNN/review-001/prompt.md` and all three
+  review reports; closing adds `round-NNN/review-verdict.md` with
+  `outcome: approved` and `verdict_adherence_confirmed: yes`.
+- Satisfied acceptance criteria have an approved review verdict and
+  `final-report.md` before `active=false`.
 
 After writing each artifact, update `state.json`. Set `needsContinue=true`
 whenever more work remains. Never end with `active=true`, a non-terminal
@@ -158,9 +174,9 @@ whenever more work remains. Never end with `active=true`, a non-terminal
 
 ## Council Pass Gate
 
-Use bounded multi-pass proposal-first deliberation before editing code or
-running verification. State fields are `currentDeliberationPass` and
-`maxDeliberationPasses`.
+Use bounded multi-pass proposal-first deliberation in `decision` mode before
+editing code or running verification. State fields are
+`currentDeliberationPass` and `maxDeliberationPasses`.
 
 Rules:
 - The default `maxDeliberationPasses` is 3.
@@ -183,6 +199,22 @@ Rules:
   `verdict.md`, and continue.
 
 Do not ask the user whether another council pass is needed. The gate decides.
+
+## Completion Review Gate
+
+Before writing `final-report.md`, run exactly one adversarial review pass:
+- set `currentPhase=completion_review` and `currentCouncilMode=review`;
+- write `round-NNN/review-001/prompt.md` with the acceptance criteria,
+  `verdict.md`, `verification.md`, and the actual diff, never only a summary;
+- launch all three deliberators and write the three
+  `round-NNN/review-001/report-*.md` files;
+- write `round-NNN/review-verdict.md` with `outcome`,
+  `verdict_adherence_confirmed`, and all three stances.
+
+`final-report.md` is allowed only when `outcome: approved` and
+`verdict_adherence_confirmed: yes`. An objected review starts the next round
+with the objections as evidence. Full contract is in
+`references/deliberation.md`.
 
 ## Procedural Autonomy Gate
 
@@ -289,6 +321,7 @@ When a round fails and the goal is still incomplete:
 - increment `currentRound`;
 - reset `currentDeliberationPass=1`;
 - reset `deliberationStatus=not_started`;
+- reset `currentCouncilMode=decision`;
 - set `currentPhase=status_assessment`, not `goal_definition`;
 - set `needsContinue=true`;
 - clear `inFlight` and `inFlightSince`.
@@ -306,11 +339,16 @@ failed verification and the next deliberator pass.
    `verificationCommands`; inspect relevant project context; write initial
    `state.json` and checklist.
 1. Status Assessment: compare criteria, latest `verification.md`, and current
-   filesystem. If complete, write `final-report.md`, Set `currentPhase=complete`,
-   `active=false`, and stop.
-2. Research Task: write `round-NNN/research-prompt.md` and
-   `round-NNN/council-PPP/prompt.md`; for pass 1 this is an evidence packet,
-   not a proposed fix; for pass 2+ include `direction-selection.md`.
+   filesystem. Round 1 splits into Phase 1a minimal scoping (main agent writes
+   `recon-001/prompt.md`, no deep-dive) and Phase 1b parallel recon (all three
+   deliberators investigate read-only; main agent writes `evidence-base.md`).
+   Later rounds skip recon and reuse previous verification evidence. If
+   criteria are already satisfied, go to the Phase 6 completion review instead
+   of writing `final-report.md` directly.
+2. Research Task: write `round-NNN/research-prompt.md` (round 1 draws from
+   `evidence-base.md`) and `round-NNN/council-PPP/prompt.md`; for pass 1 this
+   is an evidence packet, not a proposed fix; for pass 2+ include
+   `direction-selection.md`.
 3. Parallel Deliberation: in Claude Code, use `references/runtime.md` and run
    `open-magi-claude run-council`. The runner launches the three deliberators
    as parallel headless Claude subprocesses and writes the corresponding
@@ -323,5 +361,7 @@ failed verification and the next deliberator pass.
 5. Execute and Verify: only the main agent acts; apply verdict, build, checkpoint
    if build succeeds, verify, run fail-only diagnostics if needed, and write
    `verification.md`.
-6. Goal Check: judge acceptance criteria; complete, continue next round, or
-   block only after the no-progress limit.
+6. Goal Check: judge acceptance criteria; on a completion claim run the
+   Completion Review Gate (`completion_review` phase, review council,
+   `review-verdict.md`); complete only on `outcome: approved`, otherwise
+   continue next round, or block only after the no-progress limit.

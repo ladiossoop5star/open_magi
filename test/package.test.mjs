@@ -10,7 +10,9 @@ import test from "node:test"
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url))
 const magiStopHookPath = fileURLToPath(new URL("../adapters/codex/hooks/magi-stop", import.meta.url))
+const codexMagiToolReminderPath = fileURLToPath(new URL("../adapters/codex/hooks/magi-tool-reminder", import.meta.url))
 const claudeMagiStopHookPath = fileURLToPath(new URL("../adapters/claude/hooks/magi-stop", import.meta.url))
+const claudeMagiToolReminderPath = fileURLToPath(new URL("../adapters/claude/hooks/magi-tool-reminder", import.meta.url))
 const hanPattern = /\p{Script=Han}/u
 const execFile = promisify(execFileCallback)
 const chars = (...codes) => String.fromCodePoint(...codes)
@@ -95,6 +97,66 @@ async function writeCompleteCodexMagiRound(project, { verificationText } = {}) {
     join(logDir, "state.json"),
     `${JSON.stringify(
       {
+        active: false,
+        goal: "finish the reviewed fix",
+        currentRound: 1,
+        currentPhase: "complete",
+        needsContinue: false,
+      },
+      null,
+      2,
+    )}\n`,
+  )
+}
+
+async function writeCompleteV2MagiRound(project, { reviewVerdictText, skipReviewArtifacts } = {}) {
+  const logDir = join(project, ".open_magi", "magi-log")
+  const roundDir = join(logDir, "round-001")
+  const councilDir = join(roundDir, "council-001")
+  const reconDir = join(roundDir, "recon-001")
+  const reviewDir = join(roundDir, "review-001")
+  await mkdir(councilDir, { recursive: true })
+  await mkdir(reconDir, { recursive: true })
+  await mkdir(reviewDir, { recursive: true })
+  await writeFile(join(logDir, "final-report.md"), "complete\n")
+  await writeFile(join(roundDir, "research-prompt.md"), "research\n")
+  await writeFile(join(roundDir, "direction-selection.md"), "direction\n")
+  await writeFile(join(roundDir, "verdict.md"), "verdict\n")
+  await writeFile(
+    join(roundDir, "verification.md"),
+    [
+      "verdict_reference: round-001/verdict.md",
+      "verdict_adherence: yes",
+      "command: npm test",
+      "exit_code: 0",
+      "important_output: pass",
+      "",
+    ].join("\n"),
+  )
+  await writeFile(join(roundDir, "evidence-base.md"), "evidence\n")
+  for (const dir of [councilDir, reconDir]) {
+    await writeFile(join(dir, "prompt.md"), "prompt\n")
+    await writeFile(join(dir, "report-melchior.md"), "report\n")
+    await writeFile(join(dir, "report-balthasar.md"), "report\n")
+    await writeFile(join(dir, "report-casper.md"), "report\n")
+  }
+  await writeFile(join(councilDir, "synthesis.md"), "synthesis\n")
+  if (!skipReviewArtifacts) {
+    await writeFile(join(reviewDir, "prompt.md"), "prompt\n")
+    await writeFile(join(reviewDir, "report-melchior.md"), "report\n")
+    await writeFile(join(reviewDir, "report-balthasar.md"), "report\n")
+    await writeFile(join(reviewDir, "report-casper.md"), "report\n")
+    await writeFile(
+      join(roundDir, "review-verdict.md"),
+      reviewVerdictText ?? "outcome: approved\nverdict_adherence_confirmed: yes\n",
+    )
+  }
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify(
+      {
+        schemaVersion: 2,
+        currentCouncilMode: "decision",
         active: false,
         goal: "finish the reviewed fix",
         currentRound: 1,
@@ -242,6 +304,43 @@ test("Codex plugin manifest exposes the portable magi skill", async () => {
   assert.equal(manifest.interface.defaultPrompt.length, 3)
 })
 
+test("Codex PostToolUse hook reminds the Magi contract only for active loops", async () => {
+  const project = await mkTempProject("open-magi-codex-tool-reminder-active-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "completion_review", currentCouncilMode: "review" })}\n`,
+  )
+
+  const result = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/codex/hooks/magi-tool-reminder",
+  })
+  const output = JSON.parse(result.stdout)
+
+  assert.equal(output.hookSpecificOutput.hookEventName, "PostToolUse")
+  assert.match(output.hookSpecificOutput.additionalContext, /round=1 phase=completion_review mode=review/)
+  assert.match(output.hookSpecificOutput.additionalContext, /follow the open_magi process/)
+  assert.ok(output.hookSpecificOutput.additionalContext.length < 120)
+})
+
+test("Codex PostToolUse hook is silent without an active loop", async () => {
+  const project = await mkTempProject("open-magi-codex-tool-reminder-inactive-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+
+  const noState = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/codex/hooks/magi-tool-reminder",
+  })
+  assert.equal(noState.stdout, "")
+
+  await writeFile(join(logDir, "state.json"), `${JSON.stringify({ active: false })}\n`)
+  const inactive = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/codex/hooks/magi-tool-reminder",
+  })
+  assert.equal(inactive.stdout, "")
+})
+
 test("Codex MCP server supports Content-Length handshake and exposes run_council", async () => {
   const input = [
     rpcFrame({
@@ -387,6 +486,12 @@ test("Codex Stop hook is bundled and points at the Magi stop checker", async () 
   assert.match(hookWrapper, /OPEN_MAGI_NODE/)
   assert.match(hookWrapper, /magi-stop\.mjs/)
   assert.match(hookImplementation, /MAGI_STOP_BACKSTOP/)
+
+  const reminderHooks = hooks.hooks.PostToolUse?.[0]?.hooks || []
+  const reminderHook = reminderHooks.find((hook) => hook.type === "command")
+  assert.ok(reminderHook)
+  assert.match(reminderHook.command, /hooks\/magi-tool-reminder/)
+  assert.equal(reminderHook.timeout, 5)
 })
 
 test("Claude plugin manifest exposes the portable magi skill, agents, and stop hook", async () => {
@@ -427,6 +532,13 @@ test("Claude plugin manifest exposes the portable magi skill, agents, and stop h
   assert.match(commandHook.command, /CLAUDE_PLUGIN_ROOT/)
   assert.match(commandHook.command, /hooks\/magi-stop/)
   assert.equal(commandHook.timeout, 10)
+
+  const reminderHooks = hooks.hooks.PostToolUse?.[0]?.hooks || []
+  const reminderHook = reminderHooks.find((hook) => hook.type === "command")
+  assert.ok(reminderHook)
+  assert.match(reminderHook.command, /CLAUDE_PLUGIN_ROOT/)
+  assert.match(reminderHook.command, /hooks\/magi-tool-reminder/)
+  assert.equal(reminderHook.timeout, 5)
 })
 
 test("Claude plugin agents are read-only Magi deliberators that inherit the active model", async () => {
@@ -725,6 +837,113 @@ test("Codex Magi Stop hook is disabled inside deliberator subprocesses", async (
   assert.equal(stdout, "")
 })
 
+test("Codex Magi Stop hook blocks v2 completed loops without review council artifacts", async () => {
+  const project = await mkTempProject("open-magi-codex-stop-v2-missing-review-")
+  await writeCompleteV2MagiRound(project, { skipReviewArtifacts: true })
+
+  const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
+  const output = JSON.parse(stdout)
+
+  assert.equal(output.decision, "block")
+  assert.match(output.reason, /Magi final report exists but required round artifacts are missing/)
+  assert.match(output.reason, /round-001\/review-001\/report-melchior\.md/)
+  assert.match(output.reason, /round-001\/review-verdict\.md/)
+})
+
+test("Codex Magi Stop hook blocks v2 completed loops when the review council objected", async () => {
+  const project = await mkTempProject("open-magi-codex-stop-v2-objected-")
+  await writeCompleteV2MagiRound(project, {
+    reviewVerdictText: [
+      "outcome: objected",
+      "verdict_adherence_confirmed: no",
+      "melchior_stance: oppose",
+      "balthasar_stance: approve",
+      "casper_stance: oppose",
+      "blocking_objections: diff does not implement the verdict",
+      "",
+    ].join("\n"),
+  })
+
+  const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
+  const output = JSON.parse(stdout)
+
+  assert.equal(output.decision, "block")
+  assert.match(output.reason, /completion review did not approve/i)
+  assert.match(output.reason, /round-001\/review-verdict\.md: missing outcome: approved/)
+  assert.match(output.reason, /missing verdict_adherence_confirmed: yes/)
+  assert.match(output.reason, /Do not finalize on the main agent's own judgment/)
+})
+
+test("Codex Magi Stop hook allows v2 completed loops with an approved review council", async () => {
+  const project = await mkTempProject("open-magi-codex-stop-v2-approved-")
+  await writeCompleteV2MagiRound(project)
+
+  const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
+
+  assert.equal(stdout, "")
+})
+
+test("Claude Magi Stop hook blocks v2 completed loops when the review council objected", async () => {
+  const project = await mkTempProject("open-magi-claude-stop-v2-objected-")
+  await writeCompleteV2MagiRound(project, {
+    reviewVerdictText: "outcome: objected\nverdict_adherence_confirmed: no\n",
+  })
+
+  const { stdout } = await execFile(claudeMagiStopHookPath, [], { cwd: project })
+  const output = JSON.parse(stdout)
+
+  assert.equal(output.decision, "block")
+  assert.match(output.reason, /completion review did not approve/i)
+  assert.match(output.reason, /outcome: approved/)
+  assert.match(output.reason, /Do not finalize on the main agent's own judgment/)
+})
+
+test("Claude Magi Stop hook allows v2 completed loops with an approved review council", async () => {
+  const project = await mkTempProject("open-magi-claude-stop-v2-approved-")
+  await writeCompleteV2MagiRound(project)
+
+  const { stdout } = await execFile(claudeMagiStopHookPath, [], { cwd: project })
+
+  assert.equal(stdout, "")
+})
+
+test("Claude PostToolUse hook reminds the Magi contract only for active loops", async () => {
+  const project = await mkTempProject("open-magi-claude-tool-reminder-active-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify({ active: true, currentRound: 2, currentPhase: "research_task", currentCouncilMode: "decision" })}\n`,
+  )
+
+  const result = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/claude/hooks/magi-tool-reminder",
+  })
+  const output = JSON.parse(result.stdout)
+
+  assert.equal(output.hookSpecificOutput.hookEventName, "PostToolUse")
+  assert.match(output.hookSpecificOutput.additionalContext, /round=2 phase=research_task mode=decision/)
+  assert.match(output.hookSpecificOutput.additionalContext, /follow the open_magi process/)
+  assert.ok(output.hookSpecificOutput.additionalContext.length < 120)
+})
+
+test("Claude PostToolUse hook is silent without an active loop", async () => {
+  const project = await mkTempProject("open-magi-claude-tool-reminder-inactive-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+
+  const noState = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/claude/hooks/magi-tool-reminder",
+  })
+  assert.equal(noState.stdout, "")
+
+  await writeFile(join(logDir, "state.json"), `${JSON.stringify({ active: false })}\n`)
+  const inactive = await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/claude/hooks/magi-tool-reminder",
+  })
+  assert.equal(inactive.stdout, "")
+})
+
 test("English README documents install and avoids local-only model warnings", async () => {
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8")
 
@@ -944,6 +1163,16 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(skill, /currentRound > 1 must never use `goal_definition`/)
   assert.match(skill, /Do not perform extended single-agent debugging/)
   assert.match(contract, /Phase 6: Goal Check/)
+  assert.match(skill, /Completion Review Gate/)
+  assert.match(contract, /currentCouncilMode/)
+  assert.match(contract, /completion_review/)
+  assert.match(contract, /recon-001/)
+  assert.match(contract, /review-001/)
+  assert.match(contract, /evidence-base\.md/)
+  assert.match(contract, /review-verdict\.md/)
+  assert.match(contract, /verdict_adherence_confirmed/)
+  assert.match(contract, /outcome: approved/)
+  assert.match(contract, /schemaVersion/)
 
   for (const name of ["melchior", "balthasar", "casper"]) {
     const prompt = await readFile(new URL(`../skills/magi/prompts/${name}.md`, import.meta.url), "utf8")

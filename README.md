@@ -15,7 +15,9 @@ one coding agent into a controlled Magi loop:
 
 1. The main agent records the goal, acceptance criteria, and verification
    commands under `.open_magi/magi-log/`.
-2. The main agent gathers only enough context to write a focused council prompt.
+2. In round 1, the main agent does only minimal scoping, then a recon council
+   pass: all three deliberators investigate read-only in parallel, and the main
+   agent synthesizes their findings into `evidence-base.md`.
 3. Three read-only deliberators review the problem from different angles:
    Melchior for implementation risk, Balthasar for architecture, and Casper for
    root cause and verification gaps.
@@ -23,8 +25,12 @@ one coding agent into a controlled Magi loop:
    needed, asks the council for more passes before making code changes.
 5. Only after a clear verdict does the main agent edit code, run verification,
    record `verdict_adherence: yes|no`, and either continue another round or
-   write `final-report.md`.
-6. Runtime backstops, where supported, keep the loop from silently stopping,
+   claim completion.
+6. A completion claim triggers one adversarial review council pass: the three
+   deliberators review the actual diff against the verdict, verification
+   output, and acceptance criteria. Only an approved `review-verdict.md` allows
+   `final-report.md` and closes the loop; objections start the next round.
+7. Runtime backstops, where supported, keep the loop from silently stopping,
    asking procedural questions, or accepting missing artifacts.
 
 The important distinction is that the deliberators do not edit files. They
@@ -36,8 +42,10 @@ making changes, running tests, and writing the final report.
 ```mermaid
 flowchart TD
     A[User gives a coding goal] --> B[Main agent creates .open_magi/magi-log state]
-    B --> C[Phase 1: assess current status and evidence]
-    C --> D[Phase 2: write focused council prompt]
+    B --> C[Phase 1a: minimal scoping, write recon prompt]
+    C --> R[Phase 1b: recon council gathers evidence in parallel]
+    R --> R2[Main agent writes evidence-base.md]
+    R2 --> D[Phase 2: write focused council prompt]
     D --> E[Phase 3: launch Melchior, Balthasar, and Casper]
     E --> F[Read-only deliberator reports]
     F --> G[Phase 4: synthesize consensus, risks, and selected direction]
@@ -48,7 +56,10 @@ flowchart TD
     J --> K{Acceptance criteria met?}
     K -- No --> L[Record verification and start next round]
     L --> C
-    K -- Yes --> M[Write final-report.md and close loop]
+    K -- Yes --> V[Completion review: council adversarially reviews the actual diff]
+    V --> W{review-verdict approved?}
+    W -- No --> L
+    W -- Yes --> M[Write final-report.md and close loop]
 ```
 
 ## Support Status
@@ -424,6 +435,12 @@ Expected layout:
 ├── state.json
 ├── checklist.md
 ├── round-001/
+│   ├── recon-001/
+│   │   ├── prompt.md
+│   │   ├── report-melchior.md
+│   │   ├── report-balthasar.md
+│   │   └── report-casper.md
+│   ├── evidence-base.md
 │   ├── research-prompt.md
 │   ├── council-001/
 │   │   ├── prompt.md
@@ -432,7 +449,13 @@ Expected layout:
 │   │   ├── report-casper.md
 │   │   └── synthesis.md
 │   ├── verdict.md
-│   └── verification.md
+│   ├── verification.md
+│   ├── review-001/
+│   │   ├── prompt.md
+│   │   ├── report-melchior.md
+│   │   ├── report-balthasar.md
+│   │   └── report-casper.md
+│   └── review-verdict.md
 └── final-report.md
 ```
 
@@ -444,6 +467,14 @@ moving phases, and the plugin can reopen a loop if required artifacts such as
 `verification.md` must explicitly confirm whether execution followed the
 approved `verdict.md` with `verdict_adherence: yes`. If execution drifted, the
 round cannot be finalized; the new evidence must go to the next council round.
+
+`recon-001/` exists only in round 1: the main agent does minimal scoping, then
+all three deliberators gather evidence in parallel before any direction is
+chosen. `review-001/` and `review-verdict.md` gate completion: when the main
+agent claims the goal is met, the council adversarially reviews the actual
+diff, and `final-report.md` is allowed only after `outcome: approved` with
+`verdict_adherence_confirmed: yes`. Loops that close without an approved
+review verdict are reopened by the plugin and the stop hooks.
 
 Before code changes, Magi can run multiple bounded council passes in one round:
 the default maximum is 3, the hard maximum is 5, and early passes use veto

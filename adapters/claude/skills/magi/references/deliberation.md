@@ -1,12 +1,63 @@
 # Deliberation Reference
 
-Use this for Phase 2, Phase 3, Phase 4, timeout handling, synthesis, and
-verdict writing.
+Use this for Phase 1b recon, Phase 2, Phase 3, Phase 4, Phase 6 completion
+review, timeout handling, synthesis, and verdict writing.
+
+## Council Modes
+
+The council runs in three modes. All three share the same launch mechanics,
+timeout handling, and report file rules; only the prompt contract and the gate
+differ.
+
+- `recon` (Phase 1b, round 1 only): parallel evidence gathering. Reports land
+  in `round-NNN/recon-001/`.
+- `decision` (Phase 2-4): proposal-first direction selection before execution.
+  Reports land in `round-NNN/council-PPP/`.
+- `review` (Phase 6, completion claim only): adversarial review of the actual
+  diff before `final-report.md`. Reports land in `round-NNN/review-001/`.
+
+Set `state.json.currentCouncilMode` to the active mode before launching
+deliberators so runtime adapters route timeout and hard-error reports to the
+correct directory.
+
+## Phase 1b: Recon Pass (Round 1 Only)
+
+Write `round-NNN/recon-001/prompt.md` with:
+- the goal and acceptance criteria;
+- observed symptoms: error messages, failing test output, git status/diff
+  summary;
+- files or areas already identified during Phase 1a minimal scoping;
+- one precise recon question per sage angle;
+- forbidden actions for sub-agents;
+- the required report format.
+
+Launch all three deliberators with the same recon prompt. Each deliberator
+investigates read-only from its own angle and reports findings, not a fix:
+- Melchior: implementation status, risk points, relevant code paths.
+- Balthasar: architecture boundaries, module dependencies, design context.
+- Casper: reproduction conditions, evidence gaps, unverified assumptions.
+
+Recon report semantics reuse the standard report header:
+- `stance: approve` means the evidence is sufficient to draft the decision
+  council prompt; `stance: needs_evidence` names the missing evidence.
+- `recommended_plan` is normally `none`; recon reports findings, not fixes.
+- `verification_plan` lists candidate checks discovered during recon.
+
+After the three `round-NNN/recon-001/report-*.md` files exist, write
+`round-NNN/evidence-base.md` with:
+- confirmed facts, each tied to a file, output, or report;
+- open questions the decision council must answer;
+- key files and symbols;
+- constraints and candidate verification approaches.
+
+Phase 2 must draw its evidence packet from `evidence-base.md`. Do not perform
+extended single-agent debugging between recon and the decision council.
 
 ## Phase 2: Research Task
 
 Write `round-NNN/research-prompt.md` with:
-- relevant context;
+- relevant context (round 1: from `evidence-base.md`; later rounds: from the
+  previous round's verification and diagnostic evidence);
 - one precise question for this round;
 - Diagnostic evidence from the previous failed round, if present;
 - known constraints;
@@ -16,9 +67,9 @@ Write `round-NNN/research-prompt.md` with:
 For the active council pass, also write `round-NNN/council-PPP/prompt.md`.
 
 Pass prompt rules:
-- Pass 1 is the proposal pass. The main agent prepares an evidence packet and
-  does not propose a fix. Deliberators provide a direction proposal in
-  `recommended_plan`.
+- Pass 1 is the proposal pass. Pass 1 is not a veto pass. The main agent
+  prepares an evidence packet and does not propose a fix. Deliberators provide
+  a direction proposal in `recommended_plan`.
 - After pass 1, the main agent writes `round-NNN/direction-selection.md` with
   selected direction, rejected alternatives, rationale, verification pressure,
   and rollback concerns.
@@ -60,10 +111,11 @@ subagents are available, use:
 ]
 ```
 
-Write results to:
-- `round-NNN/council-PPP/report-melchior.md`;
-- `round-NNN/council-PPP/report-balthasar.md`;
-- `round-NNN/council-PPP/report-casper.md`.
+Write results to the active council mode directory:
+- decision mode: `round-NNN/council-PPP/report-melchior.md`,
+  `report-balthasar.md`, `report-casper.md`;
+- recon mode: `round-NNN/recon-001/report-*.md`;
+- review mode: `round-NNN/review-001/report-*.md`.
 
 If the runtime cannot launch named subagents, use equivalent read-only
 deliberator prompts with the same role names and still write the same report
@@ -161,6 +213,56 @@ diagnostic data is needed.
 
 Keep `synthesis.md` and `verdict.md` short enough to unblock action. Prefer a
 direct, verifiable decision over long analysis.
+
+## Phase 6: Completion Review Pass
+
+Run exactly one review pass per completion claim, before `final-report.md`.
+
+Write `round-NNN/review-001/prompt.md` with:
+- the acceptance criteria and verification commands;
+- `round-NNN/verdict.md` and `round-NNN/verification.md`;
+- the actual diff: `git diff` output against the round start or checkpoint,
+  or the full contents of changed files. Never substitute the main agent's
+  summary of the diff;
+- the review questions: does the diff implement the verdict, does the
+  verification prove the acceptance criteria, what was missed;
+- forbidden actions for sub-agents;
+- the required report format.
+
+Launch all three deliberators with the same review prompt. Each reviews
+adversarially from its own angle:
+- Melchior: does the diff actually implement the verdict? New risks introduced?
+- Balthasar: is the change architecturally sound? Boundaries respected?
+- Casper: does the verification output prove the acceptance criteria, or does
+  it merely show green tests that miss the claimed fix? Did execution diverge
+  from the verdict?
+
+Review report semantics reuse the standard report header:
+- `stance: approve` only when the diff implements the verdict and the
+  verification proves the acceptance criteria;
+- `stance: oppose` or `blocking_objection: yes` for any concrete gap, with
+  the gap cited in Evidence;
+- `verdict_adherence` is judged by the review council, not self-reported:
+  reviewers cite any divergence between `verdict.md` and the actual diff.
+
+After the three `round-NNN/review-001/report-*.md` files exist, write
+`round-NNN/review-verdict.md`:
+
+```md
+outcome: approved | objected
+verdict_adherence_confirmed: yes | no
+melchior_stance: approve | oppose | needs_evidence
+balthasar_stance: approve | oppose | needs_evidence
+casper_stance: approve | oppose | needs_evidence
+blocking_objections: none | one-line list
+```
+
+`outcome: approved` requires all three stances at `approve`, no
+`blocking_objection: yes`, and `verdict_adherence_confirmed: yes`. Timeout
+reports count as `needs_evidence` with a blocking objection, so a timeout can
+never produce `approved`. On `approved`, write `final-report.md` and close the
+loop. On `objected`, start the next round with the objections as evidence.
+Do not ask the user whether the review passed; the gate decides.
 
 ## Required Report Format for Deliberators
 

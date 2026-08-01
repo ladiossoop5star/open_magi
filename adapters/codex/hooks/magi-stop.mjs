@@ -24,6 +24,13 @@ function positiveInteger(value) {
   return Number.isInteger(number) && number > 0 ? number : null
 }
 
+function usesCouncilModes(state) {
+  return Boolean(
+    state &&
+      (state.currentCouncilMode !== undefined || Number(state?.schemaVersion) >= 2),
+  )
+}
+
 function roundName(round) {
   return `round-${String(round).padStart(3, "0")}`
 }
@@ -91,6 +98,7 @@ function roundsToValidate(state) {
 
 function missingCompletionArtifacts(state) {
   const missing = []
+  const closingRound = positiveInteger(state?.currentRound)
 
   for (const round of roundsToValidate(state)) {
     const prefix = roundName(round)
@@ -103,6 +111,16 @@ function missingCompletionArtifacts(state) {
       `${prefix}/verification.md`,
     ]
 
+    if (usesCouncilModes(state) && round === 1) {
+      required.push(
+        `${prefix}/recon-001/prompt.md`,
+        `${prefix}/recon-001/report-melchior.md`,
+        `${prefix}/recon-001/report-balthasar.md`,
+        `${prefix}/recon-001/report-casper.md`,
+        `${prefix}/evidence-base.md`,
+      )
+    }
+
     for (const council of councilNames) {
       required.push(
         `${prefix}/${council}/prompt.md`,
@@ -110,6 +128,16 @@ function missingCompletionArtifacts(state) {
         `${prefix}/${council}/report-balthasar.md`,
         `${prefix}/${council}/report-casper.md`,
         `${prefix}/${council}/synthesis.md`,
+      )
+    }
+
+    if (usesCouncilModes(state) && round === closingRound) {
+      required.push(
+        `${prefix}/review-001/prompt.md`,
+        `${prefix}/review-001/report-melchior.md`,
+        `${prefix}/review-001/report-balthasar.md`,
+        `${prefix}/review-001/report-casper.md`,
+        `${prefix}/review-verdict.md`,
       )
     }
 
@@ -121,6 +149,26 @@ function missingCompletionArtifacts(state) {
   }
 
   return missing
+}
+
+function reviewOutcomeProblems(state) {
+  if (!usesCouncilModes(state)) return []
+
+  const closingRound = positiveInteger(state?.currentRound)
+  if (closingRound === null) return []
+
+  const relativePath = `${roundName(closingRound)}/review-verdict.md`
+  const text = readArtifact(relativePath)
+  if (text === null) return []
+
+  const problems = []
+  if (!/^\s*outcome\s*:\s*approved\s*$/im.test(text)) {
+    problems.push(`${relativePath}: missing outcome: approved`)
+  }
+  if (!/^\s*verdict_adherence_confirmed\s*:\s*yes\s*$/im.test(text)) {
+    problems.push(`${relativePath}: missing verdict_adherence_confirmed: yes`)
+  }
+  return problems
 }
 
 function verdictAdherenceProblems(state) {
@@ -202,6 +250,30 @@ function emitVerdictAdherenceContinuation(state, problems) {
   emitContinuation(lines.join("\n"))
 }
 
+function emitReviewOutcomeContinuation(state, problems) {
+  const lines = [
+    "<MAGI_STOP_BACKSTOP>",
+    "Magi completion review did not approve the actual diff.",
+    `statePath: ${statePath}`,
+    `finalReportPath: ${finalReportPath}`,
+    `currentRound: ${state.currentRound ?? "unknown"}`,
+    `currentPhase: ${state.currentPhase ?? "unknown"}`,
+    "reviewOutcomeProblems:",
+  ]
+
+  for (const problem of problems) {
+    lines.push(`- ${problem}`)
+  }
+
+  lines.push(
+    "A schemaVersion 2 Magi loop may close only when review-verdict.md records outcome: approved and verdict_adherence_confirmed: yes from the adversarial review council.",
+    "If the review objected, restore active=true and needsContinue=true, then start the next round with the objections as evidence. Do not finalize on the main agent's own judgment.",
+    "</MAGI_STOP_BACKSTOP>",
+  )
+
+  emitContinuation(lines.join("\n"))
+}
+
 if (!existsSync(statePath)) {
   process.exit(0)
 }
@@ -235,6 +307,12 @@ if (finalReportExists && state?.active === false && state?.currentPhase === "com
   const adherenceProblems = verdictAdherenceProblems(state)
   if (adherenceProblems.length > 0) {
     emitVerdictAdherenceContinuation(state, adherenceProblems)
+    process.exit(0)
+  }
+
+  const reviewProblems = reviewOutcomeProblems(state)
+  if (reviewProblems.length > 0) {
+    emitReviewOutcomeContinuation(state, reviewProblems)
   }
   process.exit(0)
 }

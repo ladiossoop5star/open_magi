@@ -14,7 +14,7 @@ Create this file before the first research round:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "goal": "final user goal",
   "acceptanceCriteria": ["observable completion condition"],
   "verificationCommands": ["command that proves completion"],
@@ -27,6 +27,7 @@ Create this file before the first research round:
   "currentDeliberationPass": 1,
   "maxDeliberationPasses": 3,
   "deliberationStatus": "not_started",
+  "currentCouncilMode": "recon",
   "deliberatorTimeoutMs": 1800000,
   "activeDeliberators": {},
   "deliberatorTimeoutCounts": {},
@@ -41,6 +42,18 @@ Create this file before the first research round:
   "history": []
 }
 ```
+
+`schemaVersion: 2` enables council modes. `currentCouncilMode` is one of:
+- `recon`: Phase 1b parallel evidence gathering (round 1 only). Reports land in
+  `round-NNN/recon-001/`.
+- `decision`: the proposal-first council passes before execution. Reports land
+  in `round-NNN/council-PPP/`.
+- `review`: the adversarial completion review before `final-report.md`.
+  Reports land in `round-NNN/review-001/`.
+
+Set `currentCouncilMode` before launching deliberators so the runtime adapter
+can route timeout and hard-error reports to the correct directory. Reset it to
+`decision` when entering Phase 2 and on every round transition.
 
 If the current runtime `sessionID` is unavailable, set `sessionID` to `null`.
 Runtime adapters may bind it from later session events.
@@ -69,6 +82,12 @@ the round did not reduce uncertainty or move acceptance criteria closer.
 ├── question-request.md
 ├── question-denied.md
 ├── round-001/
+│   ├── recon-001/
+│   │   ├── prompt.md
+│   │   ├── report-melchior.md
+│   │   ├── report-balthasar.md
+│   │   └── report-casper.md
+│   ├── evidence-base.md
 │   ├── research-prompt.md
 │   ├── council-001/
 │   │   ├── prompt.md
@@ -84,9 +103,20 @@ the round did not reduce uncertainty or move acceptance criteria closer.
 │   │   └── synthesis.md
 │   ├── direction-selection.md
 │   ├── verdict.md
-│   └── verification.md
+│   ├── verification.md
+│   ├── review-001/
+│   │   ├── prompt.md
+│   │   ├── report-melchior.md
+│   │   ├── report-balthasar.md
+│   │   └── report-casper.md
+│   └── review-verdict.md
 └── final-report.md
 ```
+
+`recon-001/` exists only in round 1. Later rounds reuse the previous round's
+verification and diagnostic evidence instead of running a new recon pass.
+`review-001/` and `review-verdict.md` exist only in the round where the main
+agent claims completion.
 
 ## Phase Details
 
@@ -106,18 +136,55 @@ Compare current state against `acceptanceCriteria`, latest `verification.md`,
 and current repository/filesystem state. Choose `complete`, `needs_research`,
 `needs_action`, or `blocked`.
 
-If complete, do not stop immediately. Write `final-report.md` first, then close
-the loop state.
+If complete, do not stop immediately. Run the completion review pass (Phase 6)
+before writing `final-report.md`.
+
+Round 1 splits Phase 1 into two stages:
+
+1. **Phase 1a (minimal scoping, main agent only).** Read the error messages,
+   failing test output, and `git status`/`git diff` summary. Do not deep-dive
+   and do not diagnose. The only goal is to write a focused
+   `round-NNN/recon-001/prompt.md` with the goal, the observed symptoms, the
+   files or areas already identified, and one precise recon question per sage
+   angle. Set `currentCouncilMode=recon` before launching deliberators.
+2. **Phase 1b (parallel recon, deliberators).** Launch all three deliberators
+   with the recon prompt. Each investigates read-only from its own angle:
+   Melchior maps implementation status and risk points, Balthasar maps
+   architecture boundaries and dependencies, Casper maps reproduction
+   conditions and unverified assumptions. Write the three
+   `round-NNN/recon-001/report-*.md` files, then synthesize them into
+   `round-NNN/evidence-base.md` with confirmed facts, open questions, key
+   files, and constraints. Reset `currentCouncilMode=decision` and continue to
+   Phase 2.
+
+Later rounds skip recon: the previous round's `verification.md` and diagnostic
+evidence are the evidence base. Phase 1 in later rounds is a short status
+check only.
 
 ### Phase 6: Goal Check
 
-If complete:
-- write `.open_magi/magi-log/final-report.md` in the user's preferred language;
-- set `currentPhase=complete`;
-- set `active=false`;
-- set `needsContinue=false`;
-- set `inFlight=false`;
-- set `inFlightSince=null`.
+If the main agent judges acceptance criteria satisfied, do not write
+`final-report.md` yet. Run the adversarial completion review first:
+
+1. Set `currentPhase=completion_review` and `currentCouncilMode=review`.
+2. Write `round-NNN/review-001/prompt.md` containing the acceptance criteria,
+   `verdict.md`, `verification.md`, and the actual diff (`git diff` output or
+   the changed-file list with contents), never only a summary of the diff.
+3. Launch all three deliberators for the review pass and write the three
+   `round-NNN/review-001/report-*.md` files.
+4. Write `round-NNN/review-verdict.md` with `outcome: approved | objected`,
+   `verdict_adherence_confirmed: yes | no`, each sage's stance, and any
+   blocking objections.
+5. `outcome: approved` requires all three review reports at `stance: approve`
+   with `blocking_objection: no`, plus `verdict_adherence_confirmed: yes`.
+6. If approved: write `final-report.md`, set `currentPhase=complete`,
+   `active=false`, `needsContinue=false`, `inFlight=false`, and
+   `inFlightSince=null`.
+7. If objected: treat the objections as new evidence. Append a history entry,
+   increment `currentRound`, reset `currentDeliberationPass=1`, reset
+   `deliberationStatus=not_started`, reset `currentCouncilMode=decision`, set
+   `currentPhase=status_assessment`, set `needsContinue=true`, and start the
+   next round.
 
 If incomplete with progress:
 - append a history entry with `progress: true|false` set to `true`;
@@ -128,13 +195,15 @@ If incomplete with progress:
 - increment `currentRound`;
 - reset `currentDeliberationPass=1`;
 - reset `deliberationStatus=not_started`;
+- reset `currentCouncilMode=decision`;
 - set `currentPhase=status_assessment`.
 
 If incomplete with no progress:
 - append a history entry with `progress: true|false` set to `false`;
 - increment `consecutiveNoProgress`;
 - if `< 5`, set `needsContinue=true`, increment `currentRound`, reset
-  `currentDeliberationPass=1`, reset `deliberationStatus=not_started`, set
-  `currentPhase=status_assessment`, and return to Phase 1;
+  `currentDeliberationPass=1`, reset `deliberationStatus=not_started`, reset
+  `currentCouncilMode=decision`, set `currentPhase=status_assessment`, and
+  return to Phase 1;
 - if `>= 5`, set `currentPhase=blocked`, `active=false`,
   `needsContinue=false`, and wait for user input.

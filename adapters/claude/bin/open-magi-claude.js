@@ -19,7 +19,8 @@ Options:
   --melchior-model   Concrete Claude model for open-magi:deliberator-melchior.
   --balthasar-model  Concrete Claude model for open-magi:deliberator-balthasar.
   --casper-model     Concrete Claude model for open-magi:deliberator-casper.
-  --force            Overwrite existing generated files.
+  --force            Overwrite existing generated files (default).
+  --preserve         Keep existing generated files instead of overwriting.
   --dry-run          Print the setup summary without writing files.
   --project-root     Project root for run-council.
   --prompt-path      Council prompt path for run-council.
@@ -34,8 +35,13 @@ Edit the three files under ~/.claude/skills/open-magi/agents/ before using Magi.
 }
 
 async function packageVersion() {
-  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
-  return pkg.version
+  try {
+    const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
+    return pkg.version
+  } catch {
+    const manifest = JSON.parse(await readFile(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"))
+    return manifest.version
+  }
 }
 
 async function main(argv) {
@@ -95,7 +101,8 @@ async function main(argv) {
       "melchior-model": { type: "string" },
       "balthasar-model": { type: "string" },
       "casper-model": { type: "string" },
-      force: { type: "boolean", default: false },
+      force: { type: "boolean", default: true },
+      preserve: { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -112,7 +119,7 @@ async function main(argv) {
     melchiorModel: values["melchior-model"],
     balthasarModel: values["balthasar-model"],
     casperModel: values["casper-model"],
-    force: values.force,
+    force: values.preserve ? false : values.force,
     dryRun: values["dry-run"],
   })
 

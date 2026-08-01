@@ -77,6 +77,7 @@ export function buildCodexAgentConfig(options = {}) {
       const model = codexModel(options[agent.modelKey])
       const provider = options[agent.providerKey] || options.provider
       const effort = options[agent.effortKey] || options.reasoningEffort
+      const profile = options.profile
       const lines = [
         `name = ${tomlString(agent.name)}`,
         `description = ${tomlString(agent.description)}`,
@@ -88,6 +89,7 @@ export function buildCodexAgentConfig(options = {}) {
       lines.push(`model = ${tomlString(model)}`)
       if (provider) lines.push(`model_provider = ${tomlString(provider)}`)
       if (effort) lines.push(`model_reasoning_effort = ${tomlString(effort)}`)
+      if (profile) lines.push(`profile = ${tomlString(profile)}`)
 
       lines.push(`sandbox_mode = "read-only"`)
       lines.push(`nickname_candidates = ${tomlStringArray([agent.nickname])}`)

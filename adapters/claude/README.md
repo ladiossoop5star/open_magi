@@ -7,6 +7,7 @@ This is the experimental Claude Code adapter for Open Magi. It packages:
 - `open-magi:deliberator-balthasar` plugin agent
 - `open-magi:deliberator-casper` plugin agent
 - a conservative Stop hook that emits `<MAGI_STOP_BACKSTOP>` when a Magi loop is still active
+- a PostToolUse hook that injects a one-line `follow the open_magi process` reminder after every tool call while a loop is active
 - `open-magi-claude run-council`, a headless runner that launches all three deliberators concurrently
 
 Unlike the OpenCode adapter, this adapter cannot rely on a runtime hook to
@@ -66,6 +67,9 @@ The generated plugin lives at:
 ```text
 ~/.claude/skills/open-magi/
 ```
+
+`setup-claude` overwrites previously generated files by default; pass
+`--preserve` to keep existing files instead.
 
 It writes:
 
@@ -139,17 +143,32 @@ Important artifacts include:
 ```text
 state.json
 checklist.md
+round-NNN/recon-001/prompt.md
+round-NNN/recon-001/report-melchior.md
+round-NNN/recon-001/report-balthasar.md
+round-NNN/recon-001/report-casper.md
+round-NNN/evidence-base.md
 round-NNN/research-prompt.md
 round-NNN/council-PPP/prompt.md
 round-NNN/council-PPP/report-melchior.md
 round-NNN/council-PPP/report-balthasar.md
 round-NNN/council-PPP/report-casper.md
+round-NNN/council-PPP/synthesis.md
 round-NNN/direction-selection.md
-round-NNN/synthesis.md
 round-NNN/verdict.md
 round-NNN/verification.md
+round-NNN/review-001/prompt.md
+round-NNN/review-001/report-melchior.md
+round-NNN/review-001/report-balthasar.md
+round-NNN/review-001/report-casper.md
+round-NNN/review-verdict.md
 final-report.md
 ```
+
+`recon-001/` and `evidence-base.md` exist only in round 1 (parallel evidence
+gathering). `review-001/` and `review-verdict.md` exist only in the round that
+claims completion; `final-report.md` is allowed only after the review council
+approves the actual diff.
 
 ## Deliberator Agents
 
@@ -157,7 +176,9 @@ Phase 3 uses `open-magi-claude run-council` instead of asking the main Claude
 agent to launch three `Agent` tool calls. This avoids the observed behavior
 where Claude launches one subagent, waits for it, then launches the next.
 
-Example:
+Example (run as a background Bash task with `run_in_background: true` so the
+council is not bounded by the foreground Bash ceiling and Claude Code notifies
+you on completion):
 
 ```bash
 node ~/.claude/skills/open-magi/bin/open-magi-claude.js run-council \
@@ -167,6 +188,11 @@ node ~/.claude/skills/open-magi/bin/open-magi-claude.js run-council \
   --pass 1
 ```
 
+Foreground fallback: pass `--timeout-ms 540000` and set the Bash call's own
+timeout to 600000 ms, so a slow deliberator is timed out by the runner itself
+(which writes `status: timeout` reports) instead of the runner being killed
+mid-council.
+
 If the CLI is on PATH, the equivalent command starts with
 `open-magi-claude run-council`.
 
@@ -175,6 +201,10 @@ The runner starts three headless Claude subprocesses concurrently:
 - `open-magi:deliberator-melchior`
 - `open-magi:deliberator-balthasar`
 - `open-magi:deliberator-casper`
+
+Reports are written next to the prompt file. Recon and completion review
+passes use the same command with `--prompt-path` pointing at
+`round-NNN/recon-001/prompt.md` or `round-NNN/review-001/prompt.md`.
 
 Each subprocess is restricted to read-only tools:
 
@@ -191,7 +221,14 @@ separate Melchior, Balthasar, and Casper models.
 
 The adapter includes a Stop hook. If `.open_magi/magi-log/state.json` says the
 Magi loop is still active and `final-report.md` is not present, the hook returns
-`decision: block` with a `<MAGI_STOP_BACKSTOP>` continuation prompt.
+`decision: block` with a `<MAGI_STOP_BACKSTOP>` continuation prompt. For
+`schemaVersion: 2` loops marked complete, it also blocks unless
+`review-verdict.md` records `outcome: approved` with
+`verdict_adherence_confirmed: yes`.
+
+A PostToolUse hook complements it: after every tool call while a loop is
+active, it injects a one-line reminder with the current round, phase, and
+council mode. It is silent when no loop is active.
 
 This hook is a backstop only. The main Claude agent must still enforce the Magi
 phase gates and write the required artifacts.

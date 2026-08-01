@@ -46,6 +46,11 @@ Only the main agent may act.
    as failed or divergent, pass the evidence into the next round, and have the
    council review the new direction before executing it.
 10. Decide whether acceptance criteria are now satisfied.
+11. `verdict_adherence` in `verification.md` is the main agent's claim, not the
+    final word. Claiming completion triggers the Phase 6 completion review
+    pass, where the council independently confirms or rejects adherence against
+    the actual diff and writes `verdict_adherence_confirmed` into
+    `review-verdict.md`. See `references/deliberation.md`.
 
 ## Checkpoint and Rollback Details
 

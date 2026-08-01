@@ -28,7 +28,8 @@ const PHASE_RANK = {
   synthesis: 4,
   execution: 5,
   goal_check: 6,
-  complete: 7,
+  completion_review: 7,
+  complete: 8,
 }
 
 const NO_PROCEDURAL_QUESTIONS_TEXT = [
@@ -93,6 +94,24 @@ function councilPrefix(round, pass) {
   return `${roundPrefix(round)}/council-${String(pass).padStart(3, "0")}`
 }
 
+function currentCouncilMode(state) {
+  const mode = state?.currentCouncilMode
+  return mode === "recon" || mode === "review" ? mode : "decision"
+}
+
+function usesCouncilModes(state) {
+  return Boolean(
+    state &&
+      (state.currentCouncilMode !== undefined || Number(state?.schemaVersion) >= 2),
+  )
+}
+
+function councilModePrefix(round, mode, pass) {
+  if (mode === "recon") return `${roundPrefix(round)}/recon-001`
+  if (mode === "review") return `${roundPrefix(round)}/review-001`
+  return councilPrefix(round, pass)
+}
+
 function positiveInteger(value, fallback) {
   const number = Number(value)
   return Number.isInteger(number) && number > 0 ? number : fallback
@@ -145,8 +164,40 @@ function councilReportArtifacts(round, pass) {
   ]
 }
 
+function reconReportArtifacts(round) {
+  const prefix = councilModePrefix(round, "recon")
+  return [
+    `${prefix}/prompt.md`,
+    `${prefix}/report-melchior.md`,
+    `${prefix}/report-balthasar.md`,
+    `${prefix}/report-casper.md`,
+  ]
+}
+
+function completeReconArtifacts(round) {
+  return [...reconReportArtifacts(round), `${roundPrefix(round)}/evidence-base.md`]
+}
+
+function reviewReportArtifacts(round) {
+  const prefix = councilModePrefix(round, "review")
+  return [
+    `${prefix}/prompt.md`,
+    `${prefix}/report-melchior.md`,
+    `${prefix}/report-balthasar.md`,
+    `${prefix}/report-casper.md`,
+  ]
+}
+
+function completeReviewArtifacts(round) {
+  return [...reviewReportArtifacts(round), `${roundPrefix(round)}/review-verdict.md`]
+}
+
 function deliberatorReportArtifact(state, sage, entry = {}) {
   const round = positiveInteger(entry.round, roundNumber(state))
+  const entryMode = entry.mode === "recon" || entry.mode === "review" ? entry.mode : null
+  if (entryMode) {
+    return `${councilModePrefix(round, entryMode)}/report-${sage}.md`
+  }
   if (usesCouncilPasses(state) || entry.pass !== undefined) {
     return `${councilPrefix(round, positiveInteger(entry.pass, deliberationPassNumber(state)))}/report-${sage}.md`
   }
@@ -175,6 +226,7 @@ function completePreviousRoundArtifacts(round, state) {
 
   const prefix = roundPrefix(round)
   return [
+    ...(usesCouncilModes(state) && round === 1 ? completeReconArtifacts(round) : []),
     `${prefix}/research-prompt.md`,
     `${prefix}/verdict.md`,
     `${prefix}/verification.md`,
@@ -187,7 +239,12 @@ function currentCouncilRoundArtifacts(state) {
   const pass = deliberationPassNumber(state)
   const prefix = roundPrefix(round)
   const finalizing = !state?.active && phase !== "blocked"
+  const modes = usesCouncilModes(state)
   const required = []
+
+  if (modes && round === 1 && (phaseAtLeast(phase, "research_task") || finalizing)) {
+    required.push(...completeReconArtifacts(round))
+  }
 
   if (phaseAtLeast(phase, "research_task") || finalizing) {
     required.push(`${prefix}/research-prompt.md`)
@@ -224,6 +281,14 @@ function currentCouncilRoundArtifacts(state) {
 
   if (phaseAtLeast(phase, "execution") || finalizing) {
     required.push(`${prefix}/verification.md`)
+  }
+
+  if (modes && phase === "completion_review") {
+    required.push(...reviewReportArtifacts(round))
+  }
+
+  if (modes && (phase === "complete" || finalizing)) {
+    required.push(...completeReviewArtifacts(round))
   }
 
   if (phase === "complete" || finalizing) {
@@ -272,7 +337,15 @@ function currentRoundArtifacts(state) {
 function requiredArtifacts(state) {
   if (!state || state.currentPhase === "blocked") return []
   if (state.active && isTerminalPhase(state.currentPhase)) return []
-  if (!state.active) return [`${LOG_DIR}/${FINAL_REPORT_FILE}`]
+  if (!state.active) {
+    if (usesCouncilModes(state) && state.currentPhase === "complete") {
+      return [
+        `${LOG_DIR}/${FINAL_REPORT_FILE}`,
+        ...completeReviewArtifacts(roundNumber(state)),
+      ]
+    }
+    return [`${LOG_DIR}/${FINAL_REPORT_FILE}`]
+  }
 
   const round = roundNumber(state)
   const required = new Set([`${LOG_DIR}/${CHECKLIST_FILE}`])
@@ -337,11 +410,17 @@ function normalizeCouncilRoundEntry(state) {
   if (roundNumber(state) <= 1) return state
   if (
     deliberationPassNumber(state) <= 1 &&
-    (state.deliberationStatus ?? "not_started") === "not_started"
+    (state.deliberationStatus ?? "not_started") === "not_started" &&
+    currentCouncilMode(state) === "decision"
   ) {
     return state
   }
-  return { ...state, currentDeliberationPass: 1, deliberationStatus: "not_started" }
+  return {
+    ...state,
+    currentDeliberationPass: 1,
+    deliberationStatus: "not_started",
+    ...(state.currentCouncilMode !== undefined ? { currentCouncilMode: "decision" } : {}),
+  }
 }
 
 function roundTransitionRepairError(state, nowIso) {
@@ -535,6 +614,21 @@ function phaseActionText(state, missingArtifacts = []) {
   const prefix = roundPrefix(round)
   const council = councilPrefix(round, pass)
 
+  if (state.currentPhase === "status_assessment" && round === 1 && usesCouncilModes(state)) {
+    const recon = councilModePrefix(round, "recon")
+    return [
+      "",
+      "",
+      "[magi] Phase 1 recon action (round 1).",
+      "Do only minimal scoping yourself: read the error output, failing tests, and git status/diff summary. Do not deep-dive or diagnose alone.",
+      `Write ${recon}/prompt.md with the goal, observed symptoms, identified files, and one recon question per sage angle.`,
+      "Set currentCouncilMode=recon, then immediately launch exactly these three subtasks with the same recon prompt: deliberator-melchior, deliberator-balthasar, deliberator-casper.",
+      `After results return, write ${recon}/report-melchior.md, ${recon}/report-balthasar.md, and ${recon}/report-casper.md.`,
+      `Then synthesize ${prefix}/evidence-base.md with confirmed facts, open questions, key files, and constraints; reset currentCouncilMode=decision; set currentPhase=research_task.`,
+      "If the acceptance criteria are already satisfied, skip recon and run the completion review pass instead.",
+    ].join("\n")
+  }
+
   if (state.currentPhase === "status_assessment" && round > 1) {
     return [
       "",
@@ -618,6 +712,22 @@ function phaseActionText(state, missingArtifacts = []) {
         ? ""
         : `If ready, write ${prefix}/verdict.md and set deliberationStatus=ready_for_verdict.`,
       "Do not ask the user whether another council pass is needed.",
+    ].join("\n")
+  }
+
+  if (state.currentPhase === "completion_review" && usesCouncilModes(state)) {
+    const review = councilModePrefix(round, "review")
+    return [
+      "",
+      "",
+      "[magi] Phase 6 completion review gate.",
+      "final-report.md is not allowed until the review council approves the actual diff.",
+      `Write ${review}/prompt.md with the acceptance criteria, ${prefix}/verdict.md, ${prefix}/verification.md, and the actual git diff, never only a summary of the diff.`,
+      "Set currentCouncilMode=review, then immediately launch exactly these three subtasks with the same review prompt: deliberator-melchior, deliberator-balthasar, deliberator-casper.",
+      `After results return, write ${review}/report-melchior.md, ${review}/report-balthasar.md, and ${review}/report-casper.md.`,
+      `Write ${prefix}/review-verdict.md with outcome, verdict_adherence_confirmed, and all three stances.`,
+      "Only outcome: approved with verdict_adherence_confirmed: yes may proceed to final-report.md and active=false.",
+      "On outcome: objected, start the next round with the objections as evidence. Do not ask the user whether the review passed.",
     ].join("\n")
   }
 
@@ -994,6 +1104,7 @@ function buildCompactionContext(state) {
     `goal: ${state.goal}`,
     `currentRound: ${state.currentRound}`,
     `currentPhase: ${state.currentPhase}`,
+    `currentCouncilMode: ${currentCouncilMode(state)}`,
     `needsContinue: ${state.needsContinue}`,
     `acceptanceCriteria: ${(state.acceptanceCriteria || []).join(" | ")}`,
     `verificationCommands: ${(state.verificationCommands || []).join(" | ")}`,
@@ -1238,6 +1349,9 @@ function isCurrentDeliberatorEntry(state, entry) {
   const entryRound = positiveInteger(entry?.round, currentRound)
   if (entryRound !== currentRound) return false
 
+  const entryMode = entry?.mode === "recon" || entry?.mode === "review" ? entry.mode : "decision"
+  if (entryMode !== currentCouncilMode(state)) return false
+
   if (!usesCouncilPasses(state)) return true
 
   const currentPass = deliberationPassNumber(state)
@@ -1397,6 +1511,7 @@ async function recordDeliberatorSession(directory, event, nowMs, scheduleTimeout
     parentSessionID,
     round: roundNumber(state),
     pass: usesCouncilPasses(state) ? deliberationPassNumber(state) : undefined,
+    mode: usesCouncilModes(state) ? currentCouncilMode(state) : undefined,
     startedAt,
     deadlineAt,
     status: "running",

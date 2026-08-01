@@ -15,6 +15,15 @@ Constraints:
   `recommended_plan`.
 - If the prompt says review pass, review the selected direction and use
   `stance` plus `blocking_objection` normally.
+- If the prompt says recon pass, investigate read-only from your role's angle
+  and report findings, not a fix. Use `stance: approve` when the evidence is
+  sufficient to draft the decision council prompt, otherwise
+  `stance: needs_evidence` with the gap named. Keep `recommended_plan: none`.
+- If the prompt says completion review pass, adversarially review the actual
+  diff in the prompt against the verdict, the verification output, and the
+  acceptance criteria. Approve only when the diff implements the verdict and
+  the verification proves the criteria; otherwise oppose with
+  `blocking_objection: yes` and cite the concrete gap.
 - Do not output hidden reasoning, chain-of-thought, or `<think>` blocks.
 - Do not ask procedural questions. This includes whether to write report files,
   which role each deliberator should play, whether another council pass is

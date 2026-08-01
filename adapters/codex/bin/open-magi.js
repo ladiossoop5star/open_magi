@@ -22,6 +22,7 @@ Options:
   --provider          Codex model_provider to apply to all three deliberators.
   --*-provider        Per-deliberator Codex model_provider override.
   --*-effort          Per-deliberator model_reasoning_effort override.
+  --profile           Codex profile to write into each deliberator agent file; run-council passes it to codex exec as --profile.
   --interactive       Prompt for Codex deliberator settings. Without this flag, setup-codex writes editable templates.
   --dry-run           Print the setup summary without writing files.
   --project-root      Project root for run-council.
@@ -186,6 +187,7 @@ async function main(argv) {
       "balthasar-effort": { type: "string" },
       "casper-effort": { type: "string" },
       "reasoning-effort": { type: "string" },
+      profile: { type: "string" },
       interactive: { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -213,6 +215,7 @@ async function main(argv) {
         balthasarEffort: values["balthasar-effort"],
         casperEffort: values["casper-effort"],
         reasoningEffort: values["reasoning-effort"],
+        profile: values.profile,
         dryRun: values["dry-run"],
       }
 

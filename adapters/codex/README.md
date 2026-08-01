@@ -68,6 +68,12 @@ edited a template, rerunning setup only creates missing files. For automation,
 pass `--melchior-model`, `--balthasar-model`, and `--casper-model`; use
 `--agents-dir .codex/agents` for project-scoped templates.
 
+If you run Codex with a profile (for example `codex --profile local`), add
+`profile = "local"` to each deliberator TOML — either by hand or with
+`open-magi setup-codex --profile local`. `run-council` then passes `--profile`
+to the `codex exec` subprocesses so they resolve the profile's model providers.
+Without a `profile` field, no `--profile` flag is passed.
+
 ## Usage
 
 Start Codex in a project and prefer Goal mode:
@@ -91,9 +97,11 @@ Runtime artifacts are written under:
 ```
 
 Codex should follow the same Magi artifact contract as OpenCode: `state.json`,
-`checklist.md`, `round-NNN/research-prompt.md`, council reports,
-`direction-selection.md`, `synthesis.md`, `verdict.md`, `verification.md`, and
-`final-report.md`.
+`checklist.md`, `round-NNN/recon-001/` reports and `evidence-base.md` (round 1
+recon), `round-NNN/research-prompt.md`, council reports,
+`direction-selection.md`, `synthesis.md`, `verdict.md`, `verification.md`,
+`round-NNN/review-001/` reports and `review-verdict.md` (completion review),
+and `final-report.md`.
 
 During Phase 3, Codex uses the bundled CLI runner:
 
@@ -105,7 +113,10 @@ node "$PLUGIN_CLI" run-council --project-root "$PWD" --prompt-path ".open_magi/m
 The runner reads the three `~/.codex/agents/deliberator-*.toml` files, starts
 three independent `codex exec` subprocesses with the configured model/provider
 settings, and writes `report-melchior.md`, `report-balthasar.md`, and
-`report-casper.md`. Successful reports start with `report_source: codex_exec`;
+`report-casper.md` next to the prompt file. Recon and completion review passes
+use the same command with `--prompt-path` pointing at
+`round-NNN/recon-001/prompt.md` or `round-NNN/review-001/prompt.md`. Successful
+reports start with `report_source: codex_exec`;
 failed launches are recorded as `report_source: codex_exec_failed`.
 The runner disables the Magi Stop hook inside deliberator subprocesses so they
 can exit after returning a report instead of being continued by the parent
@@ -141,6 +152,18 @@ not contain a standalone `verdict_adherence: yes`, the hook also blocks. If
 execution diverged from the approved `verdict.md`, record
 `verdict_adherence: no`, do not finalize, and start the next Magi round with the
 new evidence so the council can review that direction first.
+
+For `schemaVersion: 2` loops, the hook additionally requires the round 1 recon
+artifacts and the closing round's review council artifacts, and blocks unless
+`review-verdict.md` records `outcome: approved` with
+`verdict_adherence_confirmed: yes` from the adversarial review council. A
+completion claim the review council objected to must start the next round
+instead of finalizing.
+
+A PostToolUse hook complements it: after every tool call while a loop is
+active, it injects a one-line reminder with the current round, phase, and
+council mode. It is silent when no loop is active. Codex may ask once to trust
+the new hook after upgrading the plugin.
 
 This hook is intentionally conservative. It does not abort subagents, rewrite
 state, repair missing artifacts by itself, or replace Goal mode.

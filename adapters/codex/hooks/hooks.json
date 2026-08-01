@@ -11,6 +11,19 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'for root in \"${CODEX_PLUGIN_ROOT:-}\" \"${CLAUDE_PLUGIN_ROOT:-}\" \"${OPENAI_PLUGIN_ROOT:-}\"; do if [ -n \"$root\" ] && [ -x \"$root/hooks/magi-tool-reminder\" ]; then exec \"$root/hooks/magi-tool-reminder\"; fi; done; exit 0'",
+            "timeout": 5,
+            "statusMessage": "Checking Magi contract"
+          }
+        ]
+      }
     ]
   }
 }
