@@ -1499,6 +1499,18 @@ async function sendHardErrorPrompt(client, state, directory, details) {
   })
 }
 
+function deliberatorRelaunchText(state, sage, entry, error) {
+  return [
+    "",
+    "",
+    `[magi] Deliberator ${sage} hit a runtime error and needs one relaunch.`,
+    `error: ${sessionErrorName(error)} ${sessionErrorMessage(error)}`,
+    "Relaunch exactly this deliberator subtask once with the same council prompt, then continue the Magi loop.",
+    `Write its report to ${deliberatorReportArtifact(state, sage, entry)} when it completes.`,
+    "If the relaunch also errors, Magi halts as hard_error and reports the configuration problem.",
+  ].join("\n")
+}
+
 async function handleDeliberatorSessionError(client, directory, event, nowMs, clearTimeoutForSession) {
   if (event?.type !== "session.error") return null
   const childSessionID = eventSessionID(event)
@@ -1509,13 +1521,55 @@ async function handleDeliberatorSessionError(client, directory, event, nowMs, cl
   if (!state.activeDeliberators || typeof state.activeDeliberators !== "object") return null
 
   const match = Object.entries(state.activeDeliberators).find(
-    ([, entry]) => entry?.sessionID === childSessionID && entry.status === "running",
+    ([, entry]) =>
+      entry?.sessionID === childSessionID &&
+      (entry.status === "running" || entry.status === "relaunch_requested"),
   )
   if (!match) return null
 
   const [sage, entry] = match
   const nowIso = new Date(nowMs).toISOString()
   const error = event?.properties?.error
+
+  if (!entry.errorRetried) {
+    // One retry budget: ask the main agent to relaunch this deliberator once
+    // instead of blocking the whole loop on a possibly transient error.
+    clearTimeoutForSession?.(childSessionID)
+    const retryState = {
+      ...state,
+      needsContinue: true,
+      inFlight: true,
+      inFlightSince: nowIso,
+      lastPromptedRound: state.currentRound,
+      lastPromptedAt: nowIso,
+      activeDeliberators: {
+        ...state.activeDeliberators,
+        [sage]: {
+          ...entry,
+          status: "relaunch_requested",
+          errorRetried: true,
+          relaunchRequestedAt: nowIso,
+          errorName: sessionErrorName(error),
+          errorMessage: sessionErrorMessage(error),
+        },
+      },
+      lastError: `deliberator relaunch requested at ${nowIso}: ${sage} ${sessionErrorName(error)}`,
+    }
+    await writeState(directory, retryState)
+    try {
+      await sendContinuePrompt(client, retryState, directory, [], deliberatorRelaunchText(state, sage, entry, error))
+    } catch (promptError) {
+      await appendError(directory, "Failed to send deliberator relaunch prompt", promptError)
+      await writeState(directory, {
+        ...retryState,
+        inFlight: false,
+        inFlightSince: null,
+        lastError: promptError instanceof Error ? promptError.message : String(promptError),
+      })
+    }
+    return retryState
+  }
+
   const reportPath = await writeHardErrorReport(directory, state, sage, entry, error, nowIso)
   clearTimeoutForSession?.(childSessionID)
 
@@ -1763,6 +1817,7 @@ async function registerDeliberatorEntry(
     round: roundNumber(state),
     pass: usesCouncilPasses(state) ? deliberationPassNumber(state) : undefined,
     mode: usesCouncilModes(state) ? currentCouncilMode(state) : undefined,
+    errorRetried: existing?.errorRetried || undefined,
     startedAt,
     deadlineAt,
     status: "running",

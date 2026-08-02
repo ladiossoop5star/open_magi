@@ -780,6 +780,60 @@ test("running deliberator sessions are not aborted before their deadline", async
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("session.error from a running deliberator requests one relaunch before blocking", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    needsContinue: true,
+    inFlight: false,
+    activeDeliberators: {
+      balthasar: {
+        agent: "deliberator-balthasar",
+        sessionID: "ses-balthasar",
+        parentSessionID: "ses-1",
+        round: 2,
+        pass: 1,
+        startedAt: new Date(Date.now() - 1000).toISOString(),
+        deadlineAt: new Date(Date.now() + 600000).toISOString(),
+        status: "running",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: {
+      type: "session.error",
+      properties: {
+        sessionID: "ses-balthasar",
+        error: { name: "ProviderNetworkError", data: { message: "connection reset" } },
+      },
+    },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.active, true)
+  assert.notEqual(updated.currentPhase, "blocked")
+  assert.equal(updated.activeDeliberators.balthasar.status, "relaunch_requested")
+  assert.equal(updated.activeDeliberators.balthasar.errorRetried, true)
+  assert.match(updated.lastError, /deliberator relaunch requested/i)
+
+  assert.equal(calls.length, 1)
+  assert.match(calls[0].body.parts[0].text, /needs one relaunch/)
+  assert.match(calls[0].body.parts[0].text, /ProviderNetworkError/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("session.error from a running deliberator writes hard-error report and blocks the loop", async () => {
   const project = await makeProject("{}")
   const state = activeState({
@@ -797,6 +851,7 @@ test("session.error from a running deliberator writes hard-error report and bloc
         parentSessionID: "ses-1",
         round: 2,
         pass: 1,
+        errorRetried: true,
         startedAt: new Date(Date.now() - 1000).toISOString(),
         deadlineAt: new Date(Date.now() + 600000).toISOString(),
         status: "running",

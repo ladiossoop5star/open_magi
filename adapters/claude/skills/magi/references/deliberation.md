@@ -145,10 +145,11 @@ Classify deliberator failures before synthesis:
   continue through the timeout gate.
 - `hard_error`: the deliberator runtime failed, for example provider auth,
   invalid model, sandbox/config error, missing runner, or a child
-  `session.error`. Write a hard-error report with `status: hard_error` and
-  `failure_type: hard_error`; set `currentPhase=blocked`, `active=false`, and
-  `needsContinue=false`; tell the user which config file or runtime setting to
-  repair before resuming.
+  `session.error`. Runtime adapters may request one relaunch of the failed
+  deliberator first; if the relaunch also errors, write a hard-error report
+  with `status: hard_error` and `failure_type: hard_error`, set
+  `currentPhase=blocked`, `active=false`, and `needsContinue=false`, and tell
+  the user which config file or runtime setting to repair before resuming.
 
 Do not treat `hard_error` as an ordinary veto. A hard error means the council
 cannot be trusted because one configured deliberator did not run.
