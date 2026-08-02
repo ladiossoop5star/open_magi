@@ -383,6 +383,93 @@ test("concurrent session.created events preserve all deliberator child sessions"
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("deliberator sessions created before the main session binds are registered on bind", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    sessionID: null,
+    currentRound: 1,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    activeDeliberators: {},
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: {
+      type: "session.created",
+      properties: {
+        info: { id: "ses-melchior", parentID: "ses-1", agent: "deliberator-melchior" },
+      },
+    },
+  })
+
+  let updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated.activeDeliberators, {})
+
+  await hooks["chat.message"]({ sessionID: "ses-1", agent: "build" })
+
+  updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.sessionID, "ses-1")
+  assert.equal(updated.activeDeliberators.melchior.sessionID, "ses-melchior")
+  assert.equal(updated.activeDeliberators.melchior.status, "running")
+  assert.equal(typeof updated.activeDeliberators.melchior.deadlineAt, "string")
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("a replaced running deliberator is aborted before the new entry is recorded", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 1,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 2,
+    maxDeliberationPasses: 3,
+    activeDeliberators: {
+      melchior: {
+        agent: "deliberator-melchior",
+        sessionID: "ses-melchior-old",
+        parentSessionID: "ses-1",
+        round: 1,
+        pass: 1,
+        startedAt: new Date(Date.now() - 60000).toISOString(),
+        deadlineAt: new Date(Date.now() + 600000).toISOString(),
+        status: "running",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient([], { aborts }),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: {
+      type: "session.created",
+      properties: {
+        info: { id: "ses-melchior-new", parentID: "ses-1", agent: "deliberator-melchior" },
+      },
+    },
+  })
+
+  assert.equal(aborts.length, 1)
+  assert.equal(aborts[0].path.id, "ses-melchior-old")
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.activeDeliberators.melchior.sessionID, "ses-melchior-new")
+  assert.equal(updated.activeDeliberators.melchior.status, "running")
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("session.created ignores non-deliberator and wrong-parent child sessions", async () => {
   const project = await makeProject("{}")
   const state = activeState({

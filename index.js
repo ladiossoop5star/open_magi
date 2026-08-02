@@ -1699,22 +1699,43 @@ async function markDeliberatorCompleted(directory, event, nowMs, clearTimeoutFor
   return nextState
 }
 
-async function recordDeliberatorSession(directory, event, nowMs, scheduleTimeout) {
-  const info = createdSessionInfo(event)
-  if (!info) return null
+const PENDING_DELIBERATORS = new Map()
 
-  const agent = info.agent
+function queuePendingDeliberator(directory, pendingEntry) {
+  const pending = PENDING_DELIBERATORS.get(directory) || []
+  pending.push(pendingEntry)
+  if (pending.length > 32) pending.shift()
+  PENDING_DELIBERATORS.set(directory, pending)
+}
+
+async function registerDeliberatorEntry(
+  client,
+  directory,
+  { agent, childSessionID, parentSessionID, startedAtMs },
+  scheduleTimeout,
+  clearTimeoutForSession,
+) {
+  const state = await readState(directory)
+  if (!state?.active || state.projectRoot !== directory || state.sessionID !== parentSessionID) {
+    return null
+  }
+
   const sage = deliberatorNameFromAgent(agent)
   if (!sage) return null
 
-  const childSessionID = createdSessionID(info)
-  const parentSessionID = createdSessionParentID(info)
-  if (!childSessionID || !parentSessionID) return null
+  const existing = state.activeDeliberators?.[sage]
+  if (existing?.status === "running" && existing.sessionID && existing.sessionID !== childSessionID) {
+    // The previous entry is still running (earlier pass/round or a duplicate
+    // launch). Abort it before it is replaced, otherwise the old child
+    // session keeps running untracked forever.
+    try {
+      await abortDeliberatorSession(client, existing, directory)
+    } catch (error) {
+      await appendError(directory, `Failed to abort superseded deliberator ${sage}`, error)
+    }
+    clearTimeoutForSession?.(existing.sessionID)
+  }
 
-  const state = await readState(directory)
-  if (!state?.active || state.projectRoot !== directory || state.sessionID !== parentSessionID) return null
-
-  const startedAtMs = Number.isFinite(Date.parse(info.createdAt)) ? Date.parse(info.createdAt) : nowMs
   const startedAt = new Date(startedAtMs).toISOString()
   const deadlineAt = new Date(startedAtMs + deliberatorTimeoutMs(state)).toISOString()
   const entry = {
@@ -1742,13 +1763,65 @@ async function recordDeliberatorSession(directory, event, nowMs, scheduleTimeout
   return nextState
 }
 
+async function flushPendingDeliberators(client, directory, scheduleTimeout, clearTimeoutForSession) {
+  const pending = PENDING_DELIBERATORS.get(directory)
+  if (!pending || pending.length === 0) return
+
+  const state = await readState(directory)
+  if (!state?.active || state.projectRoot !== directory || !state.sessionID) return
+
+  const matching = pending.filter((entry) => entry.parentSessionID === state.sessionID)
+  if (matching.length === 0) return
+
+  PENDING_DELIBERATORS.set(
+    directory,
+    pending.filter((entry) => entry.parentSessionID !== state.sessionID),
+  )
+
+  for (const entry of matching) {
+    await registerDeliberatorEntry(client, directory, entry, scheduleTimeout, clearTimeoutForSession)
+  }
+}
+
+async function recordDeliberatorSession(client, directory, event, nowMs, scheduleTimeout, clearTimeoutForSession) {
+  const info = createdSessionInfo(event)
+  if (!info) return null
+
+  const agent = info.agent
+  const sage = deliberatorNameFromAgent(agent)
+  if (!sage) return null
+
+  const childSessionID = createdSessionID(info)
+  const parentSessionID = createdSessionParentID(info)
+  if (!childSessionID || !parentSessionID) return null
+
+  const startedAtMs = Number.isFinite(Date.parse(info.createdAt)) ? Date.parse(info.createdAt) : nowMs
+  const registered = await registerDeliberatorEntry(
+    client,
+    directory,
+    { agent, childSessionID, parentSessionID, startedAtMs },
+    scheduleTimeout,
+    clearTimeoutForSession,
+  )
+  if (registered) return registered
+
+  // The main session is not bound yet (state.json has no sessionID or a
+  // different one). Buffer the child session and register it once the loop
+  // binds, otherwise it would run with no deadline and no abort path.
+  const state = await readState(directory)
+  if (state?.active && state.projectRoot === directory) {
+    queuePendingDeliberator(directory, { agent, childSessionID, parentSessionID, startedAtMs })
+  }
+  return null
+}
+
 async function clearInFlightOnMessage(directory, sessionID) {
   const state = await loadMatchingState(directory, sessionID)
   if (!state?.inFlight) return
   await writeState(directory, { ...state, inFlight: false, inFlightSince: null })
 }
 
-async function bindSessionOnMessage(directory, sessionID, agent) {
+async function bindSessionOnMessage(client, directory, sessionID, agent, scheduleTimeout, clearTimeoutForSession) {
   if (!sessionID) return
   const state = await readState(directory)
   if (isDeliberatorAgent(agent)) return
@@ -1757,6 +1830,7 @@ async function bindSessionOnMessage(directory, sessionID, agent) {
   if (state.sessionID && state.sessionID !== sessionID) {
     if (canRebindActiveSession(state, sessionID, agent, directory)) {
       await rebindActiveSession(directory, state, sessionID, agent, "new primary chat message")
+      await flushPendingDeliberators(client, directory, scheduleTimeout, clearTimeoutForSession)
     }
     return
   }
@@ -1766,9 +1840,10 @@ async function bindSessionOnMessage(directory, sessionID, agent) {
     sessionID,
     mainAgent: state.mainAgent || agent || "build",
   })
+  await flushPendingDeliberators(client, directory, scheduleTimeout, clearTimeoutForSession)
 }
 
-async function bindSessionOnStateWrite(directory, toolInput) {
+async function bindSessionOnStateWrite(client, directory, toolInput, scheduleTimeout, clearTimeoutForSession) {
   const sessionID = toolInput?.sessionID
   if (!sessionID || !isStateWriteTool(toolInput, directory)) return
   const state = await readState(directory)
@@ -1782,6 +1857,7 @@ async function bindSessionOnStateWrite(directory, toolInput) {
     sessionID,
     mainAgent: state.mainAgent || "build",
   })
+  await flushPendingDeliberators(client, directory, scheduleTimeout, clearTimeoutForSession)
 }
 
 async function repairActiveRoundTransitionState(directory, toolInput) {
@@ -1910,7 +1986,14 @@ export const server = async (input) => {
       if (isNoStateCached(directory, Date.now())) return
       return enqueueStateWork(directory, async () => {
         const now = Date.now()
-        await recordDeliberatorSession(directory, event, now, scheduleDeliberatorTimeout)
+        await recordDeliberatorSession(
+          input.client,
+          directory,
+          event,
+          now,
+          scheduleDeliberatorTimeout,
+          clearDeliberatorTimeout,
+        )
         await markDeliberatorCompleted(directory, event, now, clearDeliberatorTimeout)
         const hardErrorState = await handleDeliberatorSessionError(
           input.client,
@@ -1999,7 +2082,14 @@ export const server = async (input) => {
     "chat.message": async ({ sessionID, agent }) => {
       NO_STATE_DIRS.delete(directory)
       return enqueueStateWork(directory, async () => {
-        await bindSessionOnMessage(directory, sessionID, agent)
+        await bindSessionOnMessage(
+          input.client,
+          directory,
+          sessionID,
+          agent,
+          scheduleDeliberatorTimeout,
+          clearDeliberatorTimeout,
+        )
         await clearInFlightOnMessage(directory, sessionID)
         await sweepExpiredDeliberators(input.client, directory)
       })
@@ -2014,7 +2104,13 @@ export const server = async (input) => {
     "tool.execute.after": async (toolInput, output) => {
       NO_STATE_DIRS.delete(directory)
       return enqueueStateWork(directory, async () => {
-        await bindSessionOnStateWrite(directory, toolInput)
+        await bindSessionOnStateWrite(
+          input.client,
+          directory,
+          toolInput,
+          scheduleDeliberatorTimeout,
+          clearDeliberatorTimeout,
+        )
         await repairActiveRoundTransitionState(directory, toolInput)
         await repairClosedStateArtifacts(input.client, directory, toolInput)
         const state = await readState(directory)
