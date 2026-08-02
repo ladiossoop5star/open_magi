@@ -86,8 +86,11 @@ export function buildClaudePluginFiles(options = {}) {
     ".claude-plugin/plugin.json": readText(".claude-plugin/plugin.json"),
     "hooks/hooks.json": readText("hooks/hooks.json"),
     "hooks/magi-stop": readText("hooks/magi-stop"),
+    "hooks/magi-stop.mjs": readText("hooks/magi-stop.mjs"),
     "hooks/magi-tool-reminder": readText("hooks/magi-tool-reminder"),
+    "hooks/magi-tool-reminder.mjs": readText("hooks/magi-tool-reminder.mjs"),
     "hooks/magi-guard": readText("hooks/magi-guard"),
+    "hooks/magi-guard.mjs": readText("hooks/magi-guard.mjs"),
   }
 
   for (const agent of agentDefinitions) {
