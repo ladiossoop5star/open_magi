@@ -1926,7 +1926,10 @@ export const server = async (input) => {
         const missingArtifacts = questionDenied ? [] : await findMissingArtifacts(directory, state)
         const decision = shouldContinue(state, event, directory, now, missingArtifacts, questionDenied)
         if (!decision.ok) {
-          if (questionRequest) await removeQuestionRequest(directory)
+          // Do not consume a pending question request here. It is only
+          // consumed on the idle-continue path below, which writes
+          // question-denied.md first; deleting it now would silently drop a
+          // denied request and leave the agent waiting forever.
           return
         }
 

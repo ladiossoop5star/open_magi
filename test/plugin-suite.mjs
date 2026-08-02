@@ -1751,6 +1751,42 @@ test("state write repairs active next-round state that regressed to goal_definit
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("denied question requests survive non-idle events until the idle firewall path", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({ projectRoot: project.root })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  await writeArtifact(
+    project.root,
+    ".open_magi/magi-log/question-request.md",
+    "classification: procedural\nphase: status_assessment\nquestion: should I write the report files?\n",
+  )
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "message.part.updated", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 0)
+  assert.equal(existsSync(join(project.logDir, "question-request.md")), true)
+  assert.equal(existsSync(join(project.logDir, "question-denied.md")), false)
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  assert.match(calls[0].body.parts[0].text, /Question request denied/)
+  assert.equal(existsSync(join(project.logDir, "question-request.md")), false)
+  assert.equal(existsSync(join(project.logDir, "question-denied.md")), true)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("idle event does not recover completed or blocked loops without needsContinue", async () => {
   for (const phase of ["complete", "blocked"]) {
     const project = await makeProject("{}")
