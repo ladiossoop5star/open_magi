@@ -19,14 +19,13 @@ the review council to approve the actual diff before `final-report.md`.
 
 Proposal-first rule: before any fix direction is selected, the main agent prepares an evidence packet and does not propose a fix. The three deliberators propose directions first; the main agent selects one direction; then the deliberators review that selected direction before execution.
 
-Council modes tracked in `state.json currentCouncilMode`: `recon` (round 1
-Phase 1b parallel evidence gathering), `decision` (Phases 2-4 proposal-first
-direction selection), `review` (Phase 6 adversarial diff review).
+Council modes tracked in `currentCouncilMode`: `recon` (round 1 parallel
+evidence gathering), `decision` (proposal-first), `review` (adversarial diff
+review).
 
 ## Required Reference Loading
 
-These files are part of the skill contract. Load the listed reference before
-acting in that situation:
+Load the listed reference before acting in that situation:
 
 | Situation | Required reference |
 |---|---|
@@ -44,8 +43,7 @@ Use this skill when the user says `start deliberation`, `magi`, `three sages`,
 `deliberation loop`, `loop until done`, or requests repeated research ->
 synthesize -> act -> verify until completion.
 
-Do not use it for small one-shot answers with no iterative action or
-verification.
+Do not use it for small one-shot answers.
 
 ## Roles
 
@@ -87,6 +85,8 @@ The main agent must not set `inFlight=true` manually.
 
 Use atomic complete writes where possible; never leave partial JSON.
 `goal_definition` is only valid for initial setup. currentRound > 1 must never use `goal_definition`; resume later rounds at `status_assessment`.
+Reproduction commands may be declared in `baselineCommands`; guards allow them
+outside execution, but code edits stay execution-only.
 
 ## Phase Transition Checklist Gate
 

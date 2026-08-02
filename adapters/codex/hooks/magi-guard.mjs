@@ -74,6 +74,25 @@ function shellMutationTargetsProject(cwd, command) {
   return false
 }
 
+// state.baselineCommands lets the main agent declare reproduction/baseline
+// commands at goal definition (for example building a baseline firmware to
+// reproduce a bug). Declared prefixes are evidence gathering, not fixes, so
+// the build/test rule does not apply to them. Code edits stay denied.
+function isBaselineCommand(state, command) {
+  const declared = Array.isArray(state?.baselineCommands) ? state.baselineCommands : []
+  if (declared.length === 0) return false
+  const prefixes = declared
+    .filter((entry) => typeof entry === "string" && entry.trim())
+    .map((entry) => entry.trim())
+  if (prefixes.length === 0) return false
+
+  return command
+    .split(/&&|;|\|\|/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .some((segment) => prefixes.some((prefix) => segment === prefix || segment.startsWith(`${prefix} `)))
+}
+
 let payload = ""
 process.stdin.on("data", (chunk) => {
   payload += chunk
@@ -122,7 +141,7 @@ process.stdin.on("end", () => {
     }
   } else if (SHELL_TOOL_PATTERN.test(toolName) && typeof command === "string") {
     mutation = shellMutationTargetsProject(cwd, command)
-    buildTest = BUILD_TEST_PATTERN.test(command)
+    buildTest = BUILD_TEST_PATTERN.test(command) && !isBaselineCommand(state, command)
   }
 
   if (!mutation && !buildTest) allow()

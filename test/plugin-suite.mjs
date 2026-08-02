@@ -2928,6 +2928,36 @@ test("tool.execute.before denies code changes outside the execution phase", asyn
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("tool.execute.before allows declared baselineCommands outside execution", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 1,
+    currentPhase: "status_assessment",
+    needsContinue: true,
+    baselineCommands: ["make"],
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "cd src && make clean && make" } }),
+  )
+  await assert.rejects(
+    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "npm test" } }),
+    /only allowed in the execution phase/,
+  )
+  await assert.rejects(
+    () => hooks["tool.execute.before"]({ tool: "write", sessionID: "ses-1" }, { args: { filePath: "src/main.c" } }),
+    /only allowed in the execution phase/,
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("tool.execute.before requires verdict.md during the execution phase", async () => {
   const project = await makeProject("{}")
   const state = activeState({

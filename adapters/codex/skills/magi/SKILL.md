@@ -106,6 +106,8 @@ The main agent must not set `inFlight=true` manually.
 
 Use atomic complete writes where possible; never leave partial JSON.
 `goal_definition` is only valid for initial setup. currentRound > 1 must never use `goal_definition`; resume later rounds at `status_assessment`.
+Reproduction commands may be declared in `baselineCommands`; guards allow them
+outside execution, but code edits stay execution-only.
 
 ## Phase Transition Checklist Gate
 

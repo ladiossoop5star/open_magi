@@ -73,6 +73,12 @@ Every Phase 6 history entry for an incomplete round must include
 diagnosis, verified code movement, or a safer narrowed plan. Use `false` when
 the round did not reduce uncertainty or move acceptance criteria closer.
 
+Optional: `baselineCommands` lists reproduction or baseline command prefixes
+declared at goal definition (for example building a baseline firmware to
+reproduce a bug, or running a traffic test to capture a trap). Runtime guards
+may allow these declared build/test commands outside the execution phase as
+evidence gathering; code edits remain execution-only.
+
 ## Log Layout
 
 ```text

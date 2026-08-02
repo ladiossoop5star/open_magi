@@ -1169,12 +1169,28 @@ function guardToolAction(directory, tool, args) {
   return { mutation: false, buildTest: false }
 }
 
+function guardIsBaselineCommand(state, command) {
+  const declared = Array.isArray(state?.baselineCommands) ? state.baselineCommands : []
+  const prefixes = declared
+    .filter((entry) => typeof entry === "string" && entry.trim())
+    .map((entry) => entry.trim())
+  if (prefixes.length === 0 || typeof command !== "string") return false
+
+  return command
+    .split(/&&|;|\|\|/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .some((segment) => prefixes.some((prefix) => segment === prefix || segment.startsWith(`${prefix} `)))
+}
+
 async function enforcePhaseGuard(directory, tool, args) {
   const { mutation, buildTest } = guardToolAction(directory, tool, args)
   if (!mutation && !buildTest) return
 
   const state = await readState(directory)
   if (!state?.active || state.projectRoot !== directory) return
+
+  if (buildTest && guardIsBaselineCommand(state, args?.command || args?.cmd)) return
 
   const round = roundNumber(state)
   const phase = state.currentPhase

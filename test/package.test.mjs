@@ -619,6 +619,45 @@ test("Codex PreToolUse guard denies code changes before the execution phase", as
   assert.equal(inactive.stdout, "")
 })
 
+test("Codex PreToolUse guard allows declared baselineCommands outside execution", async () => {
+  const project = await mkTempProject("open-magi-codex-guard-baseline-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify({
+      active: true,
+      currentRound: 1,
+      currentPhase: "status_assessment",
+      baselineCommands: ["make", "/tmp/mard/run"],
+    })}\n`,
+  )
+
+  function run(command) {
+    return runInteractiveCli(
+      [],
+      JSON.stringify({ cwd: project, tool_name: "shell", tool_input: { command } }),
+      { script: "adapters/codex/hooks/magi-guard.mjs" },
+    )
+  }
+
+  const baseline = await run("cd /tmp/fw-build/src && make clean && make")
+  assert.equal(baseline.stdout, "")
+
+  const otherBuild = await run("npm test")
+  assert.match(
+    JSON.parse(otherBuild.stdout).hookSpecificOutput.permissionDecisionReason,
+    /only allowed in the execution phase/,
+  )
+
+  const edit = await runInteractiveCli(
+    [],
+    JSON.stringify({ cwd: project, tool_name: "Write", tool_input: { file_path: "src/main.c" } }),
+    { script: "adapters/codex/hooks/magi-guard.mjs" },
+  )
+  assert.equal(JSON.parse(edit.stdout).hookSpecificOutput.permissionDecision, "deny")
+})
+
 test("Claude PreToolUse guard denies code changes before the execution phase", async () => {
   const project = await mkTempProject("open-magi-claude-guard-")
   const logDir = join(project, ".open_magi", "magi-log")
