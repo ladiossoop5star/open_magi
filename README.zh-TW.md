@@ -148,11 +148,41 @@ git diff --check
 
 ## 安裝
 
-在 npm package 正式發布前，請直接從公開 GitHub repo 安裝：
+在 npm package 正式發布前，請直接從公開 GitHub repo 安裝，依 runtime 選擇
+對應步驟。以下兩個一鍵指令目前都不可靠：`opencode plugin git+https://...`
+依賴本機套件工具鏈，`codex plugin add` 無法安裝位於 repo 子目錄的 plugin。
+
+### Claude Code（直接從 GitHub)
 
 ```bash
-opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
+claude plugin marketplace add ladiossoop5star/open_magi
+claude plugin install open-magi@open-magi
 ```
+
+### OpenCode(clone + 本機連結)
+
+```bash
+git clone https://github.com/ladiossoop5star/open_magi /path/to/open_magi
+mkdir -p ~/.config/opencode/node_modules
+ln -s /path/to/open_magi ~/.config/opencode/node_modules/open-magi-opencode
+node /path/to/open_magi/bin/open-magi.js setup --allow-default-model
+```
+
+接著編輯 `~/.config/opencode/opencode.json`（或 `opencode.jsonc`)，把三個
+`default-model` 改成 deliberator-melchior、deliberator-balthasar、
+deliberator-casper 要使用的 OpenCode model，然後重啟 OpenCode。
+
+### Codex(clone + cache 同步)
+
+```bash
+git clone https://github.com/ladiossoop5star/open_magi /path/to/open_magi
+node /path/to/open_magi/adapters/codex/bin/open-magi.js install-codex
+codex plugin marketplace add /path/to/open_magi
+```
+
+並確認 `~/.codex/config.toml` 有 `[plugins."open-magi@open-magi-dev"]` 且
+`enabled = true`，再依 [Codex experimental notes](adapters/codex/README.md)
+設定三個 `~/.codex/agents/deliberator-*.toml` 的 model。
 
 npm package 發布後，可以改用較短的 npm 安裝方式：
 
@@ -164,16 +194,22 @@ opencode plugin open-magi-opencode -g
 
 ```text
 請從 `open_magi` repo 安裝公開的 OpenCode plugin `open-magi-opencode`：
-https://github.com/ladiossoop5star/open_magi
+https://github.com/ladiossoop5star/open_magi，以及我使用的 runtime 對應的
+adapter（Codex 或 Claude Code)。
 
-請使用以下指令：
-
-opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
-
-plugin install 會先寫入 template。安裝後請編輯 ~/.config/opencode/opencode.json，
-把三個 `default-model` 改成 deliberator-melchior、deliberator-balthasar、
-deliberator-casper 要使用的 OpenCode model。也請確認
-~/.config/opencode/skills/magi/SKILL.md 存在。
+請照 README「Install」章節的各 runtime 步驟執行:clone repo 後,OpenCode
+把 repo 連結到 ~/.config/opencode/node_modules 並跑
+`node <repo>/bin/open-magi.js setup --allow-default-model`;Codex 跑
+`node <repo>/adapters/codex/bin/open-magi.js install-codex` 和
+`codex plugin marketplace add <repo>`;Claude Code 用
+`claude plugin marketplace add ladiossoop5star/open_magi` 和
+`claude plugin install open-magi@open-magi`。**不要**用
+`opencode plugin git+https://...` 或 `codex plugin add`,這個 repo 用這兩個
+指令不可靠。完成後,把 deliberator-melchior、deliberator-balthasar、
+deliberator-casper 設成真實 model(OpenCode 的 opencode.json/opencode.jsonc、
+Codex 的 ~/.codex/agents TOML、或 Claude 的
+~/.claude/skills/open-magi/agents/*.md),並確認安裝位置有
+skills/magi/SKILL.md。
 ```
 
 請使用你的 OpenCode `opencode.json` 裡已設定的模型。三個 deliberator 可以共用
