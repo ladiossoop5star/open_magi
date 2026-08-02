@@ -1787,6 +1787,63 @@ test("denied question requests survive non-idle events until the idle firewall p
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("irrelevant event types do not touch state or send prompts", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({ projectRoot: project.root, needsContinue: true })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "message.part.updated", properties: { sessionID: "ses-1" } },
+  })
+  await hooks.event({
+    event: { type: "session.diff", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 0)
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.inFlight, false)
+  assert.equal(updated.lastPromptedRound, 2)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("no-state projects are cached briefly and recovered after state appears", async () => {
+  const project = await makeProject("{}")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+  assert.equal(calls.length, 0)
+
+  const state = activeState({ projectRoot: project.root, needsContinue: true })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  await hooks["tool.execute.after"]({
+    sessionID: "ses-1",
+    tool: "write",
+    args: { filePath: project.statePath },
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+  assert.equal(calls.length, 1)
+  assert.match(calls[0].body.parts[0].text, /Continue the active deliberation loop/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("idle event does not recover completed or blocked loops without needsContinue", async () => {
   for (const phase of ["complete", "blocked"]) {
     const project = await makeProject("{}")

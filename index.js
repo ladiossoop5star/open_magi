@@ -21,6 +21,9 @@ const NO_PROGRESS_LIMIT = 5
 const CORRUPT_STATE_BLOCK_THRESHOLD = 3
 const REMINDER_CACHE_FILE = ".reminder-state.json"
 const REMINDER_HEARTBEAT_MS = 10 * 60 * 1000
+const NO_STATE_TTL_MS = 5000
+const HANDLED_EVENT_TYPES = new Set(["session.created", "session.idle", "session.status", "session.error"])
+const NO_STATE_DIRS = new Map()
 const GUARD_BUILD_TEST_PATTERN =
   /(?:^|[\s;&|])(?:make|ninja|cargo\s+(?:build|test)|npm\s+(?:test|run|build|ci)|pnpm\s+(?:test|run|build)|yarn\s+(?:test|build)|pytest|go\s+(?:test|build|vet)|mvn|gradle|tox)(?=[\s;&|]|$)/
 const GUARD_SED_INPLACE_PATTERN = /(?:^|[\s;&|])sed\s+(?:-[a-zA-Z]+\s+)*-i(?:\s|=)/
@@ -783,6 +786,16 @@ async function safeAppendError(projectRoot, message, error) {
   } catch {
     // Hook error containment must not depend on the project directory being writable.
   }
+}
+
+function isNoStateCached(directory, nowMs) {
+  const expiry = NO_STATE_DIRS.get(directory)
+  if (expiry === undefined) return false
+  if (nowMs >= expiry) {
+    NO_STATE_DIRS.delete(directory)
+    return false
+  }
+  return true
 }
 
 async function readState(projectRoot) {
@@ -1891,6 +1904,10 @@ export const server = async (input) => {
 
   return {
     event: async ({ event }) => {
+      // Most OpenCode events (streaming parts, diffs, etc.) cannot affect Magi
+      // state; skip them without touching the disk or the state queue.
+      if (!HANDLED_EVENT_TYPES.has(event?.type)) return
+      if (isNoStateCached(directory, Date.now())) return
       return enqueueStateWork(directory, async () => {
         const now = Date.now()
         await recordDeliberatorSession(directory, event, now, scheduleDeliberatorTimeout)
@@ -1905,9 +1922,13 @@ export const server = async (input) => {
         if (hardErrorState) return
         let state = await readState(directory)
         if (!state) {
+          if (!(await fileExists(directory, `${LOG_DIR}/${STATE_FILE}`))) {
+            NO_STATE_DIRS.set(directory, now + NO_STATE_TTL_MS)
+          }
           await handleCorruptState(input.client, directory, event, now)
           return
         }
+        NO_STATE_DIRS.delete(directory)
 
         const timeoutResult = await enforceExpiredDeliberators(input.client, directory, state, now)
         state = timeoutResult.state
@@ -1976,6 +1997,7 @@ export const server = async (input) => {
     },
 
     "chat.message": async ({ sessionID, agent }) => {
+      NO_STATE_DIRS.delete(directory)
       return enqueueStateWork(directory, async () => {
         await bindSessionOnMessage(directory, sessionID, agent)
         await clearInFlightOnMessage(directory, sessionID)
@@ -1990,6 +2012,7 @@ export const server = async (input) => {
     },
 
     "tool.execute.after": async (toolInput, output) => {
+      NO_STATE_DIRS.delete(directory)
       return enqueueStateWork(directory, async () => {
         await bindSessionOnStateWrite(directory, toolInput)
         await repairActiveRoundTransitionState(directory, toolInput)
