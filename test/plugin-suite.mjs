@@ -1986,6 +1986,41 @@ test("no-state projects are cached briefly and recovered after state appears", a
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("question request parser preserves multi-line question text", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({ projectRoot: project.root })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  await writeArtifact(
+    project.root,
+    ".open_magi/magi-log/question-request.md",
+    [
+      "# Question Request",
+      "classification: procedural",
+      "phase: status_assessment",
+      "question: should I write the report files",
+      "and which directory should they go into?",
+      "why_local_context_failed: template exists",
+    ].join("\n"),
+  )
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  const denied = await readFile(join(project.logDir, "question-denied.md"), "utf8")
+  assert.match(denied, /should I write the report files/)
+  assert.match(denied, /which directory should they go into/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("idle event does not recover completed or blocked loops without needsContinue", async () => {
   for (const phase of ["complete", "blocked"]) {
     const project = await makeProject("{}")

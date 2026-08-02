@@ -500,10 +500,19 @@ async function enforceNoProgressLimit(directory, state, nowMs = Date.now()) {
 
 function parseQuestionRequest(text) {
   const request = { raw: text }
+  let lastKey = null
   for (const line of text.split(/\r?\n/)) {
     const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/)
-    if (!match) continue
-    request[match[1].toLowerCase()] = match[2].trim()
+    if (match) {
+      lastKey = match[1].toLowerCase()
+      request[lastKey] = match[2].trim()
+      continue
+    }
+    // Continuation lines extend the previous key's value, so multi-line
+    // questions are not truncated to their first line.
+    if (lastKey && line.trim() && !line.startsWith("#")) {
+      request[lastKey] = `${request[lastKey]}\n${line.trim()}`
+    }
   }
   if (request.classification) request.classification = request.classification.toLowerCase()
   if (request.phase) request.phase = request.phase.toLowerCase()
