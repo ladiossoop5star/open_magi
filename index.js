@@ -11,7 +11,7 @@ const QUESTION_REQUEST_FILE = "question-request.md"
 const QUESTION_DENIED_FILE = "question-denied.md"
 const CORRUPT_STATE_MARKER_FILE = ".state-corrupt-count.json"
 const STATE_REPAIR_BLOCKED_FILE = "state-repair-blocked.md"
-const STALE_LOCK_MS = 10 * 60 * 1000
+const DEFAULT_STALE_LOCK_MS = 30 * 60 * 1000
 const DEFAULT_DELIBERATOR_TIMEOUT_MS = 30 * 60 * 1000
 const HARD_MAX_DELIBERATOR_TIMEOUT_MS = 60 * 60 * 1000
 const DEFAULT_MAX_DELIBERATION_PASSES = 3
@@ -1033,10 +1033,14 @@ function createdSessionParentID(info) {
   return info?.parentID || info?.parentId
 }
 
+function staleLockMs(state) {
+  return positiveInteger(state?.staleLockMs, DEFAULT_STALE_LOCK_MS)
+}
+
 function isStaleLock(state, nowMs) {
   if (!state?.inFlight || !state.inFlightSince) return false
   const lockMs = Date.parse(state.inFlightSince)
-  return Number.isFinite(lockMs) && nowMs - lockMs > STALE_LOCK_MS
+  return Number.isFinite(lockMs) && nowMs - lockMs > staleLockMs(state)
 }
 
 function isTerminalPhase(phase) {

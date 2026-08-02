@@ -2120,6 +2120,40 @@ test("unparseable progress markers count toward the no-progress limit", async ()
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("inFlight locks only go stale after the configured staleLockMs window", async () => {
+  const project = await makeProject("{}")
+  const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString()
+  const state = activeState({
+    projectRoot: project.root,
+    needsContinue: true,
+    inFlight: true,
+    inFlightSince: fifteenMinutesAgo,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+  assert.equal(calls.length, 0)
+
+  await writeFile(
+    project.statePath,
+    JSON.stringify({ ...state, staleLockMs: 10 * 60 * 1000 }, null, 2),
+  )
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+  assert.equal(calls.length, 1)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("chat.message rebinds an active loop to a new primary session in the same project", async () => {
   const project = await makeProject("{}")
   const state = activeState({
