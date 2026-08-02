@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises"
+import { chmod, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -98,6 +98,52 @@ export function buildCodexAgentConfig(options = {}) {
       return [agent.fileName, `${lines.join("\n")}\n`]
     }),
   )
+}
+
+export function defaultCodexHome(env = process.env) {
+  if (env.CODEX_HOME) return env.CODEX_HOME
+  return join(os.homedir(), ".codex")
+}
+
+const PLUGIN_CACHE_ENTRIES = [
+  "bin",
+  "hooks",
+  "lib",
+  "skills",
+  "package.json",
+  "README.md",
+  ".codex-plugin",
+  ".mcp.json",
+]
+
+export async function installCodexPluginCache(options = {}) {
+  const codexHome = options.codexHome || defaultCodexHome(options.env)
+  const dryRun = Boolean(options.dryRun)
+  const pkg = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"))
+  const cacheDir = join(codexHome, "plugins", "cache", "open-magi-dev", "open-magi", pkg.version)
+  const written = []
+
+  if (!dryRun) {
+    for (const entry of PLUGIN_CACHE_ENTRIES) {
+      const source = join(packageRoot, entry)
+      const target = join(cacheDir, entry)
+      await rm(target, { recursive: true, force: true })
+      await cp(source, target, { recursive: true })
+      written.push(target)
+    }
+    for (const name of ["hooks/magi-stop", "hooks/magi-stop.mjs", "hooks/magi-guard", "hooks/magi-tool-reminder", "bin/open-magi.js", "bin/mcp-server.js"]) {
+      await chmod(join(cacheDir, name), 0o755)
+    }
+  }
+
+  return {
+    ok: true,
+    dryRun,
+    version: pkg.version,
+    cacheDir,
+    written,
+    note: 'Run `codex plugin marketplace add <repo>` once so Codex sees the open-magi-dev marketplace, and make sure config.toml has [plugins."open-magi@open-magi-dev"] enabled = true.',
+  }
 }
 
 export function defaultCodexAgentsDir(env = process.env) {

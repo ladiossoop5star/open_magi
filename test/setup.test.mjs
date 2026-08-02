@@ -671,6 +671,39 @@ test("runClaudeCouncil accepts colon-containing and quoted YAML model values", a
   await rm(binDir, { recursive: true, force: true })
 })
 
+test("installCodexPluginCache syncs the adapter into the codex plugin cache", async () => {
+  const { installCodexPluginCache } = await import("../adapters/codex/lib/setup.js")
+  const codexHome = await mkdtemp(join(tmpdir(), "open-magi-codex-home-"))
+
+  const result = await installCodexPluginCache({ codexHome })
+
+  assert.equal(result.ok, true)
+  assert.match(result.cacheDir, /plugins\/cache\/open-magi-dev\/open-magi\/0\.1\.5$/)
+  for (const relative of [
+    "bin/open-magi.js",
+    "hooks/magi-stop",
+    "hooks/magi-guard",
+    "hooks/magi-tool-reminder",
+    "lib/codex-runner.js",
+    "skills/magi/SKILL.md",
+    ".codex-plugin/plugin.json",
+    ".mcp.json",
+  ]) {
+    assert.equal(existsSync(join(result.cacheDir, relative)), true, relative)
+  }
+  assert.ok((await stat(join(result.cacheDir, "hooks", "magi-guard"))).mode & 0o111)
+  assert.ok((await stat(join(result.cacheDir, "bin", "open-magi.js"))).mode & 0o111)
+
+  const dryRun = await installCodexPluginCache({
+    codexHome: join(codexHome, "dry"),
+    dryRun: true,
+  })
+  assert.equal(dryRun.dryRun, true)
+  assert.equal(existsSync(dryRun.cacheDir), false)
+
+  await rm(codexHome, { recursive: true, force: true })
+})
+
 test("buildCodexAgentConfig writes a profile field only when provided", () => {  const withProfile = buildCodexAgentConfig({ profile: "local" })
   assert.match(withProfile["deliberator-melchior.toml"], /^profile = "local"$/m)
   assert.match(withProfile["deliberator-casper.toml"], /^profile = "local"$/m)

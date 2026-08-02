@@ -4,18 +4,22 @@ import { readFile } from "node:fs/promises"
 import { readFileSync } from "node:fs"
 import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
-import { setupCodexMagi } from "../lib/setup.js"
+import { installCodexPluginCache, setupCodexMagi } from "../lib/setup.js"
 import { runCouncil } from "../lib/codex-runner.js"
 
 function printHelp() {
   console.log(`open-magi
 
 Usage:
+  open-magi install-codex [--codex-home path] [--dry-run]
   open-magi setup-codex
   open-magi setup-codex --interactive [--agents-dir path]
   open-magi setup-codex --melchior-model model --balthasar-model model --casper-model model [--provider provider] [--agents-dir path] [--dry-run]
   open-magi run-council --project-root path --prompt-path path --round N --pass N [--agents-dir path] [--codex-bin path] [--timeout-ms ms]
   open-magi --version
+
+Commands:
+  install-codex      Sync this adapter into the Codex plugin cache. Use this for local development installs; codex plugin add only works when the plugin lives in its own repository.
 
 Options:
   --agents-dir        Codex custom agents directory for setup-codex and run-council. Defaults to CODEX_HOME/agents or ~/.codex/agents.
@@ -164,6 +168,28 @@ async function main(argv) {
     })
     console.log(JSON.stringify(result, null, 2))
     if (!result.ok) process.exitCode = 1
+    return
+  }
+
+  if (command === "install-codex") {
+    const { values } = parseArgs({
+      args: argv.slice(3),
+      options: {
+        "codex-home": { type: "string" },
+        "dry-run": { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+      },
+      allowPositionals: false,
+    })
+    if (values.help) {
+      printHelp()
+      return
+    }
+    const result = await installCodexPluginCache({
+      codexHome: values["codex-home"],
+      dryRun: values["dry-run"],
+    })
+    console.log(JSON.stringify(result, null, 2))
     return
   }
 

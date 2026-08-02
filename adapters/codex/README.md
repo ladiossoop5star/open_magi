@@ -9,12 +9,30 @@ denial, or artifact repair.
 
 ## Install for Local Development
 
-From a checkout of this repository:
+Codex's `codex plugin add` clones the plugin source as its own git repository,
+so it cannot install plugins that live in a subdirectory of a larger repo
+(like this one). For local development installs, sync the adapter into the
+Codex plugin cache directly:
+
+```bash
+node /path/to/open_magi/adapters/codex/bin/open-magi.js install-codex
+```
+
+Then make sure Codex sees the `open-magi-dev` marketplace and has the plugin
+enabled (one-time):
 
 ```bash
 codex plugin marketplace add /path/to/open_magi
-codex plugin add open-magi@open-magi-dev
 ```
+
+and that `~/.codex/config.toml` contains:
+
+```toml
+[plugins."open-magi@open-magi-dev"]
+enabled = true
+```
+
+Rerun `install-codex` after pulling repo updates to refresh the cached plugin.
 
 For a GitHub install after Codex support is merged:
 
