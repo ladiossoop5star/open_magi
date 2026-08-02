@@ -369,11 +369,10 @@ async function fileExists(projectRoot, relativePath) {
 }
 
 async function findMissingArtifacts(projectRoot, state) {
-  const missing = []
-  for (const artifact of requiredArtifacts(state)) {
-    if (!(await fileExists(projectRoot, artifact))) missing.push(artifact)
-  }
-  return missing
+  const results = await Promise.all(
+    requiredArtifacts(state).map(async (artifact) => ((await fileExists(projectRoot, artifact)) ? null : artifact)),
+  )
+  return results.filter(Boolean)
 }
 
 function artifactRepairError(missingArtifacts, nowIso) {
@@ -785,24 +784,42 @@ function isNoStateCached(directory, nowMs) {
   return true
 }
 
-async function readState(projectRoot) {
+const CORRUPT_MARKER_DIRS = new Set()
+
+async function readStateDetailed(projectRoot) {
+  let text
   try {
-    const state = JSON.parse(await readFile(statePath(projectRoot), "utf8"))
-    await clearCorruptStateMarker(projectRoot)
-    return state
+    text = await readFile(statePath(projectRoot), "utf8")
   } catch (error) {
-    if (error?.code === "ENOENT") return null
+    if (error?.code === "ENOENT") return { state: null, corrupt: false, text: null }
     await appendError(projectRoot, "Failed to read state", error)
-    return null
+    return { state: null, corrupt: false, text: null }
+  }
+
+  try {
+    const state = JSON.parse(text)
+    await clearCorruptStateMarker(projectRoot)
+    return { state, corrupt: false, text }
+  } catch (error) {
+    await appendError(projectRoot, "Failed to read state", error)
+    return { state: null, corrupt: true, text }
   }
 }
 
+async function readState(projectRoot) {
+  return (await readStateDetailed(projectRoot)).state
+}
+
 async function clearCorruptStateMarker(projectRoot) {
+  // Only touch the disk when a marker was actually written this session;
+  // otherwise every successful readState would pay an unlink syscall.
+  if (!CORRUPT_MARKER_DIRS.has(projectRoot)) return
   try {
     await unlink(corruptStateMarkerPath(projectRoot))
   } catch (error) {
     if (error?.code !== "ENOENT") await appendError(projectRoot, "Failed to clear corrupt state marker", error)
   }
+  CORRUPT_MARKER_DIRS.delete(projectRoot)
 }
 
 async function writeState(projectRoot, state) {
@@ -837,16 +854,23 @@ function enqueueStateWork(directory, work) {
     await safeAppendError(directory, "Queued state operation failed", error)
   })
   STATE_QUEUES.set(directory, guarded)
+  void guarded.finally(() => {
+    // Drop idle queues so long-lived processes do not accumulate one entry
+    // per project directory forever.
+    if (STATE_QUEUES.get(directory) === guarded) STATE_QUEUES.delete(directory)
+  })
   return guarded
 }
 
-async function backupCorruptState(projectRoot, nowIso) {
-  let text
-  try {
-    text = await readFile(statePath(projectRoot), "utf8")
-  } catch (error) {
-    if (error?.code === "ENOENT") return null
-    throw error
+async function backupCorruptState(projectRoot, nowIso, knownText) {
+  let text = knownText
+  if (text === undefined) {
+    try {
+      text = await readFile(statePath(projectRoot), "utf8")
+    } catch (error) {
+      if (error?.code === "ENOENT") return null
+      throw error
+    }
   }
 
   try {
@@ -932,6 +956,7 @@ async function recordCorruptState(projectRoot, backupPath, nowIso) {
   const markerPath = corruptStateMarkerPath(projectRoot)
   await mkdir(dirname(markerPath), { recursive: true })
   await writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`)
+  CORRUPT_MARKER_DIRS.add(projectRoot)
 
   if (marker.blocked) {
     await writeFile(stateRepairBlockedPath(projectRoot), stateRepairBlockedContent(marker))
@@ -970,14 +995,14 @@ async function sendStateRepairHaltedPrompt(client, directory, sessionID, marker)
   })
 }
 
-async function handleCorruptState(client, directory, event, nowMs) {
+async function handleCorruptState(client, directory, event, nowMs, knownCorruptText) {
   const nowIso = new Date(nowMs).toISOString()
   const existingMarker = await readCorruptStateMarker(directory)
   if (existingMarker?.blockedNotifiedAt) return true
 
   let backupPath = null
   try {
-    backupPath = await backupCorruptState(directory, nowIso)
+    backupPath = await backupCorruptState(directory, nowIso, knownCorruptText)
   } catch (error) {
     await appendError(directory, "Failed to back up corrupt state", error)
   }
@@ -2032,6 +2057,9 @@ export const server = async (input) => {
 
   try {
     STATE_FILE_SEEN.set(directory, await stateFileSignature(directory))
+    // Clear any stale corrupt marker from a previous plugin run exactly once.
+    CORRUPT_MARKER_DIRS.add(directory)
+    await clearCorruptStateMarker(directory)
     const state = await readState(directory)
     if (state?.active && state.projectRoot === directory && state.activeDeliberators) {
       for (const entry of Object.values(state.activeDeliberators)) {
@@ -2067,13 +2095,17 @@ export const server = async (input) => {
           clearDeliberatorTimeout,
         )
         if (hardErrorState) return
-        let state = await readState(directory)
-        if (!state) {
-          if (!(await fileExists(directory, `${LOG_DIR}/${STATE_FILE}`))) {
-            NO_STATE_DIRS.set(directory, now + NO_STATE_TTL_MS)
+        let state
+        {
+          const detailed = await readStateDetailed(directory)
+          state = detailed.state
+          if (!state) {
+            if (!detailed.corrupt && !(await fileExists(directory, `${LOG_DIR}/${STATE_FILE}`))) {
+              NO_STATE_DIRS.set(directory, now + NO_STATE_TTL_MS)
+            }
+            await handleCorruptState(input.client, directory, event, now, detailed.corrupt ? detailed.text : undefined)
+            return
           }
-          await handleCorruptState(input.client, directory, event, now)
-          return
         }
         NO_STATE_DIRS.delete(directory)
 
