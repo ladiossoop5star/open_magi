@@ -2083,6 +2083,43 @@ test("state write derives the no-progress limit from trailing history progress m
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("unparseable progress markers count toward the no-progress limit", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentPhase: "status_assessment",
+    needsContinue: true,
+    consecutiveNoProgress: 0,
+    history: [
+      { round: 1, progress: true },
+      { round: 2, progress: "made some progress but unparseable" },
+      { round: 3, progress: false },
+      { round: 4, progress: "hmm" },
+      { round: 5 },
+      { round: 6, progress: false },
+    ],
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks["tool.execute.after"]({
+    sessionID: "ses-1",
+    tool: "write",
+    args: { filePath: project.statePath },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.consecutiveNoProgress, 5)
+  assert.equal(updated.active, false)
+  assert.equal(updated.currentPhase, "blocked")
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("chat.message rebinds an active loop to a new primary session in the same project", async () => {
   const project = await makeProject("{}")
   const state = activeState({

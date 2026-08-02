@@ -477,12 +477,10 @@ function trailingNoProgressHistoryCount(history) {
   let count = 0
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const marker = historyProgressMarker(history[index])
-    if (marker === false) {
-      count += 1
-      continue
-    }
     if (marker === true) return count
-    return null
+    // Unparseable or missing progress markers count as no progress; otherwise
+    // a malformed entry would reset the no-progress limit.
+    count += 1
   }
   return count
 }
