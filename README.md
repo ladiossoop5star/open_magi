@@ -156,31 +156,68 @@ git diff --check
 ## Install
 
 Until the npm package is published, install directly from this public GitHub
-repo:
+repo with the per-runtime steps below. The one-command flows that skip these
+steps are known to be unreliable today: `opencode plugin git+https://...`
+depends on the host's package tooling, and `codex plugin add` cannot install
+plugins that live in a repository subdirectory.
+
+### Claude Code (direct from GitHub)
 
 ```bash
-opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
+claude plugin marketplace add ladiossoop5star/open_magi
+claude plugin install open-magi@open-magi
+```
+
+### OpenCode (clone + local link)
+
+```bash
+git clone https://github.com/ladiossoop5star/open_magi /path/to/open_magi
+mkdir -p ~/.config/opencode/node_modules
+ln -s /path/to/open_magi ~/.config/opencode/node_modules/open-magi-opencode
+node /path/to/open_magi/bin/open-magi.js setup --allow-default-model
+```
+
+Then edit `~/.config/opencode/opencode.json` (or `opencode.jsonc`) and replace
+the three `default-model` values with real models for deliberator-melchior,
+deliberator-balthasar, and deliberator-casper, and restart OpenCode.
+
+### Codex (clone + cache sync)
+
+```bash
+git clone https://github.com/ladiossoop5star/open_magi /path/to/open_magi
+node /path/to/open_magi/adapters/codex/bin/open-magi.js install-codex
+codex plugin marketplace add /path/to/open_magi
+```
+
+Make sure `~/.codex/config.toml` contains
+`[plugins."open-magi@open-magi-dev"]` with `enabled = true`, then configure
+the three `~/.codex/agents/deliberator-*.toml` model values as described in
+[Codex experimental notes](adapters/codex/README.md).
+
+### Ask an AI agent to install it
+
+```text
+Please install the public OpenCode plugin `open-magi-opencode` from the `open_magi` repo:
+https://github.com/ladiossoop5star/open_magi, plus the adapter for my runtime
+(Codex or Claude Code if applicable). Follow the per-runtime steps in the
+README "Install" section exactly: clone the repo, then for OpenCode link it
+into ~/.config/opencode/node_modules and run `node <repo>/bin/open-magi.js
+setup --allow-default-model`; for Codex run `node <repo>/adapters/codex/bin/
+open-magi.js install-codex` plus `codex plugin marketplace add <repo>`; for
+Claude Code use `claude plugin marketplace add ladiossoop5star/open_magi` and
+`claude plugin install open-magi@open-magi`. Do NOT use
+`opencode plugin git+https://...` or `codex plugin add`, they are unreliable
+for this repo. Afterwards, set real deliberator model values for
+deliberator-melchior, deliberator-balthasar, and deliberator-casper (OpenCode
+opencode.json/opencode.jsonc agent entries, Codex ~/.codex/agents TOMLs, or
+Claude ~/.claude/skills/open-magi/agents/*.md) and confirm
+skills/magi/SKILL.md exists in the installed location.
 ```
 
 After the npm package is published, the shorter npm install path will be:
 
 ```bash
 opencode plugin open-magi-opencode -g
-```
-
-Ask an AI agent to install it:
-
-```text
-Please install the public OpenCode plugin `open-magi-opencode` from the `open_magi` repo:
-https://github.com/ladiossoop5star/open_magi. Use these exact commands:
-
-opencode plugin git+https://github.com/ladiossoop5star/open_magi.git -g
-
-The plugin install writes a template. After installation, edit
-~/.config/opencode/opencode.json and replace the three `default-model` values
-with the OpenCode models to use for deliberator-melchior,
-deliberator-balthasar, and deliberator-casper. Also verify that
-~/.config/opencode/skills/magi/SKILL.md exists.
 ```
 
 Use models already configured in your OpenCode `opencode.json`. You can use one
