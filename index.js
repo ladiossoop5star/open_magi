@@ -1,4 +1,4 @@
-import { access, appendFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
+import { access, appendFile, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { randomUUID } from "node:crypto"
 
@@ -29,6 +29,7 @@ const GUARD_BUILD_TEST_PATTERN =
 const GUARD_SED_INPLACE_PATTERN = /(?:^|[\s;&|])sed\s+(?:-[a-zA-Z]+\s+)*-i(?:\s|=)/
 const GUARD_APPLY_PATCH_PATTERN = /(?:^|[\s;&|])apply_patch(?=[\s;&|]|$)/
 const STATE_QUEUES = new Map()
+const STATE_FILE_SEEN = new Map()
 const PHASE_RANK = {
   goal_definition: 0,
   status_assessment: 1,
@@ -824,6 +825,23 @@ async function writeState(projectRoot, state) {
   await mkdir(dirname(target), { recursive: true })
   await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`)
   await rename(tmp, target)
+  STATE_FILE_SEEN.set(projectRoot, await stateFileSignature(projectRoot))
+}
+
+async function stateFileSignature(directory) {
+  try {
+    const info = await stat(statePath(directory))
+    return `${info.mtimeMs}:${info.size}`
+  } catch {
+    return null
+  }
+}
+
+async function stateFileChanged(directory) {
+  const signature = await stateFileSignature(directory)
+  const seen = STATE_FILE_SEEN.get(directory)
+  STATE_FILE_SEEN.set(directory, signature)
+  return seen !== undefined && signature !== seen
 }
 
 function enqueueStateWork(directory, work) {
@@ -1843,9 +1861,9 @@ async function bindSessionOnMessage(client, directory, sessionID, agent, schedul
   await flushPendingDeliberators(client, directory, scheduleTimeout, clearTimeoutForSession)
 }
 
-async function bindSessionOnStateWrite(client, directory, toolInput, scheduleTimeout, clearTimeoutForSession) {
+async function bindSessionOnStateWrite(client, directory, toolInput, scheduleTimeout, clearTimeoutForSession, stateTouched) {
   const sessionID = toolInput?.sessionID
-  if (!sessionID || !isStateWriteTool(toolInput, directory)) return
+  if (!sessionID || !stateTouched) return
   const state = await readState(directory)
   if (!state?.active || state.projectRoot !== directory) return
   if (state.sessionID && state.sessionID !== sessionID) {
@@ -1860,9 +1878,9 @@ async function bindSessionOnStateWrite(client, directory, toolInput, scheduleTim
   await flushPendingDeliberators(client, directory, scheduleTimeout, clearTimeoutForSession)
 }
 
-async function repairActiveRoundTransitionState(directory, toolInput) {
+async function repairActiveRoundTransitionState(directory, toolInput, stateTouched) {
   const sessionID = toolInput?.sessionID
-  if (!sessionID || !isStateWriteTool(toolInput, directory)) return
+  if (!sessionID || !stateTouched) return
 
   const state = await readState(directory)
   if (!state?.active || state.projectRoot !== directory) return
@@ -1878,9 +1896,9 @@ async function repairActiveRoundTransitionState(directory, toolInput) {
   }))
 }
 
-async function repairClosedStateArtifacts(client, directory, toolInput) {
+async function repairClosedStateArtifacts(client, directory, toolInput, stateTouched) {
   const sessionID = toolInput?.sessionID
-  if (!sessionID || !isStateWriteTool(toolInput, directory)) return
+  if (!sessionID || !stateTouched) return
 
   const state = await readState(directory)
   if (!state || state.active || state.projectRoot !== directory || state.currentPhase === "blocked") return
@@ -1968,6 +1986,7 @@ export const server = async (input) => {
   }
 
   try {
+    STATE_FILE_SEEN.set(directory, await stateFileSignature(directory))
     const state = await readState(directory)
     if (state?.active && state.projectRoot === directory && state.activeDeliberators) {
       for (const entry of Object.values(state.activeDeliberators)) {
@@ -2104,15 +2123,17 @@ export const server = async (input) => {
     "tool.execute.after": async (toolInput, output) => {
       NO_STATE_DIRS.delete(directory)
       return enqueueStateWork(directory, async () => {
+        const stateTouched = isStateWriteTool(toolInput, directory) || (await stateFileChanged(directory))
         await bindSessionOnStateWrite(
           input.client,
           directory,
           toolInput,
           scheduleDeliberatorTimeout,
           clearDeliberatorTimeout,
+          stateTouched,
         )
-        await repairActiveRoundTransitionState(directory, toolInput)
-        await repairClosedStateArtifacts(input.client, directory, toolInput)
+        await repairActiveRoundTransitionState(directory, toolInput, stateTouched)
+        await repairClosedStateArtifacts(input.client, directory, toolInput, stateTouched)
         const state = await readState(directory)
         await enforceNoProgressLimit(directory, state)
         await sweepExpiredDeliberators(input.client, directory)

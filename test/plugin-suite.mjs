@@ -2110,6 +2110,43 @@ test("chat.message does not bind a new loop to deliberator subagent sessions", a
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("state file changes missed by the bash regex still trigger closed-state repair", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentPhase: "execution",
+    active: true,
+    needsContinue: true,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  // Simulate an agent writing state.json via jq/sed (regex-invisible), then a
+  // tool call that the regex would never flag as a state write.
+  await writeFile(
+    project.statePath,
+    JSON.stringify({ ...state, active: false, needsContinue: false }, null, 2),
+  )
+  await hooks["tool.execute.after"]({
+    sessionID: "ses-1",
+    tool: "bash",
+    args: { command: "jq '.active = false' .open_magi/magi-log/state.json | sponge .open_magi/magi-log/state.json" },
+  })
+
+  assert.equal(calls.length, 1)
+  assert.match(calls[0].body.parts[0].text, /Artifact integrity repair required/)
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.active, true)
+  assert.match(updated.lastError, /artifact integrity repair required/i)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("tool.execute.after binds the primary session after a bash state file write", async () => {
   const project = await makeProject("{}")
   const state = activeState({
