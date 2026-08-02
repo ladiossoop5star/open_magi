@@ -142,6 +142,7 @@ async function handleRequest(message) {
 }
 
 let buffer = Buffer.alloc(0)
+let requestChain = Promise.resolve()
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)])
   while (true) {
@@ -158,6 +159,13 @@ process.stdin.on("data", (chunk) => {
         if (buffer.length < bodyEnd) break
         line = buffer.slice(bodyStart, bodyEnd).toString("utf8").trim()
         buffer = buffer.slice(bodyEnd)
+      } else {
+        // A header block without a parsable Content-Length must not fall
+        // through to newline parsing, which would shred the header and every
+        // following frame. Drop the bad header and report one parse error.
+        buffer = buffer.slice(headerIndex + headerDelimiter.length)
+        send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "invalid Content-Length header" } })
+        continue
       }
     }
     if (!line) {
@@ -168,7 +176,13 @@ process.stdin.on("data", (chunk) => {
       if (!line) continue
     }
     try {
-      void handleRequest(JSON.parse(line))
+      const request = JSON.parse(line)
+      // Serialize request handling so concurrent framed requests cannot
+      // interleave their responses on stdout.
+      requestChain = requestChain.then(
+        () => handleRequest(request),
+        (err) => process.stderr.write(`[open-magi-mcp] request handling failed: ${err?.message || err}\n`),
+      )
     } catch (err) {
       send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: err?.message || String(err) } })
     }

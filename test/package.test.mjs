@@ -394,6 +394,32 @@ test("Codex MCP server supports Content-Length handshake and exposes run_council
   assert.deepEqual(frames[1].result.tools.map((tool) => tool.name), ["run_council"])
 })
 
+test("Codex MCP server survives a malformed Content-Length header and keeps framing", async () => {
+  const input = [
+    "Content-Length: not-a-number\r\n\r\n",
+    rpcFrame({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "1" } },
+    }),
+    rpcFrame({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+  ].join("")
+  const result = await runInteractiveCli([], input, {
+    script: "adapters/codex/bin/mcp-server.js",
+  })
+
+  assert.equal(result.code, 0, result.stderr)
+  const firstLine = JSON.parse(result.stdout.split("\n")[0])
+  assert.equal(firstLine.error.code, -32700)
+
+  const frames = parseRpcFrames(result.stdout)
+  assert.equal(frames[0].id, 1)
+  assert.equal(frames[0].result.serverInfo.name, "open-magi")
+  assert.equal(frames[1].id, 2)
+  assert.deepEqual(frames[1].result.tools.map((tool) => tool.name), ["run_council"])
+})
+
 test("Codex marketplace metadata can install this repo as a local development plugin", async () => {
   const marketplace = JSON.parse(await readFile(new URL("../.agents/plugins/marketplace.json", import.meta.url), "utf8"))
   const entry = marketplace.plugins.find((plugin) => plugin.name === "open-magi")
