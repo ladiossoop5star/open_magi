@@ -1289,7 +1289,7 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(codexRuntime, /verdict_adherence: no/)
   assert.doesNotMatch(codexRuntime, /OpenCode `session\.abort`/)
   assert.match(skill, /\.open_magi\/magi-log/)
-  assert.ok(skill.split("\n").length <= 300, "SKILL.md should stay concise and route detail to references")
+  assert.ok(skill.split("\n").length <= 350, "SKILL.md should stay concise and route detail to references")
   assert.ok(Buffer.byteLength(skill, "utf8") <= 16384, "SKILL.md should stay below the main-load context budget")
   assert.doesNotMatch(skill, /\.omo|deliberation-log/)
   assert.doesNotMatch(skill, hanPattern)

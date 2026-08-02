@@ -8,8 +8,10 @@ description: Use when the user asks for magi, Open-Magi, @Open-Magi, deliberatio
 ## Overview
 
 Run a coding-agent proposal-first deliberation loop. The main agent owns
-decisions, implementation, verification, checkpoint commits, rollback, and final
-reporting. Three read-only deliberator sub-agents only research and report.
+decisions, implementation, verification, checkpoint commits, rollback, and
+final reporting. Three read-only deliberator sub-agents only research and
+report. Runtime adapters may add guardrails; otherwise the main agent enforces
+gates.
 
 Core rule: completion is based on explicit `acceptanceCriteria` and
 `verificationCommands`, not on confidence or subjective judgment, and requires
@@ -17,13 +19,14 @@ the review council to approve the actual diff before `final-report.md`.
 
 Proposal-first rule: before any fix direction is selected, the main agent prepares an evidence packet and does not propose a fix. The three deliberators propose directions first; the main agent selects one direction; then the deliberators review that selected direction before execution.
 
-Council modes tracked in `currentCouncilMode`: `recon` (round 1 parallel
-evidence gathering), `decision` (Phases 2-4 proposal-first), `review`
-(Phase 6 adversarial diff review).
+Council modes tracked in `state.json currentCouncilMode`: `recon` (round 1
+Phase 1b parallel evidence gathering), `decision` (Phases 2-4 proposal-first
+direction selection), `review` (Phase 6 adversarial diff review).
 
 ## Required Reference Loading
 
-Load the listed reference before acting in that situation:
+These files are part of the skill contract. Load the listed reference before
+acting in that situation:
 
 | Situation | Required reference |
 |---|---|
@@ -39,8 +42,10 @@ Load the listed reference before acting in that situation:
 
 Use this skill when the user says `start deliberation`, `magi`, `three sages`,
 `deliberation loop`, `loop until done`, or requests repeated research ->
-synthesize -> act -> verify until completion. Do not use it for small one-shot
-answers with no iterative action or verification.
+synthesize -> act -> verify until completion.
+
+Do not use it for small one-shot answers with no iterative action or
+verification.
 
 ## Roles
 
@@ -56,9 +61,12 @@ Sub-agents:
 - `deliberator-casper`: debugging, root cause, failure paths.
 
 Use these role names for report files even with generic runtime subagents.
-Sub-agents do not edit files, do not run build/test/format/deploy commands, do
-not produce the final answer for the user, and only report analysis to the
-main agent.
+
+Sub-agent restrictions:
+- sub-agents do not edit files;
+- sub-agents do not run build/test/format/deploy commands;
+- sub-agents do not produce the final answer for the user;
+- sub-agents only report analysis to the main agent.
 
 ## Runtime State
 
@@ -74,39 +82,44 @@ Create it before the first research round with `schemaVersion`, `goal`,
 artifact layout are in `references/protocol.md`.
 
 Runtime-adapter-owned fields: `inFlight`, `inFlightSince`, `lastPromptedRound`,
-`lastPromptedAt`, `activeDeliberators`, `deliberatorTimeoutCounts`. The main
-agent must not set `inFlight=true` manually.
+`lastPromptedAt`, `activeDeliberators`, and `deliberatorTimeoutCounts`.
+The main agent must not set `inFlight=true` manually.
 
-Use atomic complete writes; never leave partial JSON. `goal_definition` is only
-valid for initial setup. currentRound > 1 must never use `goal_definition`;
-resume later rounds at `status_assessment`.
+Use atomic complete writes where possible; never leave partial JSON.
+`goal_definition` is only valid for initial setup. currentRound > 1 must never use `goal_definition`; resume later rounds at `status_assessment`.
 
 ## Phase Transition Checklist Gate
 
 Create `.open_magi/magi-log/checklist.md` immediately after `state.json` using
-`references/checklist-template.md`. Before every phase transition, read it,
-verify the current transition section item by item, and only then update
+`references/checklist-template.md`.
+
+Before every phase transition, read `.open_magi/magi-log/checklist.md`, verify
+the current transition section item by item, and only then update
 `state.json.currentPhase`.
 
-The checklist is a required runtime artifact. Its universal gate includes:
+The checklist is a required runtime artifact, not optional documentation. Its
+universal gate includes:
 - `question_classification` was completed before any user question.
 - No procedural question was asked; all procedural choices followed the Magi contract.
 
-If a deliberator does not return a usable result, still write its `report-*.md`
-file with failure evidence and a blocking question instead of omitting the file.
+If a deliberator does not return a usable result, still write that
+deliberator's `report-*.md` file with failure evidence and a blocking question
+instead of omitting the file.
 
 ## Report Integrity Gate
 
 Before ending a turn while `active=true`, verify log files match state:
 - `research_task` has `round-NNN/research-prompt.md`.
-- Round 1 `research_task` or later has the `recon-001/` reports and `evidence-base.md`.
+- Round 1 at `research_task` or later has `round-NNN/recon-001/prompt.md`, all
+  three recon reports, and `round-NNN/evidence-base.md`.
 - Synthesis or later has all three current council reports.
 - `synthesis` or later has current `synthesis.md`.
 - Review pass 2 or later has `round-NNN/direction-selection.md`.
 - `ready_for_verdict`, `execution`, or later has `verdict.md`.
 - Any executed command has `verification.md` with command, exit code, and important output.
-- `completion_review` has `cleanup.md` and the `review-001/` reports; closing
-  adds `review-verdict.md` with `outcome: approved`.
+- `completion_review` has `round-NNN/cleanup.md`, `review-001/prompt.md`,
+  and all three review reports; closing adds `round-NNN/review-verdict.md`
+  with `outcome: approved` and `verdict_adherence_confirmed: yes`.
 - Satisfied acceptance criteria have an approved review verdict and
   `final-report.md` before `active=false`.
 
@@ -117,44 +130,65 @@ whenever work remains. Never end with `active=true`, a non-terminal
 ## Council Pass Gate
 
 Use bounded multi-pass proposal-first deliberation in `decision` mode before
-editing code or verification. State fields: `currentDeliberationPass` and
-`maxDeliberationPasses`.
+editing code or running verification. State fields are
+`currentDeliberationPass` and `maxDeliberationPasses`.
 
 Rules:
 - The default `maxDeliberationPasses` is 3.
 - The hard maximum is 5.
-- The enforced minimum is 3 (proposal, review, refinement); effective veto
-  passes equal `maxDeliberationPasses - 2`.
-- Pass 1 is the proposal pass (not a veto pass): deliberators propose
-  directions from the evidence packet; the main agent then writes
-  `round-NNN/direction-selection.md`.
+- The enforced minimum is 3, because proposal-first deliberation needs one
+  proposal pass, one review pass, and one bounded refinement/decision budget.
+- Effective veto passes equal `maxDeliberationPasses - 2`.
+- Pass 1 is the proposal pass. Deliberators propose directions from the
+  evidence packet. Pass 1 is not a veto pass.
+- After Pass 1, the main agent writes `round-NNN/direction-selection.md` with
+  the selected direction, rejected alternatives, and verification pressure.
 - Pass 2 starts veto review of the selected direction: any `stance: oppose`,
   `stance: needs_evidence`, or `blocking_objection: yes` requires another pass
   unless `maxDeliberationPasses` has been reached.
 - From Pass 2 onward, write a verdict only when at least two of three
   deliberators support the same executable plan, no new high-risk blocking
   objection exists, and a clear verification plan exists.
-- At `maxDeliberationPasses`, do not ask the user for direction; choose the
-  smallest reversible verifiable diagnostic or modification for `verdict.md`.
+- At `maxDeliberationPasses`, do not ask the user for direction. Choose the
+  smallest reversible verifiable diagnostic or modification, write it into
+  `verdict.md`, and continue.
 
 Do not ask the user whether another council pass is needed. The gate decides.
 
 ## Cleanup and Completion Review Gates
 
-Before the completion claim, set `currentPhase=cleanup`: verify each fix
-change in the round's diff one by one and remove the rest, list supporting
-changes for the review council, re-run verification, and write
-`round-NNN/cleanup.md`.
+Before the completion claim, run the cleanup gate:
+- set `currentPhase=cleanup`;
+- split the round's full diff into fix changes and supporting changes
+  (protective mechanisms, defensive checks, refactors, or problem-unrelated
+  implementation);
+- audit every fix change one by one: remove redundant or ineffective fix
+  changes, and verify each kept fix change individually (what breaks without
+  it, plus the test, output, or trace that proves it is required);
+- do not remove supporting changes here; list them for the review council;
+- re-run the verification commands;
+- write `round-NNN/cleanup.md` with per-fix-change keep/remove reasons,
+  individual verification evidence, the deferred supporting-change list, and
+  post-cleanup verification output.
 
-Then run one adversarial review pass per `references/deliberation.md`: set
-`currentPhase=completion_review` and `currentCouncilMode=review`, write
-`round-NNN/review-001/prompt.md` with the actual diff (never a summary),
-launch all three deliberators, then write `round-NNN/review-verdict.md`.
-`final-report.md` requires `outcome: approved` and
-`verdict_adherence_confirmed: yes`; then squash the loop's checkpoint commits
-into one, re-run verification, and write `final-report.md` with
-`squash_commit: <hash|none>`; then Set `currentPhase=complete` and
-`active=false`. An objected review starts the next round.
+Only then, before writing `final-report.md`, run exactly one adversarial
+review pass:
+- set `currentPhase=completion_review` and `currentCouncilMode=review`;
+- write `round-NNN/review-001/prompt.md` with the acceptance criteria,
+  `verdict.md`, `verification.md`, `cleanup.md`, and the actual diff, never
+  only a summary;
+- launch all three deliberators and write the three
+  `round-NNN/review-001/report-*.md` files;
+- write `round-NNN/review-verdict.md` with `outcome`,
+  `verdict_adherence_confirmed`, and all three stances.
+
+`final-report.md` is allowed only when `outcome: approved` and
+`verdict_adherence_confirmed: yes`. After approval, squash the loop's
+checkpoint commits into a single commit, re-run the verification commands,
+then write `final-report.md` with a standalone `squash_commit: <hash|none>`
+line and the post-squash verification output; then Set `currentPhase=complete`
+and `active=false`. An objected review starts the
+next round with the objections as evidence.
 
 ## Procedural Autonomy Gate
 
@@ -162,15 +196,19 @@ Do not ask procedural questions. If the answer is defined by the Magi skill,
 checklist, `state.json`, phase contract, log layout, role table, or report
 format, execute the defined action and write the required artifact.
 
-Forbidden procedural questions include: whether to write report files;
-which role each deliberator should play; whether to launch all three
-deliberator subtasks; whether to use one shared research prompt; where report
-files belong; whether to create `synthesis.md`, `verdict.md`, or
-`verification.md`; whether verification failure should start the next round;
-whether another council pass is needed.
+Forbidden procedural questions include:
+- whether to write report files;
+- which role each deliberator should play;
+- whether to launch all three deliberator subtasks;
+- whether to use one shared research prompt;
+- where report files should be written;
+- whether to create `synthesis.md`, `verdict.md`, or `verification.md`;
+- whether verification failure should start the next round;
+- whether another council pass is needed.
 
-When unsure about a procedural step, read `checklist.md` and the required
-reference, then do the specified action instead of asking.
+When unsure about a procedural step, read `checklist.md`, this skill, and the
+required reference, then do the specified action. Do not convert procedural
+uncertainty into a user question.
 
 ## Before Asking User Gate
 
@@ -187,20 +225,21 @@ Before asking the user anything, write or mentally apply `question_classificatio
 - `ambiguous_file_ownership`: ask before staging or modifying files when
   ownership of changed files is unclear.
 
-If classification is not allowed for the current phase, do not ask; execute the
+If classification is not allowed for the current phase, do not ask. Execute the
 next Magi step and record the decision.
 
 ## Question Request Firewall
 
-The main agent must not ask the user directly during an active loop. Before
-any user-facing question, read `references/question-firewall.md`, then write
-`.open_magi/magi-log/question-request.md` with `classification`, `phase`,
-`question`, `why_local_context_failed`, `commands_or_files_checked`, and
-`default_action_if_denied`.
+The main agent must not ask the user directly during an active Magi loop.
+Before any user-facing question, read `references/question-firewall.md`, then
+write `.open_magi/magi-log/question-request.md` with `classification`,
+`phase`, `question`, `why_local_context_failed`, `commands_or_files_checked`,
+and `default_action_if_denied`.
 
 The plugin may deny the request and write `.open_magi/magi-log/question-denied.md`.
-If denied, do not repeat the question; self-answer from local context, choose
-the safest verifiable default, record it in the next artifact, and continue.
+If denied, do not repeat the question. Find the answer from local context,
+choose the safest verifiable default action, write the decision into the next
+Magi artifact, and continue.
 
 Allowed requests are limited to first-round `goal_ambiguity`, first-round
 `debug_direction`, `execution_blocker`, `impossible_verification`,
@@ -210,32 +249,43 @@ is always denied.
 ## Debug Direction Gate
 
 Direction questions are allowed only during first-round Phase 1, before
-execution starts. During first-round status_assessment, ask only for
-constraints not inferable from the repository, logs, tests, or goal.
+execution starts. During first-round status_assessment, ask only for missing
+constraints that cannot be inferred from the repository, logs, tests, or user
+goal.
 
-From Phase 2 onward: Do not ask the user which debug direction to try next;
-choose from evidence, reports, verification output, and acceptance criteria.
-Ask after Phase 1 only when verification is impossible, an execution blocker
-cannot be resolved locally, or proceeding risks destructive or unrelated
-changes. Otherwise write the direction into `verdict.md`, execute, verify,
-and continue.
+From Phase 2 onward: Do not ask the user which debug direction to try next.
+The main agent must choose the next debug direction from evidence, reports,
+verification output, and acceptance criteria.
+
+The only allowed questions after Phase 1 are:
+- verification is impossible because required hardware, credentials, network,
+  devices, or external services are unavailable;
+- an execution blocker prevents progress and cannot be resolved from local context;
+- proceeding would risk destructive or unrelated changes.
+
+If none of those exceptions apply, write the chosen direction into `verdict.md`,
+execute it, verify it, and continue the loop.
 
 ## Checkpoint Commit and Rollback Gate
 
-If Phase 5 changes code: run build verification first; on success create a
-local git checkpoint commit (stage only this round's files;
-do not stage `.open_magi/` logs or unrelated changes; message
-`magi: round-NNN checkpoint - <summary>`) and write its hash into
-`round-NNN/verification.md`.
+If Phase 5 changes code:
+- run the build or compile verification before runtime verification;
+- if build succeeds, create a local git checkpoint commit before continuing;
+- stage only files changed by the main agent for this round;
+- do not stage `.open_magi/` runtime logs or unrelated user changes;
+- use a message like `magi: round-NNN checkpoint - <summary>`;
+- write its hash into `round-NNN/verification.md`.
 
-If build fails: no checkpoint commit; write the build command, exit code, and
-output into `verification.md`; record that the next round must
-revert this round's uncommitted code changes before the next
-`research-prompt.md`.
+If build fails:
+- do not create a checkpoint commit;
+- write the build command, exit code, and important output into `verification.md`;
+- record that the next round must revert this round's uncommitted code changes
+  before writing the next `research-prompt.md`.
 
-If build succeeds but runtime verification fails, keep the checkpoint commit
-and pass the hash plus failure evidence to the next round; the next
-`verdict.md` must choose continue from the checkpoint or revert it.
+If build succeeds but later runtime verification fails, keep the checkpoint
+commit and pass the hash plus failure evidence to the next round. The next
+`verdict.md` must choose either continue from the checkpoint or revert the
+checkpoint commit.
 
 ## Round Transition Gate
 
@@ -250,35 +300,38 @@ When a round fails and the goal is still incomplete:
 - set `needsContinue=true`;
 - clear `inFlight` and `inFlightSince`.
 
-If build failed before a checkpoint commit, revert this round's uncommitted
-code changes before the next Phase 2 research prompt. Later-round Phase 1 is a
-short status check only; Phase 2 only writes the next prompt artifacts.
-Do not perform extended single-agent debugging between failed verification and
-the next deliberator pass.
+If build failed before a checkpoint commit, revert this round's uncommitted code
+changes before the next Phase 2 research prompt.
+
+Phase 1 in later rounds is a short status check only. Phase 2 only writes the
+next prompt artifacts. Do not perform extended single-agent debugging between
+failed verification and the next deliberator pass.
 
 ## Six Phases
 
-0. Goal Definition: define goal, `acceptanceCriteria`, and
-   `verificationCommands`; inspect project context; write initial `state.json`
-   and checklist.
+0. Goal Definition: infer or define goal, `acceptanceCriteria`, and
+   `verificationCommands`; inspect relevant project context; write initial
+   `state.json` and checklist.
 1. Status Assessment: compare criteria, latest `verification.md`, and current
-   filesystem. Round 1 adds Phase 1a minimal scoping (`recon-001/prompt.md`)
-   and Phase 1b parallel recon (three read-only reports, then
-   `evidence-base.md`); later rounds skip recon.
+   filesystem. Round 1 splits into Phase 1a minimal scoping (main agent writes
+   `recon-001/prompt.md`, no deep-dive) and Phase 1b parallel recon (all three
+   deliberators investigate read-only; main agent writes `evidence-base.md`).
+   Later rounds skip recon and reuse previous verification evidence.
 2. Research Task: write `round-NNN/research-prompt.md` (round 1 draws from
-   `evidence-base.md`) and `round-NNN/council-PPP/prompt.md`; pass 1 is an
-   evidence packet, not a proposed fix; pass 2+ includes direction-selection.
-3. Parallel Deliberation: start all three deliberator subtasks with the same
-   prompt and write all three `report-*.md` files. Pass 1 reports are
+   `evidence-base.md`) and `round-NNN/council-PPP/prompt.md`; for pass 1 this
+   is an evidence packet, not a proposed fix; for pass 2+ include
+   `direction-selection.md`.
+3. Parallel Deliberation: start all three configured deliberator subtasks with
+   the same prompt and write all three `report-*.md` files. Pass 1 reports are
    direction proposals; later reports review the selected direction.
 4. Synthesis and Decision: write current `synthesis.md`; apply Council Pass
-   Gate; after pass 1 write `direction-selection.md`, else another pass or
-   `verdict.md`.
-5. Execute and Verify: only the main agent acts; apply verdict, build,
-   checkpoint if build succeeds, verify, run fail-only diagnostics, and write
+   Gate; after pass 1 write `direction-selection.md`, otherwise start another
+   pass or write `verdict.md`.
+5. Execute and Verify: only the main agent acts; apply verdict, build, checkpoint
+   if build succeeds, verify, run fail-only diagnostics if needed, and write
    `verification.md`.
 6. Goal Check: judge acceptance criteria; on a completion claim run the
    Cleanup Gate (`cleanup.md`), then the Completion Review Gate
-   (`completion_review`, `review-verdict.md`); complete only on
-   `outcome: approved`, otherwise next round, or block after the
-   no-progress limit.
+   (`completion_review` phase, review council, `review-verdict.md`); complete
+   only on `outcome: approved`, otherwise continue next round, or block only
+   after the no-progress limit.
