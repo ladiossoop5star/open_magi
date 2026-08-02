@@ -592,10 +592,7 @@ test("Codex PreToolUse guard denies code changes before the execution phase", as
   assert.equal(editArtifact.stdout, "")
 
   const runTests = await run({ tool_name: "shell", tool_input: { command: "npm test" } })
-  assert.match(
-    JSON.parse(runTests.stdout).hookSpecificOutput.permissionDecisionReason,
-    /build\/test commands are only allowed in the execution phase/,
-  )
+  assert.equal(runTests.stdout, "")
 
   const redirectOut = await run({ tool_name: "shell", tool_input: { command: "grep foo src > /tmp/x.txt" } })
   assert.equal(redirectOut.stdout, "")
@@ -619,36 +616,23 @@ test("Codex PreToolUse guard denies code changes before the execution phase", as
   assert.equal(inactive.stdout, "")
 })
 
-test("Codex PreToolUse guard allows declared baselineCommands outside execution", async () => {
+test("Codex PreToolUse guard allows build and test commands in any phase", async () => {
   const project = await mkTempProject("open-magi-codex-guard-baseline-")
   const logDir = join(project, ".open_magi", "magi-log")
   await mkdir(logDir, { recursive: true })
   await writeFile(
     join(logDir, "state.json"),
-    `${JSON.stringify({
-      active: true,
-      currentRound: 1,
-      currentPhase: "status_assessment",
-      baselineCommands: ["make", "/tmp/mard/run"],
-    })}\n`,
+    `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "status_assessment" })}\n`,
   )
 
-  function run(command) {
-    return runInteractiveCli(
+  for (const command of ["cd /tmp/fw-build/src && make clean && make", "npm test"]) {
+    const result = await runInteractiveCli(
       [],
       JSON.stringify({ cwd: project, tool_name: "shell", tool_input: { command } }),
       { script: "adapters/codex/hooks/magi-guard.mjs" },
     )
+    assert.equal(result.stdout, "", command)
   }
-
-  const baseline = await run("cd /tmp/fw-build/src && make clean && make")
-  assert.equal(baseline.stdout, "")
-
-  const otherBuild = await run("npm test")
-  assert.match(
-    JSON.parse(otherBuild.stdout).hookSpecificOutput.permissionDecisionReason,
-    /only allowed in the execution phase/,
-  )
 
   const edit = await runInteractiveCli(
     [],

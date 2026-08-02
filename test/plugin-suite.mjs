@@ -2908,10 +2908,6 @@ test("tool.execute.before denies code changes outside the execution phase", asyn
     /only allowed in the execution phase after verdict\.md/,
   )
   await assert.rejects(
-    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "npm test" } }),
-    /build\/test commands are only allowed in the execution phase/,
-  )
-  await assert.rejects(
     () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "echo x > src/out.txt" } }),
     /only allowed in the execution phase/,
   )
@@ -2928,14 +2924,13 @@ test("tool.execute.before denies code changes outside the execution phase", asyn
   await rm(project.root, { recursive: true, force: true })
 })
 
-test("tool.execute.before allows declared baselineCommands outside execution", async () => {
+test("tool.execute.before allows build and test commands in any phase", async () => {
   const project = await makeProject("{}")
   const state = activeState({
     projectRoot: project.root,
     currentRound: 1,
     currentPhase: "status_assessment",
     needsContinue: true,
-    baselineCommands: ["make"],
   })
   await writeFile(project.statePath, JSON.stringify(state, null, 2))
   const hooks = await server({
@@ -2943,15 +2938,48 @@ test("tool.execute.before allows declared baselineCommands outside execution", a
     directory: project.root,
   })
 
+  for (const command of ["npm test", "make clean && make", "cargo build", "pytest -x"]) {
+    await assert.doesNotReject(() =>
+      hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command } }),
+    )
+  }
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("tool.execute.before ignores arrows inside heredoc bodies", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 1,
+    currentPhase: "goal_definition",
+    needsContinue: true,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  const writeChecklist = [
+    "cat > .open_magi/magi-log/checklist.md << 'EOF'",
+    "# Magi Phase Transition Checklist",
+    "## Phase 0 -> Phase 1",
+    "- [ ] state.json exists.",
+    "EOF",
+  ].join("\n")
   await assert.doesNotReject(() =>
-    hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "cd src && make clean && make" } }),
+    hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: writeChecklist } }),
   )
+
+  const writeSource = [
+    "cat > src/main.c << 'EOF'",
+    "// Phase 0 -> Phase 1",
+    "int main(void) { return 0; }",
+    "EOF",
+  ].join("\n")
   await assert.rejects(
-    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "npm test" } }),
-    /only allowed in the execution phase/,
-  )
-  await assert.rejects(
-    () => hooks["tool.execute.before"]({ tool: "write", sessionID: "ses-1" }, { args: { filePath: "src/main.c" } }),
+    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: writeSource } }),
     /only allowed in the execution phase/,
   )
 

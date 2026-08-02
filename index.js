@@ -24,8 +24,6 @@ const REMINDER_HEARTBEAT_MS = 10 * 60 * 1000
 const NO_STATE_TTL_MS = 5000
 const HANDLED_EVENT_TYPES = new Set(["session.created", "session.idle", "session.status", "session.error"])
 const NO_STATE_DIRS = new Map()
-const GUARD_BUILD_TEST_PATTERN =
-  /(?:^|[\s;&|])(?:make|ninja|cargo\s+(?:build|test)|npm\s+(?:test|run|build|ci)|pnpm\s+(?:test|run|build)|yarn\s+(?:test|build)|pytest|go\s+(?:test|build|vet)|mvn|gradle|tox)(?=[\s;&|]|$)/
 const GUARD_SED_INPLACE_PATTERN = /(?:^|[\s;&|])sed\s+(?:-[a-zA-Z]+\s+)*-i(?:\s|=)/
 const GUARD_APPLY_PATCH_PATTERN = /(?:^|[\s;&|])apply_patch(?=[\s;&|]|$)/
 const STATE_QUEUES = new Map()
@@ -1131,19 +1129,40 @@ function guardIsProjectPath(directory, target) {
   )
 }
 
+function guardStripHeredocs(command) {
+  const lines = command.split("\n")
+  const kept = []
+  let heredocTag = null
+  for (const line of lines) {
+    if (heredocTag) {
+      if (line.trim() === heredocTag) heredocTag = null
+      continue
+    }
+    const match = line.match(/<<[-~]?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/)
+    if (match) {
+      heredocTag = match[1]
+      kept.push(line.slice(0, match.index))
+      continue
+    }
+    kept.push(line)
+  }
+  return kept.join("\n")
+}
+
 function guardShellTouchesProject(directory, command) {
   if (typeof command !== "string") return false
-  if (GUARD_SED_INPLACE_PATTERN.test(command)) return true
-  if (GUARD_APPLY_PATCH_PATTERN.test(command)) return true
+  const stripped = guardStripHeredocs(command)
+  if (GUARD_SED_INPLACE_PATTERN.test(stripped)) return true
+  if (GUARD_APPLY_PATCH_PATTERN.test(stripped)) return true
 
   const redirectPattern = /(?:>|>>)\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
-  for (const match of command.matchAll(redirectPattern)) {
+  for (const match of stripped.matchAll(redirectPattern)) {
     const target = match[1] || match[2] || match[3]
     if (guardIsProjectPath(directory, target)) return true
   }
 
   const teePattern = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
-  for (const match of command.matchAll(teePattern)) {
+  for (const match of stripped.matchAll(teePattern)) {
     const target = match[1] || match[2] || match[3]
     if (guardIsProjectPath(directory, target)) return true
   }
@@ -1155,50 +1174,28 @@ function guardToolAction(directory, tool, args) {
   if (["write", "edit", "multi_edit", "apply_patch"].includes(tool)) {
     const filePath = args?.filePath ?? args?.file_path ?? args?.path
     if (typeof filePath === "string" && filePath) {
-      return { mutation: guardIsProjectPath(directory, filePath), buildTest: false }
+      return guardIsProjectPath(directory, filePath)
     }
-    return { mutation: true, buildTest: false }
+    return true
   }
   if (tool === "bash") {
-    const command = args?.command || args?.cmd
-    return {
-      mutation: guardShellTouchesProject(directory, command),
-      buildTest: typeof command === "string" && GUARD_BUILD_TEST_PATTERN.test(command),
-    }
+    return guardShellTouchesProject(directory, args?.command || args?.cmd)
   }
-  return { mutation: false, buildTest: false }
-}
-
-function guardIsBaselineCommand(state, command) {
-  const declared = Array.isArray(state?.baselineCommands) ? state.baselineCommands : []
-  const prefixes = declared
-    .filter((entry) => typeof entry === "string" && entry.trim())
-    .map((entry) => entry.trim())
-  if (prefixes.length === 0 || typeof command !== "string") return false
-
-  return command
-    .split(/&&|;|\|\|/)
-    .map((segment) => segment.trim())
-    .filter(Boolean)
-    .some((segment) => prefixes.some((prefix) => segment === prefix || segment.startsWith(`${prefix} `)))
+  return false
 }
 
 async function enforcePhaseGuard(directory, tool, args) {
-  const { mutation, buildTest } = guardToolAction(directory, tool, args)
-  if (!mutation && !buildTest) return
+  if (!guardToolAction(directory, tool, args)) return
 
   const state = await readState(directory)
   if (!state?.active || state.projectRoot !== directory) return
 
-  if (buildTest && guardIsBaselineCommand(state, args?.command || args?.cmd)) return
-
   const round = roundNumber(state)
   const phase = state.currentPhase
-  const what = buildTest && !mutation ? "build/test commands" : "code changes"
 
   if (phase !== "execution") {
     throw new Error(
-      `[magi] Magi loop active (round=${round} phase=${phase}). ${what} are only allowed in the execution phase after verdict.md. Follow the open_magi process: write the required artifacts for the current phase instead.`,
+      `[magi] Magi loop active (round=${round} phase=${phase}). Code changes are only allowed in the execution phase after verdict.md. Follow the open_magi process: write the required artifacts for the current phase instead.`,
     )
   }
 

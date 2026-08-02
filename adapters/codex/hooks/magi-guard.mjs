@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 // PreToolUse hook: while a Magi loop is active, deny project code mutations
-// and build/test commands outside the execution phase. Writes under
-// .open_magi/ are always allowed. Inactive loops are never touched.
+// outside the execution phase. Build and test commands are diagnostics and
+// always allowed. Writes under .open_magi/ are always allowed. Inactive loops
+// are never touched.
 
 import { existsSync, readFileSync } from "node:fs"
 import { isAbsolute, join, resolve, sep } from "node:path"
@@ -13,8 +14,6 @@ if (process.env.OPEN_MAGI_DISABLE_STOP_BACKSTOP === "1") {
 
 const FILE_TOOL_PATTERN = /^(write|edit|multi_edit|notebookedit|apply_patch)$/i
 const SHELL_TOOL_PATTERN = /^(bash|shell|local_shell)$/i
-const BUILD_TEST_PATTERN =
-  /(?:^|[\s;&|])(?:make|ninja|cargo\s+(?:build|test)|npm\s+(?:test|run|build|ci)|pnpm\s+(?:test|run|build)|yarn\s+(?:test|build)|pytest|go\s+(?:test|build|vet)|mvn|gradle|tox)(?=[\s;&|]|$)/
 const SED_INPLACE_PATTERN = /(?:^|[\s;&|])sed\s+(?:-[a-zA-Z]+\s+)*-i(?:\s|=)/
 const APPLY_PATCH_PATTERN = /(?:^|[\s;&|])apply_patch(?=[\s;&|]|$)/
 
@@ -55,42 +54,44 @@ function isProjectPath(cwd, target) {
   return resolved !== null && isUnder(resolved, resolve(cwd)) && !isMagiPath(cwd, resolved)
 }
 
+function stripHeredocs(command) {
+  const lines = command.split("\n")
+  const kept = []
+  let heredocTag = null
+  for (const line of lines) {
+    if (heredocTag) {
+      if (line.trim() === heredocTag) heredocTag = null
+      continue
+    }
+    const match = line.match(/<<[-~]?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/)
+    if (match) {
+      heredocTag = match[1]
+      kept.push(line.slice(0, match.index))
+      continue
+    }
+    kept.push(line)
+  }
+  return kept.join("\n")
+}
+
 function shellMutationTargetsProject(cwd, command) {
-  if (SED_INPLACE_PATTERN.test(command)) return true
-  if (APPLY_PATCH_PATTERN.test(command)) return true
+  const stripped = stripHeredocs(command)
+  if (SED_INPLACE_PATTERN.test(stripped)) return true
+  if (APPLY_PATCH_PATTERN.test(stripped)) return true
 
   const redirectPattern = /(?:>|>>)\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
-  for (const match of command.matchAll(redirectPattern)) {
+  for (const match of stripped.matchAll(redirectPattern)) {
     const target = match[1] || match[2] || match[3]
     if (isProjectPath(cwd, target)) return true
   }
 
   const teePattern = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
-  for (const match of command.matchAll(teePattern)) {
+  for (const match of stripped.matchAll(teePattern)) {
     const target = match[1] || match[2] || match[3]
     if (isProjectPath(cwd, target)) return true
   }
 
   return false
-}
-
-// state.baselineCommands lets the main agent declare reproduction/baseline
-// commands at goal definition (for example building a baseline firmware to
-// reproduce a bug). Declared prefixes are evidence gathering, not fixes, so
-// the build/test rule does not apply to them. Code edits stay denied.
-function isBaselineCommand(state, command) {
-  const declared = Array.isArray(state?.baselineCommands) ? state.baselineCommands : []
-  if (declared.length === 0) return false
-  const prefixes = declared
-    .filter((entry) => typeof entry === "string" && entry.trim())
-    .map((entry) => entry.trim())
-  if (prefixes.length === 0) return false
-
-  return command
-    .split(/&&|;|\|\|/)
-    .map((segment) => segment.trim())
-    .filter(Boolean)
-    .some((segment) => prefixes.some((prefix) => segment === prefix || segment.startsWith(`${prefix} `)))
 }
 
 let payload = ""
@@ -125,7 +126,6 @@ process.stdin.on("end", () => {
   const command = typeof toolInput?.command === "string" ? toolInput.command : toolInput?.cmd
 
   let mutation = false
-  let buildTest = false
 
   if (FILE_TOOL_PATTERN.test(toolName)) {
     // apply_patch may carry the patch body instead of a file path; treat it as
@@ -141,19 +141,17 @@ process.stdin.on("end", () => {
     }
   } else if (SHELL_TOOL_PATTERN.test(toolName) && typeof command === "string") {
     mutation = shellMutationTargetsProject(cwd, command)
-    buildTest = BUILD_TEST_PATTERN.test(command) && !isBaselineCommand(state, command)
   }
 
-  if (!mutation && !buildTest) allow()
+  if (!mutation) allow()
 
   const round = state.currentRound ?? 1
   const phase = state.currentPhase ?? "unknown"
   const roundName = `round-${String(Number.isInteger(Number(round)) && Number(round) > 0 ? Number(round) : 1).padStart(3, "0")}`
-  const what = buildTest && !mutation ? "build/test commands" : "code changes"
 
   if (phase !== "execution") {
     deny(
-      `[magi] Magi loop active (round=${round} phase=${phase}). ${what} are only allowed in the execution phase after verdict.md. Follow the open_magi process: write the required artifacts for the current phase instead.`,
+      `[magi] Magi loop active (round=${round} phase=${phase}). Code changes are only allowed in the execution phase after verdict.md. Follow the open_magi process: write the required artifacts for the current phase instead.`,
     )
   }
 
