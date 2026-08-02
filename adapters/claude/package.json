@@ -1,6 +1,6 @@
 {
   "name": "open-magi-claude",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Claude Code Magi plugin with skill, read-only deliberator agents, and stop hook",
   "type": "module",
   "private": true,

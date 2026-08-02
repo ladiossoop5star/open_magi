@@ -442,7 +442,7 @@ test("generated Claude plugin CLI reports its version without a package.json", a
 
   const { stdout } = await execFile("node", [join(pluginDir, "bin", "open-magi-claude.js"), "--version"])
 
-  assert.equal(stdout.trim(), "0.1.5")
+  assert.equal(stdout.trim(), "0.2.0")
 
   await rm(pluginDir, { recursive: true, force: true })
 })
@@ -678,7 +678,7 @@ test("installCodexPluginCache syncs the adapter into the codex plugin cache", as
   const result = await installCodexPluginCache({ codexHome })
 
   assert.equal(result.ok, true)
-  assert.match(result.cacheDir, /plugins\/cache\/open-magi-dev\/open-magi\/0\.1\.5$/)
+  assert.match(result.cacheDir, /plugins\/cache\/open-magi-dev\/open-magi\/0.2.0$/)
   for (const relative of [
     "bin/open-magi.js",
     "hooks/magi-stop",

@@ -1,6 +1,6 @@
 {
   "name": "open-magi-codex",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Codex Magi skill package and setup CLI",
   "type": "module",
   "private": true,
