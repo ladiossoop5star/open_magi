@@ -249,19 +249,15 @@ function currentCouncilRoundArtifacts(state) {
   const round = roundNumber(state)
   const pass = deliberationPassNumber(state)
   const prefix = roundPrefix(round)
-  const finalizing = !state?.active && phase !== "blocked"
   const modes = usesCouncilModes(state)
   const required = []
 
-  if (modes && round === 1 && (phaseAtLeast(phase, "research_task") || finalizing)) {
+  if (modes && round === 1 && phaseAtLeast(phase, "research_task")) {
     required.push(...completeReconArtifacts(round))
   }
 
-  if (phaseAtLeast(phase, "research_task") || finalizing) {
+  if (phaseAtLeast(phase, "research_task")) {
     required.push(`${prefix}/research-prompt.md`)
-  }
-
-  if (phaseAtLeast(phase, "research_task") || finalizing) {
     for (let previousPass = 1; previousPass < pass; previousPass += 1) {
       required.push(...completeCouncilPassArtifacts(round, previousPass))
     }
@@ -271,26 +267,22 @@ function currentCouncilRoundArtifacts(state) {
     }
   }
 
-  if (phaseAtLeast(phase, "parallel_deliberation") || finalizing) {
+  if (phaseAtLeast(phase, "parallel_deliberation")) {
     required.push(...councilReportArtifacts(round, pass))
   }
 
-  if (phaseAtLeast(phase, "synthesis") || finalizing) {
+  if (phaseAtLeast(phase, "synthesis")) {
     required.push(`${councilPrefix(round, pass)}/synthesis.md`)
   }
 
-  if (
-    phaseAtLeast(phase, "execution") ||
-    finalizing ||
-    state?.deliberationStatus === "ready_for_verdict"
-  ) {
+  if (phaseAtLeast(phase, "execution") || state?.deliberationStatus === "ready_for_verdict") {
     if (usesCouncilPasses(state)) {
       required.push(`${prefix}/direction-selection.md`)
     }
     required.push(`${prefix}/verdict.md`)
   }
 
-  if (phaseAtLeast(phase, "execution") || finalizing) {
+  if (phaseAtLeast(phase, "execution")) {
     required.push(`${prefix}/verification.md`)
   }
 
@@ -302,14 +294,6 @@ function currentCouncilRoundArtifacts(state) {
     required.push(...reviewReportArtifacts(round))
   }
 
-  if (modes && (phase === "complete" || finalizing)) {
-    required.push(...completeReviewArtifacts(round))
-  }
-
-  if (phase === "complete" || finalizing) {
-    required.push(`${LOG_DIR}/${FINAL_REPORT_FILE}`)
-  }
-
   return required
 }
 
@@ -319,14 +303,13 @@ function currentRoundArtifacts(state) {
   const phase = state?.currentPhase
   const round = roundNumber(state)
   const prefix = roundPrefix(round)
-  const finalizing = !state?.active && phase !== "blocked"
   const required = []
 
-  if (phaseAtLeast(phase, "research_task") || finalizing) {
+  if (phaseAtLeast(phase, "research_task")) {
     required.push(`${prefix}/research-prompt.md`)
   }
 
-  if (phaseAtLeast(phase, "parallel_deliberation") || finalizing) {
+  if (phaseAtLeast(phase, "parallel_deliberation")) {
     required.push(
       `${prefix}/report-melchior.md`,
       `${prefix}/report-balthasar.md`,
@@ -334,16 +317,12 @@ function currentRoundArtifacts(state) {
     )
   }
 
-  if (phaseAtLeast(phase, "synthesis") || finalizing) {
+  if (phaseAtLeast(phase, "synthesis")) {
     required.push(`${prefix}/synthesis.md`, `${prefix}/verdict.md`)
   }
 
-  if (phaseAtLeast(phase, "execution") || finalizing) {
+  if (phaseAtLeast(phase, "execution")) {
     required.push(`${prefix}/verification.md`)
-  }
-
-  if (phase === "complete" || finalizing) {
-    required.push(`${LOG_DIR}/${FINAL_REPORT_FILE}`)
   }
 
   return required
