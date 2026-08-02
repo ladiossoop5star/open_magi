@@ -1181,6 +1181,22 @@ test("runCouncil requires explicit opt-in for danger-full-access sandbox mode", 
   await rm(binDir, { recursive: true, force: true })
 })
 
+test("setupOpenMagi writes into an existing opencode.jsonc instead of creating opencode.json", async () => {
+  const configDir = await mkdtemp(join(tmpdir(), "open-magi-config-jsonc-"))
+  await writeFile(
+    join(configDir, "opencode.jsonc"),
+    `${JSON.stringify({ agent: { "deliberator-melchior": { model: "glm-x/glm-x" } } }, null, 2)}\n`,
+  )
+
+  const result = await setupOpenMagi({ configDir, allowDefaultModel: true })
+
+  assert.match(result.configPath, /opencode\.jsonc$/)
+  assert.equal(existsSync(join(configDir, "opencode.json")), false)
+  assert.equal(result.models.melchior, "glm-x/glm-x")
+
+  await rm(configDir, { recursive: true, force: true })
+})
+
 test("setupOpenMagi merges config and copies the magi skill", async () => {
   const configDir = await mkdtemp(join(tmpdir(), "open-magi-setup-"))
   const configPath = join(configDir, "opencode.json")
