@@ -579,8 +579,99 @@ test("runCouncil passes --profile to codex exec only when the agent file sets it
   await rm(binDir, { recursive: true, force: true })
 })
 
-test("buildCodexAgentConfig writes a profile field only when provided", () => {
-  const withProfile = buildCodexAgentConfig({ profile: "local" })
+test("runCouncil accepts TOML literal-string model values", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-toml-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-toml-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-codex-runner-toml-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  const agents = buildCodexAgentConfig({
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+  for (const [name, content] of Object.entries(agents)) {
+    await writeFile(join(agentsDir, name), content.replace(/^model = "([^"]+)"$/m, "model = '$1'"))
+  }
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { writeFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "const outputIndex = args.indexOf('-o')",
+      "const output = outputIndex >= 0 ? args[outputIndex + 1] : args[args.indexOf('--output-last-message') + 1]",
+      "writeFileSync(output, 'stance: approve\\nblocking_objection: no\\nrecommended_plan: fake\\nverification_plan: true\\nrisk_level: low\\n')",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 2000,
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.results.map((entry) => entry.model), ["model-a", "model-b", "model-c"])
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("runClaudeCouncil accepts colon-containing and quoted YAML model values", async () => {
+  const { runClaudeCouncil } = await import("../adapters/claude/lib/claude-runner.js")
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-claude-runner-yaml-project-"))
+  const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-runner-yaml-plugin-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-claude-runner-yaml-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeClaude = join(binDir, "claude")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await mkdir(join(pluginDir, "agents"), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  for (const [sage, model] of [
+    ["melchior", "model:with:colons"],
+    ["balthasar", "model-b"],
+    ["casper", "model-c"],
+  ]) {
+    await writeFile(
+      join(pluginDir, "agents", `deliberator-${sage}.md`),
+      `---\nname: deliberator-${sage}\nmodel: "${model}"\ntools: ["Read"]\n---\n\nRole\n`,
+    )
+  }
+  await writeFile(fakeClaude, "#!/usr/bin/env node\nconsole.log('stance: approve\\n')\n")
+  await chmod(fakeClaude, 0o755)
+
+  const result = await runClaudeCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    pluginDir,
+    claudeBin: fakeClaude,
+    timeoutMs: 2000,
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.results.map((entry) => entry.model), ["model:with:colons", "model-b", "model-c"])
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(pluginDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("buildCodexAgentConfig writes a profile field only when provided", () => {  const withProfile = buildCodexAgentConfig({ profile: "local" })
   assert.match(withProfile["deliberator-melchior.toml"], /^profile = "local"$/m)
   assert.match(withProfile["deliberator-casper.toml"], /^profile = "local"$/m)
 

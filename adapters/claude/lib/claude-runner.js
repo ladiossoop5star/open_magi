@@ -42,9 +42,13 @@ function frontmatter(text) {
 }
 
 function readYamlScalar(yaml, key) {
-  const match = yaml.match(new RegExp(`^${key}:\\s*(.+?)\\s*$`, "m"))
+  const match = yaml.match(new RegExp(`^${key}:\\s*(.+)\\s*$`, "m"))
   if (!match) return undefined
-  return match[1].replace(/^["']|["']$/g, "").trim()
+  const value = match[1].trim()
+  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+    return value.slice(1, -1)
+  }
+  return value.replace(/\s+#.*$/, "").trim()
 }
 
 async function readAgent(pluginDir, definition) {

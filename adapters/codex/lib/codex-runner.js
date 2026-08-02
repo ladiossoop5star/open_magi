@@ -23,9 +23,17 @@ function padNumber(value) {
 }
 
 function readTomlString(text, key) {
-  const match = text.match(new RegExp(`^${key}\\s*=\\s*(".*")\\s*$`, "m"))
+  const match = text.match(new RegExp(`^${key}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*"|'[^']*')\\s*$`, "m"))
   if (!match) return undefined
-  return JSON.parse(match[1])
+  const raw = match[1]
+  if (raw.startsWith("'")) return raw.slice(1, -1)
+  try {
+    return JSON.parse(raw)
+  } catch {
+    // TOML basic strings are not always valid JSON strings; fall back to the
+    // raw inner content instead of crashing the runner.
+    return raw.slice(1, -1)
+  }
 }
 
 function readTomlMultiline(text, key) {
