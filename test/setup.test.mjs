@@ -32,6 +32,7 @@ test("buildAgentConfig creates three read-only deliberator subagents", () => {
     assert.equal(agents[name].model, "deepseek-v4-flash")
     assert.equal(agents[name].permission.edit, "deny")
     assert.equal(agents[name].permission.bash, "deny")
+    assert.equal(agents[name].permission.question, "deny")
     assert.match(agents[name].prompt, /Evidence|Recommended Next Action|Confidence/)
     assert.doesNotMatch(agents[name].prompt, new RegExp(localOnlyModel, "i"))
   }

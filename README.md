@@ -395,8 +395,9 @@ configuration. It adds or updates:
 - `agent.deliberator-balthasar`
 - `agent.deliberator-casper`
 
-All three deliberator agents are configured as subagents with `edit=deny` and
-`bash=deny`.
+All three deliberator agents are configured as subagents with `edit=deny`,
+`bash=deny`, and `question=deny`, so they cannot modify files, run commands,
+or escalate questions to the user.
 
 ## Setup Options
 

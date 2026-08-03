@@ -548,7 +548,8 @@ install hook 會保留既有的 `provider`、`agent`、`plugin` 設定，只新�
 - `agent.deliberator-balthasar`
 - `agent.deliberator-casper`
 
-三個 deliberator agent 都是 subagent，並且設定 `edit=deny`、`bash=deny`。
+三個 deliberator agent 都是 subagent，並且設定 `edit=deny`、`bash=deny`、
+`question=deny`，不能改檔案、不能跑指令、也不能向使用者發問。
 
 ## Setup 選項
 
