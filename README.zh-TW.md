@@ -190,26 +190,44 @@ npm package 發布後，可以改用較短的 npm 安裝方式：
 opencode plugin open-magi-opencode -g
 ```
 
-請 AI agent 幫你安裝時，可以貼這段：
+請 AI agent 幫你安裝時，依你的 runtime 貼對應那段：
+
+OpenCode:
 
 ```text
 請從 `open_magi` repo 安裝公開的 OpenCode plugin `open-magi-opencode`：
-https://github.com/ladiossoop5star/open_magi，以及我使用的 runtime 對應的
-adapter（Codex 或 Claude Code)。
+https://github.com/ladiossoop5star/open_magi。clone repo 後,把 repo 連結到
+~/.config/opencode/node_modules/open-magi-opencode,然後跑
+`node <repo>/bin/open-magi.js setup --allow-default-model`。**不要**用
+`opencode plugin git+https://...`,這個 repo 用它不可靠。完成後,把
+~/.config/opencode/opencode.json(或 opencode.jsonc)裡
+deliberator-melchior、deliberator-balthasar、deliberator-casper 設成真實
+model,並確認 ~/.config/opencode/skills/magi/SKILL.md 存在。
+```
 
-請照 README「Install」章節的各 runtime 步驟執行:clone repo 後,OpenCode
-把 repo 連結到 ~/.config/opencode/node_modules 並跑
-`node <repo>/bin/open-magi.js setup --allow-default-model`;Codex 跑
-`node <repo>/adapters/codex/bin/open-magi.js install-codex` 和
-`codex plugin marketplace add <repo>`;Claude Code 用
+Codex:
+
+```text
+請從 `open_magi` repo 安裝 Open Magi 的 Codex adapter：
+https://github.com/ladiossoop5star/open_magi。clone repo 後,跑
+`node <repo>/adapters/codex/bin/open-magi.js install-codex`,然後
+`codex plugin marketplace add <repo>`。**不要**用 `codex plugin add`,它
+無法安裝位於 repo 子目錄的 plugin。確認 ~/.codex/config.toml 有
+[plugins."open-magi@open-magi-dev"] 且 enabled = true,再設定
+~/.codex/agents/ 三個 deliberator-*.toml 的 model。
+```
+
+Claude Code:
+
+```text
+請從 `open_magi` repo 安裝 Open Magi 的 Claude Code plugin：
+https://github.com/ladiossoop5star/open_magi。跑
 `claude plugin marketplace add ladiossoop5star/open_magi` 和
-`claude plugin install open-magi@open-magi`。**不要**用
-`opencode plugin git+https://...` 或 `codex plugin add`,這個 repo 用這兩個
-指令不可靠。完成後,把 deliberator-melchior、deliberator-balthasar、
-deliberator-casper 設成真實 model(OpenCode 的 opencode.json/opencode.jsonc、
-Codex 的 ~/.codex/agents TOML、或 Claude 的
-~/.claude/skills/open-magi/agents/*.md),並確認安裝位置有
-skills/magi/SKILL.md。
+`claude plugin install open-magi@open-magi`。如果我要指定 deliberator
+model,改為 clone repo 後跑
+`node <repo>/adapters/claude/bin/open-magi-claude.js setup-claude
+--melchior-model <model> --balthasar-model <model> --casper-model <model>`。
+完成後重啟 Claude Code 或跑 /reload-plugins。
 ```
 
 請使用你的 OpenCode `opencode.json` 裡已設定的模型。三個 deliberator 可以共用
