@@ -2,6 +2,18 @@
 
 English | [Traditional Chinese](README.zh-TW.md) | [Codex experimental notes](adapters/codex/README.md) | [Claude experimental notes](adapters/claude/README.md)
 
+**Open Magi is not multi-agent division of labor.** It does not split a task
+into pieces for different agents to own. It puts multiple agents on the *same*
+hard problem: three read-only deliberators independently investigate, propose,
+and adversarially review from different angles, while one main agent keeps the
+decision, the code changes, and the verification.
+
+The pain point it solves: when you cannot — or do not want to — rely on
+frontier models, a council of smaller, weaker models that investigate,
+challenge, and verify each other can get close to frontier-level results on
+hard coding tasks, instead of a single weak model getting stuck, guessing, or
+stopping early.
+
 `open_magi` packages the Magi deliberation loop for coding agents. The stable
 runtime today is the installable OpenCode plugin. Experimental Codex and Claude
 Code support are available as skill-first adapter plugins, without full runtime
