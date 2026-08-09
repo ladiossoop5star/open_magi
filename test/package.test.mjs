@@ -642,6 +642,47 @@ test("Codex PreToolUse guard allows build and test commands in any phase", async
   assert.equal(JSON.parse(edit.stdout).hookSpecificOutput.permissionDecision, "deny")
 })
 
+test("Claude PreToolUse guard forces run-council onto a background task", async () => {
+  const project = await mkTempProject("open-magi-claude-guard-runner-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "parallel_deliberation" })}\n`,
+  )
+  const command =
+    "node ~/.claude/skills/open-magi/bin/open-magi-claude.js run-council --project-root \"$PWD\" --prompt-path .open_magi/magi-log/round-001/council-001/prompt.md --round 1 --pass 1"
+
+  function run(toolInput) {
+    return runInteractiveCli(
+      [],
+      JSON.stringify({ cwd: project, tool_name: "Bash", tool_input: { command, ...toolInput } }),
+      { script: "adapters/claude/hooks/magi-guard.mjs" },
+    )
+  }
+
+  const foreground = await run({})
+  assert.equal(JSON.parse(foreground.stdout).hookSpecificOutput.permissionDecision, "deny")
+  assert.match(
+    JSON.parse(foreground.stdout).hookSpecificOutput.permissionDecisionReason,
+    /run_in_background: true/,
+  )
+
+  const backgrounded = await run({ run_in_background: true })
+  assert.equal(backgrounded.stdout, "")
+
+  const fallback = await runInteractiveCli(
+    [],
+    JSON.stringify({
+      cwd: project,
+      tool_name: "Bash",
+      tool_input: { command: `${command} --timeout-ms 540000` },
+    }),
+    { script: "adapters/claude/hooks/magi-guard.mjs" },
+  )
+  assert.equal(fallback.stdout, "")
+})
+
 test("Claude PreToolUse guard denies code changes before the execution phase", async () => {
   const project = await mkTempProject("open-magi-claude-guard-")
   const logDir = join(project, ".open_magi", "magi-log")

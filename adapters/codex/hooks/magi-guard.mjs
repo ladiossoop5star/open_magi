@@ -125,6 +125,27 @@ process.stdin.on("end", () => {
   const filePath = toolInput?.file_path ?? toolInput?.filePath ?? toolInput?.path
   const command = typeof toolInput?.command === "string" ? toolInput.command : toolInput?.cmd
 
+  // run-council in the foreground dies silently at the host's Bash ceiling;
+  // force the documented background launch (or the explicit foreground
+  // fallback with --timeout-ms).
+  if (
+    SHELL_TOOL_PATTERN.test(toolName) &&
+    typeof command === "string" &&
+    /run-council/.test(command) &&
+    /open-magi-claude/.test(command)
+  ) {
+    const background =
+      toolInput?.run_in_background === true ||
+      toolInput?.run_in_background === "true" ||
+      toolInput?.runInBackground === true
+    const foregroundFallback = /--timeout-ms/.test(command)
+    if (!background && !foregroundFallback) {
+      deny(
+        "[magi] run-council must run as a background task (run_in_background: true); a foreground call is killed by the host Bash ceiling before the council finishes. Foreground fallback per references/runtime.md: pass --timeout-ms 540000 and set the Bash timeout to 600000 ms.",
+      )
+    }
+  }
+
   let mutation = false
 
   if (FILE_TOOL_PATTERN.test(toolName)) {
