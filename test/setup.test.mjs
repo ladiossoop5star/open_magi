@@ -672,6 +672,221 @@ test("runClaudeCouncil accepts colon-containing and quoted YAML model values", a
   await rm(binDir, { recursive: true, force: true })
 })
 
+test("runClaudeCouncil executor selection: spawn forced, auto falls back without tmux", async () => {
+  const { runClaudeCouncil } = await import("../adapters/claude/lib/claude-runner.js")
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-claude-execsel-project-"))
+  const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-execsel-plugin-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-claude-execsel-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeClaude = join(binDir, "claude")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await mkdir(join(pluginDir, "agents"), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await writeFile(
+      join(pluginDir, "agents", `deliberator-${sage}.md`),
+      `---\nname: deliberator-${sage}\nmodel: model-a\ntools: ["Read"]\n---\n\nRole\n`,
+    )
+  }
+  await writeFile(fakeClaude, "#!/usr/bin/env node\nconsole.log('stance: approve\\n')\n")
+  await chmod(fakeClaude, 0o755)
+
+  const base = {
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    pluginDir,
+    claudeBin: fakeClaude,
+    timeoutMs: 2000,
+    tmuxSocket: "open-magi-execsel",
+  }
+
+  const forced = await runClaudeCouncil({ ...base, executor: "spawn" })
+  assert.equal(forced.executor, "spawn")
+  assert.equal(forced.tmuxSession, null)
+  assert.equal(forced.ok, true)
+
+  const fallback = await runClaudeCouncil({ ...base, tmuxBin: "/nonexistent/tmux" })
+  assert.equal(fallback.executor, "spawn")
+  assert.equal(fallback.ok, true)
+
+  const auto = await runClaudeCouncil(base)
+  assert.equal(auto.executor, "tmux")
+  assert.match(auto.tmuxSession, /^magi-/)
+  assert.equal(auto.ok, true)
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(pluginDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("runClaudeCouncil tmux executor times out and kills the session", async () => {
+  const { runClaudeCouncil } = await import("../adapters/claude/lib/claude-runner.js")
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-claude-tmuxto-project-"))
+  const pluginDir = await mkdtemp(join(tmpdir(), "open-magi-claude-tmuxto-plugin-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-claude-tmuxto-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeClaude = join(binDir, "claude")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await mkdir(join(pluginDir, "agents"), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await writeFile(
+      join(pluginDir, "agents", `deliberator-${sage}.md`),
+      `---\nname: deliberator-${sage}\nmodel: model-a\ntools: ["Read"]\n---\n\nRole\n`,
+    )
+  }
+  await writeFile(fakeClaude, "#!/bin/sh\nsleep 30\n")
+  await chmod(fakeClaude, 0o755)
+
+  const result = await runClaudeCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    pluginDir,
+    claudeBin: fakeClaude,
+    timeoutMs: 1500,
+    executor: "tmux",
+    tmuxSocket: "open-magi-tmuxto",
+  })
+
+  assert.equal(result.ok, false)
+  assert.ok(result.results.every((entry) => entry.failureType === "timeout"))
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    const report = await readFile(
+      join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", `report-${sage}.md`),
+      "utf8",
+    )
+    assert.match(report, /status: timeout/)
+  }
+
+  const { execFile: execFileCb } = await import("node:child_process")
+  const sessions = await promisify(execFileCb)("tmux", ["-L", "open-magi-tmuxto", "ls"], {
+    encoding: "utf8",
+  }).catch(() => ({ stdout: "" }))
+  assert.equal(sessions.stdout.trim(), "")
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(pluginDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("runCouncil tmux executor writes reports and cleans the session", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-tmux-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-tmux-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-codex-tmux-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  const agents = buildCodexAgentConfig({
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+  for (const [name, content] of Object.entries(agents)) {
+    await writeFile(join(agentsDir, name), content)
+  }
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { writeFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "const output = args[args.indexOf('-o') + 1]",
+      "writeFileSync(output, 'stance: approve\\nblocking_objection: no\\nrecommended_plan: fake\\nverification_plan: true\\nrisk_level: low\\n')",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 5000,
+    executor: "tmux",
+    tmuxSocket: "open-magi-tmux-ok",
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.executor, "tmux")
+  assert.deepEqual(result.results.map((entry) => entry.model), ["model-a", "model-b", "model-c"])
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    const report = await readFile(
+      join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", `report-${sage}.md`),
+      "utf8",
+    )
+    assert.match(report, /report_source: codex_exec/)
+  }
+
+  const { execFile: execFileCb } = await import("node:child_process")
+  const sessions = await promisify(execFileCb)("tmux", ["-L", "open-magi-tmux-ok", "ls"], {
+    encoding: "utf8",
+  }).catch(() => ({ stdout: "" }))
+  assert.equal(sessions.stdout.trim(), "")
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
+test("runCouncil tmux executor kills a slow deliberator pane on timeout", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-tmuxto-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-tmuxto-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-codex-tmuxto-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  const agents = buildCodexAgentConfig({
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+  for (const [name, content] of Object.entries(agents)) {
+    await writeFile(join(agentsDir, name), content)
+  }
+  await writeFile(fakeCodex, "#!/bin/sh\nsleep 30\n")
+  await chmod(fakeCodex, 0o755)
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 1500,
+    executor: "tmux",
+    tmuxSocket: "open-magi-tmux-kill",
+  })
+
+  assert.equal(result.ok, false)
+  assert.ok(result.results.every((entry) => entry.failureType === "timeout"))
+
+  const { execFile: execFileCb } = await import("node:child_process")
+  const sessions = await promisify(execFileCb)("tmux", ["-L", "open-magi-tmux-kill", "ls"], {
+    encoding: "utf8",
+  }).catch(() => ({ stdout: "" }))
+  assert.equal(sessions.stdout.trim(), "")
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
 test("installCodexPluginCache syncs the adapter into the codex plugin cache", async () => {
   const { installCodexPluginCache } = await import("../adapters/codex/lib/setup.js")
   const codexHome = await mkdtemp(join(tmpdir(), "open-magi-codex-home-"))

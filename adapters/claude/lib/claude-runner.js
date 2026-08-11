@@ -1,8 +1,11 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
-import { spawn } from "node:child_process"
+import { execFile as execFileCallback, spawn, spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { dirname, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { mkdtemp } from "node:fs/promises"
+import { setTimeout as sleep } from "node:timers/promises"
+import { promisify } from "node:util"
 
 import {
   CLAUDE_DEFAULT_MODEL_SENTINEL,
@@ -17,6 +20,8 @@ const DELIBERATORS = [
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
 const MAX_CAPTURE_CHARS = 20000
+const TMUX_SOCKET_DEFAULT = "open-magi"
+const execFile = promisify(execFileCallback)
 
 function padNumber(value) {
   return String(Number(value || 1)).padStart(3, "0")
@@ -206,6 +211,148 @@ async function writeReport({ promptPath, agent, processResult }) {
   return path
 }
 
+function tmuxAvailable(tmuxBin) {
+  try {
+    const result = spawnSync(tmuxBin, ["-V"], { stdio: "ignore" })
+    return result.status === 0
+  } catch {
+    return false
+  }
+}
+
+function resolveExecutor(options, tmuxBin) {
+  const requested = options.executor || process.env.OPEN_MAGI_EXECUTOR || "auto"
+  if (requested === "spawn") return "spawn"
+  if (requested === "tmux") return "tmux"
+  return tmuxAvailable(tmuxBin) ? "tmux" : "spawn"
+}
+
+function shq(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+async function tmux(tmuxBin, args, { allowFail = false } = {}) {
+  try {
+    const { stdout } = await execFile(tmuxBin, args)
+    return String(stdout ?? "")
+  } catch (error) {
+    if (allowFail) return ""
+    throw error
+  }
+}
+
+function councilSessionName(projectRoot, round, pass, promptPath) {
+  const hash = createHash("sha1").update(projectRoot).digest("hex").slice(0, 8)
+  const mode = /recon-\d+/.test(promptPath || "") ? "recon" : /review-\d+/.test(promptPath || "") ? "review" : `p${pass}`
+  return `magi-${hash}-r${round}-${mode}`
+}
+
+function sageScript({ agent, promptFile, projectRoot, claudeBin, outFile, errFile, codeFile, env }) {
+  const exports = Object.entries(env || {})
+    .map(([key, value]) => `export ${key}=${shq(value)}`)
+    .join("\n")
+  return [
+    "#!/bin/sh",
+    `cd ${shq(projectRoot)}`,
+    "export OPEN_MAGI_DISABLE_STOP_BACKSTOP=1",
+    exports,
+    `${shq(claudeBin)} --model ${shq(agent.model)} --allowedTools Read,Grep,Glob --disallowedTools Bash,Edit,Write,NotebookEdit --permission-mode bypassPermissions --no-session-persistence --output-format text -p "$(cat ${shq(promptFile)})" > ${shq(outFile)} 2> ${shq(errFile)}`,
+    `echo $? > ${shq(codeFile)}`,
+    "",
+  ].filter((line) => line !== "").join("\n")
+}
+
+async function runTmuxCouncil({ agents, councilPrompt, projectRoot, claudeBin, timeoutMs, env, tmuxBin, socket, session }) {
+  const tempDir = await mkdtemp(join(tmpdir(), "open-magi-tmux-claude-"))
+  const startedAt = Date.now()
+  const deadlineAt = startedAt + timeoutMs
+  // tmux panes inherit the server environment, not the caller's, so export
+  // the same fully merged environment the spawn path would receive.
+  const paneEnv = { ...process.env, ...(env || {}) }
+  const panes = []
+
+  try {
+    for (const [index, agent] of agents.entries()) {
+      const promptFile = join(tempDir, `${agent.sage}.prompt.txt`)
+      const scriptFile = join(tempDir, `${agent.sage}.sh`)
+      const outFile = join(tempDir, `${agent.sage}.out`)
+      const errFile = join(tempDir, `${agent.sage}.err`)
+      const codeFile = join(tempDir, `${agent.sage}.code`)
+      await writeFile(promptFile, buildDeliberatorPrompt(agent, councilPrompt))
+      await writeFile(
+        scriptFile,
+        sageScript({ agent, promptFile, projectRoot, claudeBin, outFile, errFile, codeFile, env: paneEnv }),
+      )
+
+      const paneOut =
+        index === 0
+          ? await (async () => {
+              const sentinelPane = await tmux(tmuxBin, ["-L", socket, "new-session", "-d", "-s", session, "-x", "220", "-y", "50", "-P", "-F", "#{pane_id}", "sleep 86400"])
+              const paneId = sentinelPane.trim()
+              // Set remain-on-exit while the sentinel keeps the session alive,
+              // then swap in the real command; an instantly-exiting deliberator
+              // must not kill the session before the other panes exist.
+              await tmux(tmuxBin, ["-L", socket, "set-option", "-t", session, "remain-on-exit", "on"])
+              await tmux(tmuxBin, ["-L", socket, "respawn-pane", "-k", "-t", paneId, `sh ${shq(scriptFile)}`])
+              return paneId
+            })()
+          : await tmux(tmuxBin, ["-L", socket, "split-window", "-d", "-h", "-t", session, "-P", "-F", "#{pane_id}", `sh ${shq(scriptFile)}`])
+      panes.push({ agent, paneId: paneOut.trim(), outFile, errFile, codeFile, settled: false, timedOut: false })
+    }
+
+    await tmux(tmuxBin, ["-L", socket, "select-layout", "-t", session, "even-horizontal"], { allowFail: true })
+    process.stderr.write(`[open-magi] watch live: tmux -L ${socket} attach -t ${session}\n`)
+
+    while (panes.some((pane) => !pane.settled)) {
+      const listing = await tmux(tmuxBin, ["-L", socket, "list-panes", "-t", session, "-F", "#{pane_id} #{pane_dead}"], { allowFail: true })
+      const dead = new Set(
+        listing
+          .split("\n")
+          .filter(Boolean)
+          .filter((line) => line.endsWith(" 1"))
+          .map((line) => line.split(" ")[0]),
+      )
+      const sessionGone = listing.trim() === ""
+      const now = Date.now()
+
+      for (const pane of panes) {
+        if (pane.settled) continue
+        if (!pane.timedOut && now >= deadlineAt && !dead.has(pane.paneId) && !sessionGone) {
+          pane.timedOut = true
+          await tmux(tmuxBin, ["-L", socket, "kill-pane", "-t", pane.paneId], { allowFail: true })
+          continue
+        }
+        if (dead.has(pane.paneId) || sessionGone) {
+          pane.settled = true
+        }
+      }
+      if (panes.some((pane) => !pane.settled)) await sleep(500)
+    }
+
+    return panes.map((pane) => pane)
+  } finally {
+    await tmux(tmuxBin, ["-L", socket, "kill-session", "-t", session], { allowFail: true })
+    for (const pane of panes) {
+      pane.result = {
+        ok: false,
+        exitCode: null,
+        timedOut: pane.timedOut,
+        startedAt,
+        endedAt: Date.now(),
+        stdout: await readFile(pane.outFile, "utf8").catch(() => ""),
+        stderr: await readFile(pane.errFile, "utf8").catch(() => ""),
+      }
+      const code = await readFile(pane.codeFile, "utf8").catch(() => "")
+      const exitCode = Number.parseInt(code.trim(), 10)
+      pane.result.exitCode = Number.isInteger(exitCode) ? exitCode : null
+      pane.result.ok = pane.result.exitCode === 0 && !pane.timedOut
+      pane.result.endedAt = Date.now()
+      pane.result.durationMs = pane.result.endedAt - startedAt
+    }
+    await rm(tempDir, { recursive: true, force: true })
+  }
+}
+
 export async function runClaudeCouncil(options = {}) {
   const projectRoot = options.projectRoot || process.cwd()
   const round = Number(options.round || 1)
@@ -217,17 +364,45 @@ export async function runClaudeCouncil(options = {}) {
   const councilPrompt = await readFile(promptPath, "utf8")
   const env = { ...process.env, ...(options.env || {}) }
   const agents = await Promise.all(DELIBERATORS.map((definition) => readAgent(pluginDir, definition)))
-  const results = await Promise.all(
-    agents.map(async (agent) => {
-      const prompt = buildDeliberatorPrompt(agent, councilPrompt)
-      const processResult = await runClaudeProcess({
-        agent,
+
+  const tmuxBin = options.tmuxBin || process.env.OPEN_MAGI_TMUX_BIN || "tmux"
+  const executor = resolveExecutor(options, tmuxBin)
+  const socket = options.tmuxSocket || process.env.OPEN_MAGI_TMUX_SOCKET || TMUX_SOCKET_DEFAULT
+  const session = councilSessionName(projectRoot, round, pass, promptPath)
+
+  let processResults
+  if (executor === "tmux") {
+    processResults = (
+      await runTmuxCouncil({
+        agents,
+        councilPrompt,
         projectRoot,
-        prompt,
         claudeBin,
         timeoutMs,
         env: options.env,
+        tmuxBin,
+        socket,
+        session,
       })
+    ).map((pane) => ({ ...pane.result, output: pane.result.stdout }))
+  } else {
+    processResults = await Promise.all(
+      agents.map((agent) =>
+        runClaudeProcess({
+          agent,
+          projectRoot,
+          prompt: buildDeliberatorPrompt(agent, councilPrompt),
+          claudeBin,
+          timeoutMs,
+          env: options.env,
+        }),
+      ),
+    )
+  }
+
+  const results = await Promise.all(
+    agents.map(async (agent, index) => {
+      const processResult = processResults[index]
       const path = await writeReport({ promptPath, agent, processResult })
       return {
         agent: agent.agent,
@@ -257,6 +432,8 @@ export async function runClaudeCouncil(options = {}) {
     promptPath,
     round,
     pass,
+    executor,
+    tmuxSession: executor === "tmux" ? session : null,
     results,
   }
 }

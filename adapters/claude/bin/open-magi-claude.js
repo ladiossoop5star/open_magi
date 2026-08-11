@@ -28,6 +28,8 @@ Options:
   --pass             Council pass number for run-council.
   --claude-bin       Claude executable for run-council. Defaults to OPEN_MAGI_CLAUDE_BIN or claude.
   --timeout-ms       Per-deliberator timeout for run-council.
+  --executor         run-council executor: auto (tmux if available), tmux, or spawn.
+  --tmux-socket      tmux socket name for run-council (default: open-magi).
 
 Without model flags, setup writes editable templates with model: default-model.
 Edit the three files under ~/.claude/skills/open-magi/agents/ before using Magi.
@@ -65,6 +67,8 @@ async function main(argv) {
         "plugin-dir": { type: "string" },
         "claude-bin": { type: "string" },
         "timeout-ms": { type: "string" },
+        executor: { type: "string" },
+        "tmux-socket": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
       },
       allowPositionals: false,
@@ -84,6 +88,8 @@ async function main(argv) {
       pluginDir: values["plugin-dir"],
       claudeBin: values["claude-bin"],
       timeoutMs: values["timeout-ms"] ? Number(values["timeout-ms"]) : undefined,
+      executor: values.executor,
+      tmuxSocket: values["tmux-socket"],
     })
     console.log(JSON.stringify(result, null, 2))
     if (!result.ok) process.exitCode = 1

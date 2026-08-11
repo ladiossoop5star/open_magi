@@ -54,10 +54,17 @@ Call it with:
 - `pass`: the current `state.json.currentDeliberationPass`;
 - `timeoutMs`: `state.json.deliberatorTimeoutMs` when present.
 
-The tool reads these Codex custom agent templates:
+The runner reads these Codex custom agent templates:
 - `deliberator-melchior`
 - `deliberator-balthasar`
 - `deliberator-casper`
+
+When tmux is available, the runner launches the three deliberators as panes in
+one tmux session (socket `open-magi`) so you can watch them live; it prints
+`tmux -L open-magi attach -t <session>` at launch and kills the session after
+collecting results. Without tmux it falls back to plain subprocesses. Control
+this with `--executor auto|tmux|spawn`, `OPEN_MAGI_EXECUTOR`, and
+`--tmux-socket` / `OPEN_MAGI_TMUX_SOCKET`.
 
 It launches three independent `codex exec` subprocesses with each TOML file's
 `model`, optional `model_provider`, optional `model_reasoning_effort`, and

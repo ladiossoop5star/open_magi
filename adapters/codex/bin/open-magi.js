@@ -35,6 +35,8 @@ Options:
   --pass              Council pass number for run-council.
   --codex-bin         Codex executable for run-council. Defaults to OPEN_MAGI_CODEX_BIN or codex.
   --timeout-ms        Per-deliberator timeout for run-council.
+  --executor          run-council executor: auto (tmux if available), tmux, or spawn.
+  --tmux-socket       tmux socket name for run-council (default: open-magi).
 `)
 }
 
@@ -144,6 +146,8 @@ async function main(argv) {
         round: { type: "string" },
         pass: { type: "string" },
         "timeout-ms": { type: "string" },
+        executor: { type: "string" },
+        "tmux-socket": { type: "string" },
         "agents-dir": { type: "string" },
         "codex-bin": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
@@ -165,6 +169,8 @@ async function main(argv) {
       timeoutMs: values["timeout-ms"] ? Number(values["timeout-ms"]) : undefined,
       agentsDir: values["agents-dir"],
       codexBin: values["codex-bin"],
+      executor: values.executor,
+      tmuxSocket: values["tmux-socket"],
     })
     console.log(JSON.stringify(result, null, 2))
     if (!result.ok) process.exitCode = 1

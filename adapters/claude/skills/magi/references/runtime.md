@@ -79,6 +79,13 @@ It launches three headless Claude subprocesses concurrently:
 - `open-magi:deliberator-balthasar`
 - `open-magi:deliberator-casper`
 
+When tmux is available, the runner launches the three deliberators as panes in
+one tmux session (socket `open-magi`) so you can watch them live; it prints
+`tmux -L open-magi attach -t <session>` at launch and kills the session after
+collecting results. Without tmux it falls back to plain subprocesses. Control
+this with `--executor auto|tmux|spawn`, `OPEN_MAGI_EXECUTOR`, and
+`--tmux-socket` / `OPEN_MAGI_TMUX_SOCKET`.
+
 The runner prompt for each subprocess includes:
 - the current `round-NNN/council-PPP/prompt.md` content;
 - the expected report path;

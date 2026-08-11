@@ -307,6 +307,47 @@ test("Codex plugin manifest exposes the portable magi skill", async () => {
   assert.equal(manifest.interface.defaultPrompt.length, 3)
 })
 
+test("Codex PostToolUse hook shows the tmux attach hint when a council launches", async () => {
+  const { createHash } = await import("node:crypto")
+  const project = await mkTempProject("open-magi-codex-reminder-council-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify({
+      active: true,
+      projectRoot: project,
+      currentRound: 1,
+      currentPhase: "status_assessment",
+      currentCouncilMode: "recon",
+      currentDeliberationPass: 1,
+    })}\n`,
+  )
+  const command =
+    'node ~/.codex/plugins/cache/open-magi-dev/open-magi/0.2.0/bin/open-magi.js run-council --project-root "$PWD" --prompt-path .open_magi/magi-log/round-001/recon-001/prompt.md --round 1 --pass 1'
+  const expectedHash = createHash("sha1").update(project).digest("hex").slice(0, 8)
+  const expectedSession = `magi-${expectedHash}-r1-recon`
+
+  function run() {
+    return runInteractiveCli([], JSON.stringify({ cwd: project, tool_name: "shell", tool_input: { command } }), {
+      script: "adapters/codex/hooks/magi-tool-reminder.mjs",
+    })
+  }
+
+  const first = JSON.parse((await run()).stdout)
+  assert.match(first.systemMessage, new RegExp(`tmux -L open-magi attach -t ${expectedSession}`))
+
+  const second = await run()
+  assert.equal(second.stdout, "")
+
+  const other = await runInteractiveCli(
+    [],
+    JSON.stringify({ cwd: project, tool_name: "shell", tool_input: { command: "make test" } }),
+    { script: "adapters/codex/hooks/magi-tool-reminder.mjs" },
+  )
+  assert.equal(other.stdout, "")
+})
+
 test("Codex PostToolUse hook reminds on signature change, not on every tool call", async () => {
   const project = await mkTempProject("open-magi-codex-tool-reminder-active-")
   const logDir = join(project, ".open_magi", "magi-log")
