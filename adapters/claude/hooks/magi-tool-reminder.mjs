@@ -27,6 +27,34 @@ function tmuxAvailable() {
   }
 }
 
+// Runner processes that get killed mid-council leave their tmux session
+// behind. Reap magi-* sessions whose panes are all dead and which are older
+// than a few minutes; live councils are never touched.
+function reapDeadCouncilSessions() {
+  if (!tmuxAvailable()) return
+  const tmuxBin = process.env.OPEN_MAGI_TMUX_BIN || "tmux"
+  const socket = process.env.OPEN_MAGI_TMUX_SOCKET || "open-magi"
+  const listing = spawnSync(tmuxBin, ["-L", socket, "ls", "-F", "#{session_name} #{session_created}"], {
+    encoding: "utf8",
+  })
+  if (listing.status !== 0) return
+
+  const nowSec = Math.floor(Date.now() / 1000)
+  const minAgeSec = Number(process.env.OPEN_MAGI_REAP_MIN_AGE_MS ?? 15 * 60 * 1000) / 1000
+  for (const line of String(listing.stdout || "").split("\n").filter(Boolean)) {
+    const [name, created] = line.split(" ")
+    if (!name?.startsWith("magi-")) continue
+    if (nowSec - Number(created) < minAgeSec) continue
+    const panes = spawnSync(tmuxBin, ["-L", socket, "list-panes", "-t", name, "-F", "#{pane_dead}"], {
+      encoding: "utf8",
+    })
+    if (panes.status !== 0) continue
+    const states = String(panes.stdout || "").split("\n").filter(Boolean)
+    if (states.length === 0 || states.some((state) => state.trim() !== "1")) continue
+    spawnSync(tmuxBin, ["-L", socket, "kill-session", "-t", name], { stdio: "ignore" })
+  }
+}
+
 function councilSessionName(projectRoot, state) {
   const hash = createHash("sha1").update(String(projectRoot)).digest("hex").slice(0, 8)
   const round = Number(state?.currentRound) || 1
@@ -56,6 +84,8 @@ process.stdin.on("end", () => {
   if (!existsSync(statePath)) {
     process.exit(0)
   }
+
+  reapDeadCouncilSessions()
 
   let state
   try {

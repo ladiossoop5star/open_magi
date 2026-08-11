@@ -348,6 +348,37 @@ test("Codex PostToolUse hook shows the tmux attach hint when a council launches"
   assert.equal(other.stdout, "")
 })
 
+test("Codex PostToolUse hook reaps dead council tmux sessions past the age gate", async () => {
+  const project = await mkTempProject("open-magi-codex-reminder-reaper-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(join(logDir, "state.json"), `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "execution" })}\n`)
+
+  const socket = `open-magi-reaper-${Date.now()}`
+  await promisify(execFileCallback)("tmux", ["-L", socket, "new-session", "-d", "-s", "magi-dead", "sleep 86400"])
+  await promisify(execFileCallback)("tmux", ["-L", socket, "set-option", "-t", "magi-dead", "remain-on-exit", "on"])
+  const deadPane = (
+    await promisify(execFileCallback)("tmux", ["-L", socket, "list-panes", "-t", "magi-dead", "-F", "#{pane_id}"])
+  ).stdout.trim()
+  await promisify(execFileCallback)("tmux", ["-L", socket, "respawn-pane", "-k", "-t", deadPane, "true"])
+  await promisify(execFileCallback)("tmux", ["-L", socket, "new-session", "-d", "-s", "magi-live", "sleep 300"])
+
+  const env = { OPEN_MAGI_TMUX_SOCKET: socket, OPEN_MAGI_REAP_MIN_AGE_MS: "0" }
+  await runInteractiveCli([], JSON.stringify({ cwd: project }), {
+    script: "adapters/codex/hooks/magi-tool-reminder.mjs",
+    env,
+  })
+
+  const listing = await promisify(execFileCallback)("tmux", ["-L", socket, "ls", "-F", "#{session_name}"], {
+    encoding: "utf8",
+  })
+  const names = listing.stdout.split("\n").filter(Boolean)
+  assert.ok(!names.includes("magi-dead"))
+  assert.ok(names.includes("magi-live"))
+
+  await promisify(execFileCallback)("tmux", ["-L", socket, "kill-server"]).catch(() => {})
+})
+
 test("Codex PostToolUse hook reminds on signature change, not on every tool call", async () => {
   const project = await mkTempProject("open-magi-codex-tool-reminder-active-")
   const logDir = join(project, ".open_magi", "magi-log")
