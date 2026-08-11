@@ -74,13 +74,28 @@ function stripHeredocs(command) {
   return kept.join("\n")
 }
 
+// Quotes and comments routinely contain > characters (echo "a -> b",
+// tcp.len>0 filters, "tput > 500" notes). Strip them before looking for
+// real redirections, and never treat -> as one.
+function sanitizeShellText(command) {
+  let out = stripHeredocs(command)
+  out = out.replace(/'[^']*'/g, "''")
+  out = out.replace(/"(?:[^"\\]|\\.)*"/g, '""')
+  out = out
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)#.*$/, "$1"))
+    .join("\n")
+  return out
+}
+
+const REDIRECT_PATTERN = /(?<![-\w])(?:\d{0,2}(?:>|>>|&>))\s*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/g
+
 function shellMutationTargetsProject(cwd, command) {
-  const stripped = stripHeredocs(command)
+  const stripped = sanitizeShellText(command)
   if (SED_INPLACE_PATTERN.test(stripped)) return true
   if (APPLY_PATCH_PATTERN.test(stripped)) return true
 
-  const redirectPattern = /(?:>|>>)\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
-  for (const match of stripped.matchAll(redirectPattern)) {
+  for (const match of stripped.matchAll(REDIRECT_PATTERN)) {
     const target = match[1] || match[2] || match[3]
     if (isProjectPath(cwd, target)) return true
   }

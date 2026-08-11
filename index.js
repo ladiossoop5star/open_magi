@@ -1149,14 +1149,29 @@ function guardStripHeredocs(command) {
   return kept.join("\n")
 }
 
+// Quotes and comments routinely contain > characters (echo "a -> b",
+// tcp.len>0 filters, "tput > 500" notes). Strip them before looking for
+// real redirections, and never treat -> as one.
+function guardSanitizeShellText(command) {
+  let out = guardStripHeredocs(command)
+  out = out.replace(/'[^']*'/g, "''")
+  out = out.replace(/"(?:[^"\\]|\\.)*"/g, '""')
+  out = out
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)#.*$/, "$1"))
+    .join("\n")
+  return out
+}
+
+const GUARD_REDIRECT_PATTERN = /(?<![-\w])(?:\d{0,2}(?:>|>>|&>))\s*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/g
+
 function guardShellTouchesProject(directory, command) {
   if (typeof command !== "string") return false
-  const stripped = guardStripHeredocs(command)
+  const stripped = guardSanitizeShellText(command)
   if (GUARD_SED_INPLACE_PATTERN.test(stripped)) return true
   if (GUARD_APPLY_PATCH_PATTERN.test(stripped)) return true
 
-  const redirectPattern = /(?:>|>>)\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
-  for (const match of stripped.matchAll(redirectPattern)) {
+  for (const match of stripped.matchAll(GUARD_REDIRECT_PATTERN)) {
     const target = match[1] || match[2] || match[3]
     if (guardIsProjectPath(directory, target)) return true
   }

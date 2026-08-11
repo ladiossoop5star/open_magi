@@ -2986,6 +2986,42 @@ test("tool.execute.before ignores arrows inside heredoc bodies", async () => {
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("tool.execute.before ignores arrows and comparisons inside quotes and comments", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 1,
+    currentPhase: "status_assessment",
+    needsContinue: true,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  const deployScript = [
+    'FWBUILD="/tmp/fw-build"',
+    'DEST="/tmp/out/nerv.bin"',
+    'ls -la "$FWBUILD/rtecdc.bin" 2>/dev/null && echo "FOUND"',
+    'cp "$FWBUILD/rtecdc.bin" "$DEST" && echo "Deployed -> $DEST"',
+    'grep -n "bsscfg->ap" src/wl/sys/wlc_mchan.c | head -20',
+    'tshark -r /tmp/v.cap -Y "tcp.len>0" 2>&1 | wc -l',
+    '# throughput target > 500 Mbps',
+  ].join("\n")
+
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: deployScript } }),
+  )
+
+  await assert.rejects(
+    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "echo x > src/out.txt" } }),
+    /only allowed in the execution phase/,
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("tool.execute.before requires verdict.md during the execution phase", async () => {
   const project = await makeProject("{}")
   const state = activeState({
