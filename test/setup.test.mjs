@@ -887,6 +887,74 @@ test("runCouncil tmux executor kills a slow deliberator pane on timeout", async 
   await rm(binDir, { recursive: true, force: true })
 })
 
+test("runCouncil tmux executor settles after a single pane times out", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-tmuxmix-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-tmuxmix-agents-"))
+  const binDir = await mkdtemp(join(tmpdir(), "open-magi-codex-tmuxmix-bin-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  const agents = buildCodexAgentConfig({
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+  for (const [name, content] of Object.entries(agents)) {
+    await writeFile(join(agentsDir, name), content)
+  }
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { writeFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "// casper stalls; the other two answer immediately",
+      "if (args.includes('model-c')) setTimeout(() => {}, 30000)",
+      "else writeFileSync(args[args.indexOf('-o') + 1], 'stance: approve\\n')",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const socket = `open-magi-tmux-mix-${Date.now()}`
+  const startedAt = Date.now()
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: fakeCodex,
+    timeoutMs: 1500,
+    executor: "tmux",
+    tmuxSocket: socket,
+  })
+
+  assert.ok(Date.now() - startedAt < 10000, "runner should not wait for the stalled pane")
+  assert.equal(result.ok, false)
+  assert.deepEqual(
+    result.results.map((entry) => [entry.sage, entry.failureType]),
+    [["melchior", null], ["balthasar", null], ["casper", "timeout"]],
+  )
+  const casperReport = await readFile(
+    join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "report-casper.md"),
+    "utf8",
+  )
+  assert.match(casperReport, /status: timeout/)
+
+  const sessions = await promisify(execFileCallback)("tmux", ["-L", socket, "ls"], {
+    encoding: "utf8",
+  }).catch(() => ({ stdout: "" }))
+  assert.equal(sessions.stdout.trim(), "")
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+  await rm(binDir, { recursive: true, force: true })
+})
+
 test("installCodexPluginCache syncs the adapter into the codex plugin cache", async () => {
   const { installCodexPluginCache } = await import("../adapters/codex/lib/setup.js")
   const codexHome = await mkdtemp(join(tmpdir(), "open-magi-codex-home-"))

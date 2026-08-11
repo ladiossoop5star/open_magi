@@ -350,6 +350,9 @@ async function runTmuxCouncil({ agents, councilPrompt, projectRoot, codexBin, ti
         if (!pane.timedOut && now >= deadlineAt && !dead.has(pane.paneId) && !sessionGone) {
           pane.timedOut = true
           await tmux(tmuxBin, ["-L", socket, "kill-pane", "-t", pane.paneId], { allowFail: true })
+          // A killed pane disappears from list-panes instead of reporting
+          // dead, so settle it here or the poll loop would wait forever.
+          pane.settled = true
           continue
         }
         if (dead.has(pane.paneId) || sessionGone) {
