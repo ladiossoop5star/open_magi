@@ -251,13 +251,18 @@ function sageScript({ agent, promptFile, projectRoot, claudeBin, outFile, errFil
   const exports = Object.entries(env || {})
     .map(([key, value]) => `export ${key}=${shq(value)}`)
     .join("\n")
+  // tee stdout/stderr to files while keeping them visible in the pane; the
+  // tmux executor exists for observability, so a blank pane defeats the point.
   return [
-    "#!/bin/sh",
+    "#!/bin/bash",
     `cd ${shq(projectRoot)}`,
     "export OPEN_MAGI_DISABLE_STOP_BACKSTOP=1",
     exports,
-    `${shq(claudeBin)} --model ${shq(agent.model)} --allowedTools Read,Grep,Glob --disallowedTools Bash,Edit,Write,NotebookEdit --permission-mode bypassPermissions --no-session-persistence --output-format text -p "$(cat ${shq(promptFile)})" > ${shq(outFile)} 2> ${shq(errFile)}`,
-    `echo $? > ${shq(codeFile)}`,
+    "set -o pipefail",
+    `${shq(claudeBin)} --model ${shq(agent.model)} --allowedTools Read,Grep,Glob --disallowedTools Bash,Edit,Write,NotebookEdit --permission-mode bypassPermissions --no-session-persistence --output-format text -p "$(cat ${shq(promptFile)})" > >(tee ${shq(outFile)}) 2> >(tee ${shq(errFile)} >&2)`,
+    "CODE=$?",
+    "wait",
+    `echo $CODE > ${shq(codeFile)}`,
     "",
   ].filter((line) => line !== "").join("\n")
 }
@@ -293,10 +298,10 @@ async function runTmuxCouncil({ agents, councilPrompt, projectRoot, claudeBin, t
               // then swap in the real command; an instantly-exiting deliberator
               // must not kill the session before the other panes exist.
               await tmux(tmuxBin, ["-L", socket, "set-option", "-t", session, "remain-on-exit", "on"])
-              await tmux(tmuxBin, ["-L", socket, "respawn-pane", "-k", "-t", paneId, `sh ${shq(scriptFile)}`])
+              await tmux(tmuxBin, ["-L", socket, "respawn-pane", "-k", "-t", paneId, `bash ${shq(scriptFile)}`])
               return paneId
             })()
-          : await tmux(tmuxBin, ["-L", socket, "split-window", "-d", "-h", "-t", session, "-P", "-F", "#{pane_id}", `sh ${shq(scriptFile)}`])
+          : await tmux(tmuxBin, ["-L", socket, "split-window", "-d", "-h", "-t", session, "-P", "-F", "#{pane_id}", `bash ${shq(scriptFile)}`])
       panes.push({ agent, paneId: paneOut.trim(), outFile, errFile, codeFile, settled: false, timedOut: false })
     }
 

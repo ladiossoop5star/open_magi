@@ -281,12 +281,15 @@ function sageScript({ agent, promptFile, projectRoot, codexBin, outputPath, outF
     "-",
   ].join(" ")
   return [
-    "#!/bin/sh",
+    "#!/bin/bash",
     `cd ${shq(projectRoot)}`,
     "export OPEN_MAGI_DISABLE_STOP_BACKSTOP=1",
     exports,
-    `${command} < ${shq(promptFile)} > ${shq(outFile)} 2> ${shq(errFile)}`,
-    `echo $? > ${shq(codeFile)}`,
+    "set -o pipefail",
+    `${command} < ${shq(promptFile)} > >(tee ${shq(outFile)}) 2> >(tee ${shq(errFile)} >&2)`,
+    "CODE=$?",
+    "wait",
+    `echo $CODE > ${shq(codeFile)}`,
     "",
   ].filter((line) => line !== "").join("\n")
 }
@@ -323,10 +326,10 @@ async function runTmuxCouncil({ agents, councilPrompt, projectRoot, codexBin, ti
               // then swap in the real command; an instantly-exiting deliberator
               // must not kill the session before the other panes exist.
               await tmux(tmuxBin, ["-L", socket, "set-option", "-t", session, "remain-on-exit", "on"])
-              await tmux(tmuxBin, ["-L", socket, "respawn-pane", "-k", "-t", paneId, `sh ${shq(scriptFile)}`])
+              await tmux(tmuxBin, ["-L", socket, "respawn-pane", "-k", "-t", paneId, `bash ${shq(scriptFile)}`])
               return paneId
             })()
-          : await tmux(tmuxBin, ["-L", socket, "split-window", "-d", "-h", "-t", session, "-P", "-F", "#{pane_id}", `sh ${shq(scriptFile)}`])
+          : await tmux(tmuxBin, ["-L", socket, "split-window", "-d", "-h", "-t", session, "-P", "-F", "#{pane_id}", `bash ${shq(scriptFile)}`])
       panes.push({ agent, paneId: paneOut.trim(), outputPath, outFile, errFile, codeFile, settled: false, timedOut: false })
     }
 
