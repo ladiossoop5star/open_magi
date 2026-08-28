@@ -89,6 +89,12 @@ function sanitizeShellText(command) {
 }
 
 const REDIRECT_PATTERN = /(?<![-\w])(?:\d{0,2}(?:>|>>|&>))\s*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/g
+const DOC_FILE_PATTERN = /\.(md|txt)$/i
+
+// Notes and reports are not code: .md/.txt targets are always allowed.
+function isDocPath(target) {
+  return typeof target === "string" && DOC_FILE_PATTERN.test(target.trim())
+}
 
 function shellMutationTargetsProject(cwd, command) {
   const stripped = sanitizeShellText(command)
@@ -97,13 +103,13 @@ function shellMutationTargetsProject(cwd, command) {
 
   for (const match of stripped.matchAll(REDIRECT_PATTERN)) {
     const target = match[1] || match[2] || match[3]
-    if (isProjectPath(cwd, target)) return true
+    if (!isDocPath(target) && isProjectPath(cwd, target)) return true
   }
 
   const teePattern = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
   for (const match of stripped.matchAll(teePattern)) {
     const target = match[1] || match[2] || match[3]
-    if (isProjectPath(cwd, target)) return true
+    if (!isDocPath(target) && isProjectPath(cwd, target)) return true
   }
 
   return false
@@ -168,7 +174,7 @@ process.stdin.on("end", () => {
     // a project mutation unless every mentioned path is under .open_magi/.
     const patchText = typeof toolInput?.patch === "string" ? toolInput.patch : toolInput?.input
     if (typeof filePath === "string" && filePath) {
-      mutation = isProjectPath(cwd, filePath)
+      mutation = !isDocPath(filePath) && isProjectPath(cwd, filePath)
     } else if (typeof patchText === "string" && patchText) {
       const mentioned = patchText.match(/[^\s:]+\.(?:md|json|txt|js|ts|c|h|py|toml|yaml|yml)/g) || []
       mutation = mentioned.length === 0 || mentioned.some((path) => isProjectPath(cwd, path))

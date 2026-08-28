@@ -2908,7 +2908,7 @@ test("tool.execute.before denies code changes outside the execution phase", asyn
     /only allowed in the execution phase after verdict\.md/,
   )
   await assert.rejects(
-    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "echo x > src/out.txt" } }),
+    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "echo x > src/out.c" } }),
     /only allowed in the execution phase/,
   )
   await assert.doesNotReject(() =>
@@ -3015,7 +3015,39 @@ test("tool.execute.before ignores arrows and comparisons inside quotes and comme
   )
 
   await assert.rejects(
-    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "echo x > src/out.txt" } }),
+    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "echo x > src/out.c" } }),
+    /only allowed in the execution phase/,
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("tool.execute.before allows md and txt notes but still denies code files", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 1,
+    currentPhase: "status_assessment",
+    needsContinue: true,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"]({ tool: "write", sessionID: "ses-1" }, { args: { filePath: "work_report.md" } }),
+  )
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "echo done > notes/summary.txt" } }),
+  )
+  await assert.rejects(
+    () => hooks["tool.execute.before"]({ tool: "write", sessionID: "ses-1" }, { args: { filePath: "src/main.c" } }),
+    /only allowed in the execution phase/,
+  )
+  await assert.rejects(
+    () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command: "echo x > src/out.c" } }),
     /only allowed in the execution phase/,
   )
 

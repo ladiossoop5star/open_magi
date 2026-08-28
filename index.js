@@ -1173,23 +1173,29 @@ function guardShellTouchesProject(directory, command) {
 
   for (const match of stripped.matchAll(GUARD_REDIRECT_PATTERN)) {
     const target = match[1] || match[2] || match[3]
-    if (guardIsProjectPath(directory, target)) return true
+    if (!guardIsDocPath(target) && guardIsProjectPath(directory, target)) return true
   }
 
   const teePattern = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
   for (const match of stripped.matchAll(teePattern)) {
     const target = match[1] || match[2] || match[3]
-    if (guardIsProjectPath(directory, target)) return true
+    if (!guardIsDocPath(target) && guardIsProjectPath(directory, target)) return true
   }
 
   return false
+}
+
+const GUARD_DOC_FILE_PATTERN = /\.(md|txt)$/i
+
+function guardIsDocPath(target) {
+  return typeof target === "string" && GUARD_DOC_FILE_PATTERN.test(target.trim())
 }
 
 function guardToolAction(directory, tool, args) {
   if (["write", "edit", "multi_edit", "apply_patch"].includes(tool)) {
     const filePath = args?.filePath ?? args?.file_path ?? args?.path
     if (typeof filePath === "string" && filePath) {
-      return guardIsProjectPath(directory, filePath)
+      return !guardIsDocPath(filePath) && guardIsProjectPath(directory, filePath)
     }
     return true
   }
