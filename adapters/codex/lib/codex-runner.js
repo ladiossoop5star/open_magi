@@ -405,6 +405,22 @@ export async function runCouncil(options = {}) {
 
   const tmuxBin = options.tmuxBin || process.env.OPEN_MAGI_TMUX_BIN || "tmux"
   const executor = resolveExecutor(options, tmuxBin)
+  if (executor === "tmux" && !tmuxAvailable(tmuxBin)) {
+    return {
+      ok: false,
+      halt: true,
+      haltReason: "hard_error",
+      hardErrors: [],
+      projectRoot,
+      promptPath,
+      round,
+      pass,
+      executor: "tmux",
+      tmuxSession: null,
+      results: [],
+      error: `tmux executor requested but ${tmuxBin} is not available. Install tmux, set OPEN_MAGI_TMUX_BIN, or use --executor spawn.`,
+    }
+  }
   const socket = options.tmuxSocket || process.env.OPEN_MAGI_TMUX_SOCKET || TMUX_SOCKET_DEFAULT
   const session = councilSessionName(projectRoot, round, pass, promptPath)
 

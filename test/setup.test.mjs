@@ -955,6 +955,43 @@ test("runCouncil tmux executor settles after a single pane times out", async () 
   await rm(binDir, { recursive: true, force: true })
 })
 
+test("runCouncil with executor tmux fails cleanly when tmux is missing", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "open-magi-codex-notmux-project-"))
+  const agentsDir = await mkdtemp(join(tmpdir(), "open-magi-codex-notmux-agents-"))
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "prompt.md")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Council Prompt\n")
+  const agents = buildCodexAgentConfig({
+    provider: "litellm",
+    melchiorModel: "model-a",
+    balthasarModel: "model-b",
+    casperModel: "model-c",
+  })
+  for (const [name, content] of Object.entries(agents)) {
+    await writeFile(join(agentsDir, name), content)
+  }
+
+  const result = await runCouncil({
+    projectRoot,
+    promptPath,
+    round: 1,
+    pass: 1,
+    agentsDir,
+    codexBin: "codex",
+    executor: "tmux",
+    tmuxBin: "/nonexistent/tmux",
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.halt, true)
+  assert.equal(result.haltReason, "hard_error")
+  assert.match(result.error, /tmux executor requested/)
+
+  await rm(projectRoot, { recursive: true, force: true })
+  await rm(agentsDir, { recursive: true, force: true })
+})
+
 test("installCodexPluginCache syncs the adapter into the codex plugin cache", async () => {
   const { installCodexPluginCache } = await import("../adapters/codex/lib/setup.js")
   const codexHome = await mkdtemp(join(tmpdir(), "open-magi-codex-home-"))
