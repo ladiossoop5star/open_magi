@@ -28,6 +28,7 @@ Create this file before the first research round:
   "maxDeliberationPasses": 3,
   "deliberationStatus": "not_started",
   "currentCouncilMode": "recon",
+  "currentReconPass": 1,
   "deliberatorTimeoutMs": 1800000,
   "activeDeliberators": {},
   "deliberatorTimeoutCounts": {},
@@ -44,8 +45,8 @@ Create this file before the first research round:
 ```
 
 `schemaVersion: 2` enables council modes. `currentCouncilMode` is one of:
-- `recon`: Phase 1b parallel evidence gathering (round 1 only). Reports land in
-  `round-NNN/recon-001/`.
+- `recon`: parallel evidence gathering, repeatable in any round. Reports land in
+  `round-NNN/recon-MMM/`, where MMM is `currentReconPass`.
 - `decision`: the proposal-first council passes before execution. Reports land
   in `round-NNN/council-PPP/`.
 - `review`: the adversarial completion review before `final-report.md`.
@@ -54,6 +55,12 @@ Create this file before the first research round:
 Set `currentCouncilMode` before launching deliberators so the runtime adapter
 can route timeout and hard-error reports to the correct directory. Reset it to
 `decision` when entering Phase 2 and on every round transition.
+
+`currentReconPass` numbers the recon passes within a round. It starts at 1,
+increments after each completed recon, and resets to 1 on every round
+transition. Each round allows at most 3 recon passes; after the third the main
+agent researches and decides on its own, but the decision council before any
+code change is still mandatory.
 
 If the current runtime `sessionID` is unavailable, set `sessionID` to `null`.
 Runtime adapters may bind it from later session events.
@@ -93,6 +100,8 @@ evidence gathering; code edits remain execution-only.
 │   │   ├── report-melchior.md
 │   │   ├── report-balthasar.md
 │   │   └── report-casper.md
+│   ├── recon-002/
+│   │   └── ...
 │   ├── evidence-base.md
 │   ├── research-prompt.md
 │   ├── council-001/
@@ -120,10 +129,11 @@ evidence gathering; code edits remain execution-only.
 └── final-report.md
 ```
 
-`recon-001/` exists only in round 1. Later rounds reuse the previous round's
-verification and diagnostic evidence instead of running a new recon pass.
-`cleanup.md`, `review-001/`, and `review-verdict.md` exist only in the round
-where the main agent claims completion.
+`recon-001/` is required in round 1. Any round may run further recon passes
+(`recon-MMM/`, up to 3 per round); after a failed round, the next round starts
+with a recon pass carrying the failure evidence. `cleanup.md`, `review-001/`,
+and `review-verdict.md` exist only in the round where the main agent claims
+completion.
 
 ## Phase Details
 
@@ -164,9 +174,11 @@ Round 1 splits Phase 1 into two stages:
    files, and constraints. Reset `currentCouncilMode=decision` and continue to
    Phase 2.
 
-Later rounds skip recon: the previous round's `verification.md` and diagnostic
-evidence are the evidence base. Phase 1 in later rounds is a short status
-check only.
+Recon is repeatable within any round (see `references/deliberation.md`); after
+a failed round, the next round starts with a recon pass carrying the failure
+evidence before any new decision council. While a recon pass is in flight, the
+main agent does only bounded parallel work and never writes the decision
+council prompt or the verdict.
 
 ### Phase 6: Goal Check
 
@@ -225,9 +237,9 @@ Completion review (`currentPhase=completion_review`,
      `inFlight=false`, and `inFlightSince=null`.
 6. If objected: treat the objections as new evidence. Append a history entry,
    increment `currentRound`, reset `currentDeliberationPass=1`, reset
-   `deliberationStatus=not_started`, reset `currentCouncilMode=decision`, set
-   `currentPhase=status_assessment`, set `needsContinue=true`, and start the
-   next round.
+   `deliberationStatus=not_started`, reset `currentCouncilMode=decision`,
+   reset `currentReconPass=1`, set `currentPhase=status_assessment`, set
+   `needsContinue=true`, and start the next round.
 
 If incomplete with progress:
 - append a history entry with `progress: true|false` set to `true`;
@@ -239,6 +251,7 @@ If incomplete with progress:
 - reset `currentDeliberationPass=1`;
 - reset `deliberationStatus=not_started`;
 - reset `currentCouncilMode=decision`;
+- reset `currentReconPass=1`;
 - set `currentPhase=status_assessment`.
 
 If incomplete with no progress:
@@ -246,7 +259,8 @@ If incomplete with no progress:
 - increment `consecutiveNoProgress`;
 - if `< 5`, set `needsContinue=true`, increment `currentRound`, reset
   `currentDeliberationPass=1`, reset `deliberationStatus=not_started`, reset
-  `currentCouncilMode=decision`, set `currentPhase=status_assessment`, and
+  `currentCouncilMode=decision`, reset `currentReconPass=1`, set
+  `currentPhase=status_assessment`, and
   return to Phase 1;
 - if `>= 5`, set `currentPhase=blocked`, `active=false`,
   `needsContinue=false`, and wait for user input.

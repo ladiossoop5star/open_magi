@@ -17,11 +17,13 @@ Universal gate before any user question:
 
 - [ ] acceptanceCriteria, latest verification.md, and current filesystem state were compared.
 - [ ] Status is `needs_research` before entering Phase 2.
-- [ ] Round 1 only: `round-NNN/recon-001/prompt.md` exists and `state.json.currentCouncilMode` was set to `recon` before launching recon deliberators.
-- [ ] Round 1 only: `round-NNN/recon-001/report-melchior.md`, `report-balthasar.md`, and `report-casper.md` exist.
-- [ ] Round 1 only: `round-NNN/evidence-base.md` exists with confirmed facts, open questions, key files, and constraints.
-- [ ] Round 1 only: `state.json.currentCouncilMode` was reset to `decision`.
-- [ ] Later rounds: previous round's verification.md and diagnostic evidence were reviewed instead of running a new recon pass.
+- [ ] Round 1: `round-NNN/recon-001/prompt.md` exists and `state.json.currentCouncilMode` was set to `recon` before launching recon deliberators.
+- [ ] Round 1: `round-NNN/recon-001/report-melchior.md`, `report-balthasar.md`, and `report-casper.md` exist.
+- [ ] Round 1: `round-NNN/evidence-base.md` exists with confirmed facts, open questions, key files, and constraints.
+- [ ] After any recon pass: `evidence-base.md` was updated with that pass's findings and `currentReconPass` was incremented.
+- [ ] No more than 3 recon passes this round; after the third, the main agent researches freely but the decision council remains mandatory.
+- [ ] No decision council prompt or verdict was written while a recon pass was in flight.
+- [ ] Later rounds: this round started with a recon pass carrying the previous round's failure evidence, or `evidence-base.md` explains why no new recon was needed.
 
 ## Phase 2 -> Phase 3
 

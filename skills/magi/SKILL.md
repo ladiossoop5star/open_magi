@@ -19,9 +19,7 @@ the review council to approve the actual diff before `final-report.md`.
 
 Proposal-first rule: before any fix direction is selected, the main agent prepares an evidence packet and does not propose a fix. The three deliberators propose directions first; the main agent selects one direction; then the deliberators review that selected direction before execution.
 
-Council modes tracked in `currentCouncilMode`: `recon` (round 1 parallel
-evidence gathering), `decision` (proposal-first), `review` (adversarial diff
-review).
+Council modes tracked in `currentCouncilMode`: `recon`, `decision`, `review`.
 
 ## Required Reference Loading
 
@@ -74,6 +72,7 @@ Create it before the first research round with `schemaVersion`, `goal`,
 `acceptanceCriteria`, `verificationCommands`, `active`, `projectRoot`,
 `currentRound`, `currentPhase`, `currentDeliberationPass`,
 `maxDeliberationPasses`, `deliberationStatus`, `currentCouncilMode`,
+`currentReconPass`,
 `deliberatorTimeoutMs`, `activeDeliberators`, `deliberatorTimeoutCounts`,
 `needsContinue`, `inFlight`, `inFlightSince`, `consecutiveNoProgress`,
 `verdict`, `lastError`, and `history`. Use `schemaVersion: 2`. Full schema and
@@ -157,38 +156,20 @@ Do not ask the user whether another council pass is needed. The gate decides.
 
 ## Cleanup and Completion Review Gates
 
-Before the completion claim, run the cleanup gate:
-- set `currentPhase=cleanup`;
-- split the round's full diff into fix changes and supporting changes
-  (protective mechanisms, defensive checks, refactors, or problem-unrelated
-  implementation);
-- audit every fix change one by one: remove redundant or ineffective fix
-  changes, and verify each kept fix change individually (what breaks without
-  it, plus the test, output, or trace that proves it is required);
-- do not remove supporting changes here; list them for the review council;
-- re-run the verification commands;
-- write `round-NNN/cleanup.md` with per-fix-change keep/remove reasons,
-  individual verification evidence, the deferred supporting-change list, and
-  post-cleanup verification output.
+Before the completion claim, set `currentPhase=cleanup`: split the round's
+full diff into fix changes and supporting changes; verify each fix change one
+by one and remove the rest, list supporting changes for the review council,
+re-run verification, and write `round-NNN/cleanup.md`.
 
-Only then, before writing `final-report.md`, run exactly one adversarial
-review pass:
-- set `currentPhase=completion_review` and `currentCouncilMode=review`;
-- write `round-NNN/review-001/prompt.md` with the acceptance criteria,
-  `verdict.md`, `verification.md`, `cleanup.md`, and the actual diff, never
-  only a summary;
-- launch all three deliberators and write the three
-  `round-NNN/review-001/report-*.md` files;
-- write `round-NNN/review-verdict.md` with `outcome`,
-  `verdict_adherence_confirmed`, and all three stances.
-
-`final-report.md` is allowed only when `outcome: approved` and
-`verdict_adherence_confirmed: yes`. After approval, squash the loop's
-checkpoint commits into a single commit, re-run the verification commands,
-then write `final-report.md` with a standalone `squash_commit: <hash|none>`
-line and the post-squash verification output; then Set `currentPhase=complete`
-and `active=false`. An objected review starts the
-next round with the objections as evidence.
+Then run one adversarial review pass per `references/deliberation.md`: set
+`currentPhase=completion_review` and `currentCouncilMode=review`, write
+`round-NNN/review-001/prompt.md` with the actual diff (never a summary),
+launch all three deliberators, then write `round-NNN/review-verdict.md`.
+`final-report.md` requires `outcome: approved` and
+`verdict_adherence_confirmed: yes`; then squash the loop's checkpoint commits
+into one, re-run verification, and write `final-report.md` with
+`squash_commit: <hash|none>`; then Set `currentPhase=complete` and
+`active=false`. An objected review starts the next round.
 
 ## Procedural Autonomy Gate
 
@@ -316,7 +297,10 @@ failed verification and the next deliberator pass.
    filesystem. Round 1 splits into Phase 1a minimal scoping (main agent writes
    `recon-001/prompt.md`, no deep-dive) and Phase 1b parallel recon (all three
    deliberators investigate read-only; main agent writes `evidence-base.md`).
-   Later rounds skip recon and reuse previous verification evidence.
+   Recon is repeatable in any round (`recon-MMM`, at most 3 per round); after
+   a failed round, the next round starts with a recon pass carrying the
+   failure evidence. While a recon pass is in flight, never write the decision
+   council prompt or the verdict.
 2. Research Task: write `round-NNN/research-prompt.md` (round 1 draws from
    `evidence-base.md`) and `round-NNN/council-PPP/prompt.md`; for pass 1 this
    is an evidence packet, not a proposed fix; for pass 2+ include

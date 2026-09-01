@@ -115,8 +115,10 @@ file. After it returns, the main agent must verify these files exist:
 - `round-NNN/council-PPP/report-casper.md`
 
 Recon and review passes use the same `run-council` command with `--prompt-path`
-pointing at `round-NNN/recon-001/prompt.md` or `round-NNN/review-001/prompt.md`;
-the three reports land in the same mode directory.
+pointing at `round-NNN/recon-MMM/prompt.md` or `round-NNN/review-001/prompt.md`;
+the three reports land in the same mode directory. `MMM` is the current
+`currentReconPass` — repeat recon passes (recon-002, recon-003, ...) are
+allowed up to the budget in `deliberation.md`.
 
 Each successful report must start with:
 

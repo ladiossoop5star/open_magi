@@ -714,6 +714,66 @@ test("Codex PreToolUse guard allows build and test commands in any phase", async
   assert.equal(JSON.parse(edit.stdout).hookSpecificOutput.permissionDecision, "deny")
 })
 
+test("Codex PreToolUse guard blocks decision artifacts while a recon pass is in flight", async () => {
+  const project = await mkTempProject("open-magi-codex-guard-recon-flight-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  const reconDir = join(logDir, "round-001", "recon-001")
+  await mkdir(reconDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify({
+      active: true,
+      projectRoot: project,
+      schemaVersion: 2,
+      currentCouncilMode: "recon",
+      currentRound: 1,
+      currentPhase: "status_assessment",
+      currentReconPass: 1,
+    })}\n`,
+  )
+  await writeFile(join(reconDir, "prompt.md"), "recon\n")
+
+  function run(payload) {
+    return runInteractiveCli([], JSON.stringify({ cwd: project, ...payload }), {
+      script: "adapters/codex/hooks/magi-guard.mjs",
+    })
+  }
+
+  const verdict = await run({ tool_name: "Write", tool_input: { file_path: ".open_magi/magi-log/round-001/verdict.md" } })
+  assert.equal(JSON.parse(verdict.stdout).hookSpecificOutput.permissionDecision, "deny")
+  assert.match(
+    JSON.parse(verdict.stdout).hookSpecificOutput.permissionDecisionReason,
+    /recon pass 1 is in flight/,
+  )
+
+  const councilPrompt = await run({
+    tool_name: "Write",
+    tool_input: { file_path: ".open_magi/magi-log/round-001/council-001/prompt.md" },
+  })
+  assert.equal(JSON.parse(councilPrompt.stdout).hookSpecificOutput.permissionDecision, "deny")
+
+  const shellVerdict = await run({
+    tool_name: "shell",
+    tool_input: { command: "cat > .open_magi/magi-log/round-001/verdict.md <<'EOF'\nverdict\nEOF" },
+  })
+  assert.equal(JSON.parse(shellVerdict.stdout).hookSpecificOutput.permissionDecision, "deny")
+
+  const checklist = await run({ tool_name: "Write", tool_input: { file_path: ".open_magi/magi-log/checklist.md" } })
+  assert.equal(checklist.stdout, "")
+
+  const nextRecon = await run({
+    tool_name: "Write",
+    tool_input: { file_path: ".open_magi/magi-log/round-001/recon-002/prompt.md" },
+  })
+  assert.equal(nextRecon.stdout, "")
+
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await writeFile(join(reconDir, `report-${sage}.md`), "report\n")
+  }
+  const after = await run({ tool_name: "Write", tool_input: { file_path: ".open_magi/magi-log/round-001/verdict.md" } })
+  assert.equal(after.stdout, "")
+})
+
 test("Claude PreToolUse guard forces run-council onto a background task", async () => {
   const project = await mkTempProject("open-magi-claude-guard-runner-")
   const logDir = join(project, ".open_magi", "magi-log")

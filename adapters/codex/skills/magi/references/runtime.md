@@ -73,8 +73,10 @@ subprocesses so deliberators can stop after returning their report. It writes
 `report-melchior.md`, `report-balthasar.md`, and `report-casper.md` next to the
 prompt file, for example `round-NNN/council-PPP/report-melchior.md`. Recon and
 review passes use the same command with `--prompt-path` pointing at
-`round-NNN/recon-001/prompt.md` or `round-NNN/review-001/prompt.md`; the reports
-land in the same mode directory.
+`round-NNN/recon-MMM/prompt.md` or `round-NNN/review-001/prompt.md`; the reports
+land in the same mode directory. `MMM` is the current `currentReconPass` —
+repeat recon passes (recon-002, recon-003, ...) are allowed up to the budget in
+`deliberation.md`.
 
 Each report starts with `report_source: codex_exec` on success or
 `report_source: codex_exec_failed` on failure. Reports also include
