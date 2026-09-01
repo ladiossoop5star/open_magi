@@ -3,7 +3,7 @@ import { execFile as execFileCallback, spawn } from "node:child_process"
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
 import { constants, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, relative } from "node:path"
+import { dirname, join, relative } from "node:path"
 import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
@@ -2015,6 +2015,89 @@ test("CLI run-council writes reports through configured Codex subprocesses", asy
     await readFile(join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "report-melchior.md"), "utf8"),
     /report_source: codex_exec/,
   )
+})
+
+test("CLI run-council marks bubblewrap sandbox failure as sandbox_unavailable", async () => {
+  const projectRoot = await mkTempProject("open-magi-codex-cli-sandbox-fail-")
+  const agentsDir = await mkTempProject("open-magi-codex-cli-sandbox-fail-agents-")
+  const binDir = await mkTempProject("open-magi-codex-cli-sandbox-fail-bin-")
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "recon-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Recon Prompt\n")
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await writeFile(
+      join(agentsDir, `deliberator-${sage}.toml`),
+      [
+        `name = "deliberator-${sage}"`,
+        `model = "model-${sage}"`,
+        'sandbox_mode = "read-only"',
+        'developer_instructions = """',
+        `Role: ${sage}.`,
+        '"""',
+        "",
+      ].join("\n"),
+    )
+  }
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { writeFileSync } from 'node:fs'",
+      "let stdin = ''",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (chunk) => { stdin += chunk })",
+      "process.stdin.on('end', () => {",
+      "  process.stderr.write(\"warning: Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.\\n\")",
+      "  const output = process.argv[process.argv.indexOf('-o') + 1]",
+      "  writeFileSync(output, 'stance: needs_evidence\\nblocking_objection: no\\nrecommended_plan: none\\nverification_plan: none\\nrisk_level: high\\n')",
+      "})",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const result = await execFile(
+    "node",
+    [
+      "adapters/codex/bin/open-magi.js",
+      "run-council",
+      "--project-root",
+      projectRoot,
+      "--prompt-path",
+      promptPath,
+      "--round",
+      "1",
+      "--pass",
+      "1",
+      "--timeout-ms",
+      "5000",
+      "--agents-dir",
+      agentsDir,
+      "--codex-bin",
+      fakeCodex,
+      "--executor",
+      "spawn",
+    ],
+    { cwd: repoRoot },
+  ).catch((error) => error)
+  const output = JSON.parse(result.stdout)
+
+  assert.equal(output.ok, false)
+  assert.equal(output.halt, true)
+  assert.equal(output.haltReason, "sandbox_unavailable")
+  assert.equal(output.results.length, 3)
+  for (const result of output.results) {
+    assert.equal(result.ok, false)
+    assert.equal(result.failureType, "sandbox_unavailable")
+  }
+  const report = await readFile(
+    join(projectRoot, ".open_magi", "magi-log", "round-001", "recon-001", "report-melchior.md"),
+    "utf8",
+  )
+  assert.match(report, /report_source: codex_exec_failed/)
+  assert.match(report, /codex_failure_type: sandbox_unavailable/)
 })
 
 test("CLI setup-codex interactive leaves provider unset when user has no custom provider", async () => {

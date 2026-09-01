@@ -80,8 +80,11 @@ repeat recon passes (recon-002, recon-003, ...) are allowed up to the budget in
 
 Each report starts with `report_source: codex_exec` on success or
 `report_source: codex_exec_failed` on failure. Reports also include
-`codex_failure_type: none | timeout | hard_error`. Treat missing provenance or
-missing `codex_failure_type` as an invalid report.
+`codex_failure_type: none | timeout | hard_error | sandbox_unavailable`.
+`sandbox_unavailable` means Codex's bubblewrap sandbox failed to initialize
+(the stderr warning is detected by the runner); every command the deliberator
+ran failed, so its report is prompt-only reasoning. Treat missing provenance
+or missing `codex_failure_type` as an invalid report.
 
 The main agent must not write successful `report-*.md` files itself. If the CLI
 runner is unavailable or fails, record the blocker and stop before synthesis.

@@ -199,17 +199,30 @@ async function runCodexProcess({ agent, projectRoot, prompt, codexBin, timeoutMs
   })
 }
 
+// Codex warns on startup when the bubblewrap sandbox cannot initialize
+// (Ubuntu's AppArmor userns restriction is the common cause). Every command
+// the deliberator runs then fails, yet codex still exits 0 and the agent
+// writes a prompt-only report — treat that as a council failure, not ok.
+const SANDBOX_FAILURE_PATTERN =
+  /Codex's Linux sandbox uses bubblewrap|bwrap:\s[^\n]*(Permission denied|Operation not permitted|Unknown option|Failed)/
+
+function sandboxFailed(processResult) {
+  const text = `${processResult?.stderr || ""}\n${processResult?.stdout || ""}`
+  return SANDBOX_FAILURE_PATTERN.test(text)
+}
+
 function codexFailureType(processResult) {
-  if (processResult.ok) return null
   if (processResult.timedOut) return "timeout"
+  if (sandboxFailed(processResult)) return "sandbox_unavailable"
+  if (processResult.ok) return null
   return "hard_error"
 }
 
 async function writeReport({ promptPath, agent, processResult }) {
   const path = reportPathForPrompt(promptPath, agent.sage)
   await mkdir(dirname(path), { recursive: true })
-  const source = processResult.ok ? "codex_exec" : "codex_exec_failed"
   const failureType = codexFailureType(processResult)
+  const source = failureType === null ? "codex_exec" : "codex_exec_failed"
   const status = failureType || "ok"
   const body = [
     `report_source: ${source}`,
@@ -457,14 +470,15 @@ export async function runCouncil(options = {}) {
   const results = await Promise.all(
     agents.map(async (agent, index) => {
       const processResult = processResults[index]
+      const failureType = codexFailureType(processResult)
       const path = await writeReport({ promptPath, agent, processResult })
       return {
         agent: agent.agent,
         sage: agent.sage,
         model: agent.model,
         provider: agent.provider || null,
-        ok: processResult.ok,
-        failureType: codexFailureType(processResult),
+        ok: failureType === null,
+        failureType,
         exitCode: processResult.exitCode,
         timedOut: processResult.timedOut,
         reportPath: path,
@@ -473,13 +487,20 @@ export async function runCouncil(options = {}) {
       }
     }),
   )
-  const hardErrors = results.filter((result) => result.failureType === "hard_error")
+  const halting = results.filter(
+    (result) => result.failureType === "hard_error" || result.failureType === "sandbox_unavailable",
+  )
+  const haltReason = halting.some((result) => result.failureType === "hard_error")
+    ? "hard_error"
+    : halting.length > 0
+      ? "sandbox_unavailable"
+      : null
 
   return {
     ok: results.every((result) => result.ok),
-    halt: hardErrors.length > 0,
-    haltReason: hardErrors.length > 0 ? "hard_error" : null,
-    hardErrors,
+    halt: halting.length > 0,
+    haltReason,
+    hardErrors: halting,
     projectRoot,
     promptPath,
     round,
