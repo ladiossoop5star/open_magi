@@ -764,6 +764,22 @@ test("Codex PreToolUse guard blocks decision artifacts while a recon pass is in 
   })
   assert.equal(JSON.parse(teeVerdict.stdout).hookSpecificOutput.permissionDecision, "deny")
 
+  // Non-redirect write vectors are blocked as well.
+  for (const command of [
+    "cp draft.md .open_magi/magi-log/round-001/verdict.md",
+    "mv draft.md .open_magi/magi-log/round-001/verdict.md",
+    "dd of=.open_magi/magi-log/round-001/verdict.md",
+    `python3 -c "open('.open_magi/magi-log/round-001/verdict.md','w').write('v')"`,
+    "echo v | tee --append .open_magi/magi-log/round-001/verdict.md",
+  ]) {
+    const result = await run({ tool_name: "shell", tool_input: { command } })
+    assert.equal(
+      JSON.parse(result.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      command,
+    )
+  }
+
   const patchBody = "*** Begin Patch\n*** Add File: .open_magi/magi-log/round-001/verdict.md\n+verdict\n*** End Patch\n"
   for (const patchInput of [{ patch: patchBody }, { input: patchBody }]) {
     const applyPatch = await run({ tool_name: "apply_patch", tool_input: patchInput })

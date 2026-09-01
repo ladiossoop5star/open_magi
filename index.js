@@ -412,7 +412,29 @@ function needsRoundTransitionRepair(state) {
   return Boolean(state?.active && roundNumber(state) > 1 && state.currentPhase === "goal_definition")
 }
 
-function normalizeCouncilRoundEntry(state) {
+async function reconInFlightEvidence(directory, state) {
+  // A legitimately in-progress recon pass at round>=2 must survive
+  // normalization: evidence is a running recon deliberator registered for
+  // this round, or a written recon prompt whose reports are still pending.
+  if (currentCouncilMode(state) !== "recon") return false
+  const round = roundNumber(state)
+  const running = Object.values(state?.activeDeliberators || {}).some(
+    (entry) =>
+      entry?.mode === "recon" &&
+      entry?.status === "running" &&
+      positiveInteger(entry?.round, round) === round,
+  )
+  if (running) return true
+  if (!directory) return false
+  const prefix = councilModePrefix(round, "recon", undefined, reconPassNumber(state))
+  if (!(await fileExists(directory, `${prefix}/prompt.md`))) return false
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    if (!(await fileExists(directory, `${prefix}/report-${sage}.md`))) return true
+  }
+  return false
+}
+
+async function normalizeCouncilRoundEntry(state, directory) {
   if (!usesCouncilPasses(state)) return state
   if (state?.currentPhase !== "status_assessment") return state
   if (roundNumber(state) <= 1) return state
@@ -424,6 +446,10 @@ function normalizeCouncilRoundEntry(state) {
   ) {
     return state
   }
+  // Repeatable recon (round>=2) made mode=recon a legitimate in-progress
+  // state, not just round-1 residue: never reset it while evidence of an
+  // in-flight recon pass exists.
+  if (await reconInFlightEvidence(directory, state)) return state
   return {
     ...state,
     currentDeliberationPass: 1,
@@ -1257,11 +1283,19 @@ async function enforceReconFlightGate(directory, tool, args) {
   const command = typeof args?.command === "string" ? args.command : args?.cmd
   if (typeof command === "string") {
     const stripped = guardSanitizeShellText(command)
-    const teePattern = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
+    const teePattern = /(?:^|[\s;&|])tee\s+(?:(?:-a|--append)\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
     for (const pattern of [GUARD_REDIRECT_PATTERN, teePattern]) {
       for (const match of stripped.matchAll(pattern)) {
         const target = match[1] || match[2] || match[3]
         if (typeof target === "string" && target) targets.push(target)
+      }
+    }
+    // Non-redirect write vectors (cp/mv/dd destinations, interpreter -c/-e
+    // code) hide the target from redirect parsing; for these commands any
+    // mention of a decision artifact path is treated as a write attempt.
+    if (/(?:^|[\s;&|])(?:cp|mv|install|rsync|dd|python3?|node|ruby|perl)(?=[\s;&|]|$)/.test(stripped)) {
+      for (const match of command.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) {
+        targets.push(match[0])
       }
     }
   }
@@ -2093,12 +2127,12 @@ async function repairActiveRoundTransitionState(directory, toolInput, stateTouch
   if (!needsRoundTransitionRepair(state)) return
 
   const nowIso = new Date().toISOString()
-  await writeState(directory, normalizeCouncilRoundEntry({
+  await writeState(directory, await normalizeCouncilRoundEntry({
     ...state,
     currentPhase: "status_assessment",
     needsContinue: true,
     lastError: roundTransitionRepairError(state, nowIso),
-  }))
+  }, directory))
 }
 
 async function repairClosedStateArtifacts(client, directory, toolInput, stateTouched) {
@@ -2249,7 +2283,7 @@ export const server = async (input) => {
         const noProgressResult = await enforceNoProgressLimit(directory, state, now)
         state = noProgressResult.state
         if (noProgressResult.blocked) return
-        state = normalizeCouncilRoundEntry(state)
+        state = await normalizeCouncilRoundEntry(state, directory)
 
         const questionRequest = await readQuestionRequest(directory)
         if (questionRequest && isQuestionAllowed(state, questionRequest)) {
@@ -2270,8 +2304,9 @@ export const server = async (input) => {
 
         const nowIso = new Date(now).toISOString()
         const roundTransitionRepair = needsRoundTransitionRepair(state)
-        const continueState = normalizeCouncilRoundEntry(
+        const continueState = await normalizeCouncilRoundEntry(
           roundTransitionRepair ? { ...state, currentPhase: "status_assessment" } : state,
+          directory,
         )
         const lockedState = {
           ...continueState,

@@ -155,23 +155,31 @@ process.stdin.on("end", () => {
   if (FILE_TOOL_PATTERN.test(toolName) && typeof filePath === "string" && filePath) {
     decisionTargets.push(filePath)
   }
-  const patchText =
-    typeof toolInput?.patch === "string"
-      ? toolInput.patch
-      : typeof toolInput?.input === "string"
-        ? toolInput.input
-        : null
-  if (patchText) {
-    for (const m of patchText.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) decisionTargets.push(m[0])
+  if (FILE_TOOL_PATTERN.test(toolName)) {
+    const patchText =
+      typeof toolInput?.patch === "string"
+        ? toolInput.patch
+        : typeof toolInput?.input === "string"
+          ? toolInput.input
+          : null
+    if (patchText) {
+      for (const m of patchText.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) decisionTargets.push(m[0])
+    }
   }
   if (typeof command === "string") {
     const stripped = sanitizeShellText(command)
-    const teePattern = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
+    const teePattern = /(?:^|[\s;&|])tee\s+(?:(?:-a|--append)\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
     for (const pattern of [REDIRECT_PATTERN, teePattern]) {
       for (const m of stripped.matchAll(pattern)) {
         const target = m[1] || m[2] || m[3]
         if (typeof target === "string" && target) decisionTargets.push(target)
       }
+    }
+    // Non-redirect write vectors (cp/mv/dd destinations, interpreter -c/-e
+    // code) hide the target from redirect parsing; for these commands any
+    // mention of a decision artifact path is treated as a write attempt.
+    if (/(?:^|[\s;&|])(?:cp|mv|install|rsync|dd|python3?|node|ruby|perl)(?=[\s;&|]|$)/.test(stripped)) {
+      for (const m of command.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) decisionTargets.push(m[0])
     }
   }
   const decisionMatch = decisionTargets

@@ -2765,6 +2765,91 @@ test("round transition normalize resets a stale currentReconPass", async () => {
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("round-entry normalize preserves an in-progress recon with a running deliberator", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "recon",
+    currentRound: 2,
+    currentPhase: "status_assessment",
+    currentReconPass: 2,
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "not_started",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 2,
+    activeDeliberators: {
+      melchior: {
+        agent: "deliberator-melchior",
+        sessionID: "ses-melchior",
+        parentSessionID: "ses-1",
+        round: 2,
+        pass: 2,
+        mode: "recon",
+        startedAt: new Date().toISOString(),
+        deadlineAt: new Date(Date.now() + 1800000).toISOString(),
+        status: "running",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.currentCouncilMode, "recon")
+  assert.equal(updated.currentReconPass, 2)
+  assert.equal(updated.activeDeliberators.melchior.status, "running")
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("round-entry normalize preserves an in-progress recon with pending reports", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "recon",
+    currentRound: 2,
+    currentPhase: "status_assessment",
+    currentReconPass: 2,
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "not_started",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 2,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-002/recon-002/prompt.md")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.currentCouncilMode, "recon")
+  assert.equal(updated.currentReconPass, 2)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("round>1 research task requires evidence-base.md after a completed recon pass", async () => {
   const project = await makeProject("{}")
   const state = activeState({
@@ -3212,6 +3297,20 @@ test("tool.execute.before blocks decision artifacts while a recon pass is in fli
       ),
     /recon pass 1 is in flight/,
   )
+  // Non-redirect write vectors are blocked as well.
+  for (const command of [
+    "cp draft.md .open_magi/magi-log/round-001/verdict.md",
+    "mv draft.md .open_magi/magi-log/round-001/verdict.md",
+    "dd of=.open_magi/magi-log/round-001/verdict.md",
+    `python3 -c "open('.open_magi/magi-log/round-001/verdict.md','w').write('v')"`,
+    "echo v | tee --append .open_magi/magi-log/round-001/verdict.md",
+  ]) {
+    await assert.rejects(
+      () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command } }),
+      /recon pass 1 is in flight/,
+      command,
+    )
+  }
 
   for (const sage of ["melchior", "balthasar", "casper"]) {
     await writeArtifact(project.root, `.open_magi/magi-log/round-001/recon-001/report-${sage}.md`)
