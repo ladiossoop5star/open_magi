@@ -148,11 +148,31 @@ process.stdin.on("end", () => {
 
   // Decision artifacts are gated while a recon pass is in flight: writing the
   // decision council prompt or the verdict before recon reports land is
-  // forbidden, even though other .open_magi writes are always allowed.
+  // forbidden, even though other .open_magi writes are always allowed. Reads
+  // and mentions are not writes — only file-writing tools, patch bodies, and
+  // shell redirect/tee targets gate.
   const decisionTargets = []
-  if (typeof filePath === "string" && filePath) decisionTargets.push(filePath)
+  if (FILE_TOOL_PATTERN.test(toolName) && typeof filePath === "string" && filePath) {
+    decisionTargets.push(filePath)
+  }
+  const patchText =
+    typeof toolInput?.patch === "string"
+      ? toolInput.patch
+      : typeof toolInput?.input === "string"
+        ? toolInput.input
+        : null
+  if (patchText) {
+    for (const m of patchText.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) decisionTargets.push(m[0])
+  }
   if (typeof command === "string") {
-    for (const m of command.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) decisionTargets.push(m[0])
+    const stripped = sanitizeShellText(command)
+    const teePattern = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
+    for (const pattern of [REDIRECT_PATTERN, teePattern]) {
+      for (const m of stripped.matchAll(pattern)) {
+        const target = m[1] || m[2] || m[3]
+        if (typeof target === "string" && target) decisionTargets.push(target)
+      }
+    }
   }
   const decisionMatch = decisionTargets
     .map((t) => t.match(/\.open_magi\/magi-log\/round-(\d{3})\/(?:council-\d{3}\/prompt\.md|verdict\.md)/))

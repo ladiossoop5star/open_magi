@@ -264,6 +264,9 @@ function currentCouncilRoundArtifacts(state) {
     for (let reconPass = round === 1 ? 2 : 1; reconPass < reconPassNumber(state); reconPass += 1) {
       required.push(...reconReportArtifacts(round, reconPass))
     }
+    if (round > 1 && reconPassNumber(state) > 1) {
+      required.push(`${prefix}/evidence-base.md`)
+    }
   }
 
   if (phaseAtLeast(phase, "research_task")) {
@@ -416,7 +419,8 @@ function normalizeCouncilRoundEntry(state) {
   if (
     deliberationPassNumber(state) <= 1 &&
     (state.deliberationStatus ?? "not_started") === "not_started" &&
-    currentCouncilMode(state) === "decision"
+    currentCouncilMode(state) === "decision" &&
+    reconPassNumber(state) <= 1
   ) {
     return state
   }
@@ -1237,14 +1241,28 @@ const DECISION_ARTIFACT_PATTERN = /\.open_magi\/magi-log\/round-(\d{3})\/(?:coun
 async function enforceReconFlightGate(directory, tool, args) {
   // Decision artifacts are exempt from the "magi paths are always allowed"
   // rule: while a recon pass is in flight, writing the decision council prompt
-  // or the verdict is forbidden.
+  // or the verdict is forbidden. Reads and mentions are not writes — only
+  // file-writing tools, patch bodies, and shell redirect/tee targets gate.
   const targets = []
-  const filePath = args?.filePath ?? args?.file_path ?? args?.path
-  if (typeof filePath === "string" && filePath) targets.push(filePath)
+  if (["write", "edit", "multi_edit", "apply_patch"].includes(tool)) {
+    const filePath = args?.filePath ?? args?.file_path ?? args?.path
+    if (typeof filePath === "string" && filePath) targets.push(filePath)
+    const patchText = typeof args?.patch === "string" ? args.patch : null
+    if (patchText) {
+      for (const match of patchText.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) {
+        targets.push(match[0])
+      }
+    }
+  }
   const command = typeof args?.command === "string" ? args.command : args?.cmd
   if (typeof command === "string") {
-    for (const match of command.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) {
-      targets.push(match[0])
+    const stripped = guardSanitizeShellText(command)
+    const teePattern = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
+    for (const pattern of [GUARD_REDIRECT_PATTERN, teePattern]) {
+      for (const match of stripped.matchAll(pattern)) {
+        const target = match[1] || match[2] || match[3]
+        if (typeof target === "string" && target) targets.push(target)
+      }
     }
   }
 

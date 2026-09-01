@@ -758,6 +758,35 @@ test("Codex PreToolUse guard blocks decision artifacts while a recon pass is in 
   })
   assert.equal(JSON.parse(shellVerdict.stdout).hookSpecificOutput.permissionDecision, "deny")
 
+  const teeVerdict = await run({
+    tool_name: "shell",
+    tool_input: { command: "echo v | tee .open_magi/magi-log/round-001/verdict.md" },
+  })
+  assert.equal(JSON.parse(teeVerdict.stdout).hookSpecificOutput.permissionDecision, "deny")
+
+  const patchBody = "*** Begin Patch\n*** Add File: .open_magi/magi-log/round-001/verdict.md\n+verdict\n*** End Patch\n"
+  for (const patchInput of [{ patch: patchBody }, { input: patchBody }]) {
+    const applyPatch = await run({ tool_name: "apply_patch", tool_input: patchInput })
+    assert.equal(
+      JSON.parse(applyPatch.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      JSON.stringify(patchInput),
+    )
+  }
+
+  // Reads and mentions are not writes: the gate must not block them.
+  const readVerdict = await run({ tool_name: "Read", tool_input: { file_path: ".open_magi/magi-log/round-001/verdict.md" } })
+  assert.equal(readVerdict.stdout, "")
+
+  const lsVerdict = await run({ tool_name: "shell", tool_input: { command: "ls .open_magi/magi-log/round-001/verdict.md" } })
+  assert.equal(lsVerdict.stdout, "")
+
+  const mentionVerdict = await run({
+    tool_name: "shell",
+    tool_input: { command: "cat > notes.md <<'EOF'\nsee .open_magi/magi-log/round-001/verdict.md\nEOF" },
+  })
+  assert.equal(mentionVerdict.stdout, "")
+
   const checklist = await run({ tool_name: "Write", tool_input: { file_path: ".open_magi/magi-log/checklist.md" } })
   assert.equal(checklist.stdout, "")
 
