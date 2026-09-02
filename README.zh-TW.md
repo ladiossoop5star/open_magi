@@ -324,6 +324,51 @@ open-magi setup-codex \
 open-magi setup-codex --agents-dir .codex/agents
 ```
 
+### Codex Linux sandbox 故障排除
+
+三賢者是用 `codex exec --sandbox read-only` 跑的，Linux 上這條路使用
+bubblewrap，需要建立 user namespace。當主機擋掉它時（Ubuntu 24.04+ 預設
+`kernel.apparmor_restrict_unprivileged_userns = 1`，又沒有 bubblewrap 的
+AppArmor profile），三賢者的每個指令都會失敗——連 `true` 都跑不了——報告
+只剩從 prompt 推理出來的內容。
+
+症狀：
+
+- `run-council` 輸出 `haltReason: "sandbox_unavailable"`，報告標記
+  `codex_failure_type: sandbox_unavailable`（runner 會偵測 stderr 的
+  bubblewrap 警告，讓 council 失敗，而不是接受空推理報告）。
+- 三賢者報告提到 sandbox 或 `bwrap` 失敗，或引用了沒有實際重讀的檔案行號。
+
+快速檢查（不透過 Magi）：
+
+```bash
+bwrap --dev-bind / / true
+```
+
+出現 `bwrap: setting up uid map: Permission denied` 就確認是 AppArmor 限制。
+修法是加一個只放行 `/usr/bin/bwrap` 的 AppArmor profile（新版 Ubuntu 內建
+`bwrap-userns-restrict`;24.04 可自行建立）：
+
+```bash
+sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
+然後重跑上面的 `bwrap` 檢查。Codex 優先使用 PATH 上的系統 `bwrap`，所以
+profile 蓋到 `/usr/bin/bwrap` 即可；若主機沒有系統 `bwrap`(codex 改用內附
+版本），就把同樣的 profile 掛到內附路徑。比較粗糙的替代做法是
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`（寫進
+`/etc/sysctl.d/` 持久化），但這會對整台機器的所有程式關掉這層限制。
+
+只有 Codex 三賢者受此影響。Claude 三賢者是 tool 層限制（不走 OS sandbox),
+OpenCode 三賢者是同 process subagent，都不會碰到 user namespace。
+
 ### Codex 使用方式
 
 在專案目錄啟動 Codex，建議優先使用 Goal mode：
