@@ -207,6 +207,41 @@ function runInteractiveCli(args, input, options = {}) {
   })
 }
 
+function runHookWrapper(script, input = "", options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(script, [], {
+      cwd: options.cwd || repoRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, ...(options.env || {}) },
+    })
+    let stdout = ""
+    let stderr = ""
+    let settled = false
+    const timeoutMs = options.timeoutMs ?? 2000
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child.kill("SIGKILL")
+      resolve({ code: "timeout", stdout, stderr })
+    }, timeoutMs)
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk
+    })
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk
+    })
+    child.on("error", reject)
+    child.on("close", (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve({ code, stdout, stderr })
+    })
+    child.stdin.end(input)
+  })
+}
+
 function rpcFrame(payload) {
   const json = JSON.stringify(payload)
   return `Content-Length: ${Buffer.byteLength(json, "utf8")}\r\n\r\n${json}`
@@ -631,6 +666,82 @@ test("Codex Stop hook is bundled and points at the Magi stop checker", async () 
   assert.ok(guardHook)
   assert.match(guardHook.command, /hooks\/magi-guard/)
   assert.equal(guardHook.timeout, 5)
+})
+
+test("hook wrappers ignore FORCE_COLOR for inactive and active Magi loops", async () => {
+  const env = { FORCE_COLOR: "3" }
+
+  for (const adapter of ["claude", "codex"]) {
+    const hookDir = join(repoRoot, "adapters", adapter, "hooks")
+    const noStateProject = await mkTempProject(`open-magi-${adapter}-wrapper-no-state-`)
+    const noStateStop = await runHookWrapper(join(hookDir, "magi-stop"), "", {
+      cwd: noStateProject,
+      env,
+    })
+
+    assert.equal(noStateStop.code, 0)
+    assert.equal(noStateStop.stdout, "")
+    assert.equal(noStateStop.stderr, "")
+
+    const corruptProject = await mkTempProject(`open-magi-${adapter}-wrapper-corrupt-state-`)
+    await mkdir(join(corruptProject, ".open_magi", "magi-log", "state.json"), {
+      recursive: true,
+    })
+    const corruptStop = await runHookWrapper(join(hookDir, "magi-stop"), "", {
+      cwd: corruptProject,
+      env,
+    })
+    const corruptOutput = JSON.parse(corruptStop.stdout)
+    assert.equal(corruptStop.code, 0)
+    assert.equal(corruptOutput.decision, "block")
+    assert.match(corruptOutput.reason, /state appears corrupt/i)
+
+    const activeProject = await mkTempProject(`open-magi-${adapter}-wrapper-active-`)
+    const logDir = join(activeProject, ".open_magi", "magi-log")
+    await mkdir(logDir, { recursive: true })
+    await writeFile(
+      join(logDir, "state.json"),
+      `${JSON.stringify({
+        active: true,
+        currentRound: 1,
+        currentPhase: "research_task",
+        currentCouncilMode: "decision",
+        currentDeliberationPass: 1,
+      })}\n`,
+    )
+
+    const activeStop = await runHookWrapper(join(hookDir, "magi-stop"), "", {
+      cwd: activeProject,
+      env,
+    })
+    const stopOutput = JSON.parse(activeStop.stdout)
+    assert.equal(activeStop.code, 0)
+    assert.equal(stopOutput.decision, "block")
+    assert.doesNotMatch(stopOutput.reason, /no compatible node executable/)
+    assert.match(stopOutput.reason, /Magi loop is still active/)
+
+    const hookInput = JSON.stringify({
+      cwd: activeProject,
+      tool_name: "Edit",
+      tool_input: { file_path: join(activeProject, "src", "main.c") },
+    })
+    const guard = await runHookWrapper(join(hookDir, "magi-guard"), hookInput, {
+      cwd: activeProject,
+      env,
+    })
+    assert.equal(guard.code, 0)
+    assert.equal(JSON.parse(guard.stdout).hookSpecificOutput.permissionDecision, "deny")
+
+    const reminder = await runHookWrapper(join(hookDir, "magi-tool-reminder"), hookInput, {
+      cwd: activeProject,
+      env,
+    })
+    assert.equal(reminder.code, 0)
+    assert.match(
+      JSON.parse(reminder.stdout).hookSpecificOutput.additionalContext,
+      /follow the open_magi process/,
+    )
+  }
 })
 
 test("Codex PreToolUse guard denies code changes before the execution phase", async () => {

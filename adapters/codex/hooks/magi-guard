@@ -23,14 +23,7 @@ run_with_node() {
     return 1
   fi
 
-  major=$("$node_bin" -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || true)
-  case "$major" in
-    ""|*[!0-9]*)
-      return 1
-      ;;
-  esac
-
-  if [ "$major" -lt 18 ]; then
+  if ! "$node_bin" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
     return 1
   fi
 

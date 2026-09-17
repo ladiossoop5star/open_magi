@@ -5,6 +5,10 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 script_path="$script_dir/magi-stop.mjs"
 
+if [ ! -e "$(pwd)/.open_magi/magi-log/state.json" ]; then
+  exit 0
+fi
+
 run_with_node() {
   candidate=$1
   shift
@@ -23,14 +27,7 @@ run_with_node() {
     return 1
   fi
 
-  major=$("$node_bin" -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || true)
-  case "$major" in
-    ""|*[!0-9]*)
-      return 1
-      ;;
-  esac
-
-  if [ "$major" -lt 18 ]; then
+  if ! "$node_bin" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
     return 1
   fi
 
