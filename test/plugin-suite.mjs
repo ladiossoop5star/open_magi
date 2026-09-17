@@ -2623,6 +2623,278 @@ test("recon-mode deliberator timeout writes the report into recon-001", async ()
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("recon-mode deliberator timeout writes the report into the current recon pass", async () => {
+  const project = await makeProject("{}")
+  const expiredDeadline = new Date(Date.now() - 1000).toISOString()
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "recon",
+    currentRound: 1,
+    currentPhase: "status_assessment",
+    currentReconPass: 2,
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "not_started",
+    needsContinue: true,
+    inFlight: false,
+    activeDeliberators: {
+      melchior: {
+        agent: "deliberator-melchior",
+        sessionID: "ses-melchior",
+        parentSessionID: "ses-1",
+        round: 1,
+        pass: 2,
+        mode: "recon",
+        startedAt: new Date(Date.now() - 700000).toISOString(),
+        deadlineAt: expiredDeadline,
+        status: "running",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient(calls, { aborts }),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(aborts.length, 1)
+
+  const report = await readFile(
+    join(project.root, ".open_magi/magi-log/round-001/recon-002/report-melchior.md"),
+    "utf8",
+  )
+  assert.match(report, /status: timeout/)
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(
+    updated.activeDeliberators.melchior.reportPath,
+    ".open_magi/magi-log/round-001/recon-002/report-melchior.md",
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("research task requires reports from every completed recon pass", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "decision",
+    currentRound: 1,
+    currentPhase: "research_task",
+    currentReconPass: 3,
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "not_started",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 1,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-001/research-prompt.md")
+  for (const artifact of [
+    "recon-001/prompt.md",
+    "recon-001/report-melchior.md",
+    "recon-001/report-balthasar.md",
+    "recon-001/report-casper.md",
+    "evidence-base.md",
+  ]) {
+    await writeArtifact(project.root, `.open_magi/magi-log/round-001/${artifact}`)
+  }
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.match(prompt, /Artifact integrity repair required/)
+  assert.match(prompt, /round-001\/recon-002\/prompt\.md/)
+  assert.match(prompt, /round-001\/recon-002\/report-melchior\.md/)
+  assert.match(prompt, /round-001\/recon-002\/report-casper\.md/)
+  assert.doesNotMatch(prompt, /recon-003/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("round transition normalize resets a stale currentReconPass", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "decision",
+    currentRound: 2,
+    currentPhase: "status_assessment",
+    currentReconPass: 3,
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "not_started",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 2,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.currentReconPass, 1)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("round-entry normalize preserves an in-progress recon with a running deliberator", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "recon",
+    currentRound: 2,
+    currentPhase: "status_assessment",
+    currentReconPass: 2,
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "not_started",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 2,
+    activeDeliberators: {
+      melchior: {
+        agent: "deliberator-melchior",
+        sessionID: "ses-melchior",
+        parentSessionID: "ses-1",
+        round: 2,
+        pass: 2,
+        mode: "recon",
+        startedAt: new Date().toISOString(),
+        deadlineAt: new Date(Date.now() + 1800000).toISOString(),
+        status: "running",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.currentCouncilMode, "recon")
+  assert.equal(updated.currentReconPass, 2)
+  assert.equal(updated.activeDeliberators.melchior.status, "running")
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("round-entry normalize preserves an in-progress recon with pending reports", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "recon",
+    currentRound: 2,
+    currentPhase: "status_assessment",
+    currentReconPass: 2,
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "not_started",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 2,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-002/recon-002/prompt.md")
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.currentCouncilMode, "recon")
+  assert.equal(updated.currentReconPass, 2)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("round>1 research task requires evidence-base.md after a completed recon pass", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "decision",
+    currentRound: 2,
+    currentPhase: "research_task",
+    currentReconPass: 2,
+    currentDeliberationPass: 1,
+    maxDeliberationPasses: 3,
+    deliberationStatus: "not_started",
+    needsContinue: true,
+    inFlight: false,
+    lastPromptedRound: 2,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/checklist.md")
+  await writeArtifact(project.root, ".open_magi/magi-log/round-002/research-prompt.md")
+  for (const artifact of [
+    "recon-001/prompt.md",
+    "recon-001/report-melchior.md",
+    "recon-001/report-balthasar.md",
+    "recon-001/report-casper.md",
+  ]) {
+    await writeArtifact(project.root, `.open_magi/magi-log/round-002/${artifact}`)
+  }
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.match(prompt, /Artifact integrity repair required/)
+  assert.match(prompt, /round-002\/evidence-base\.md/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("completion_review phase requires review council reports", async () => {
   const project = await makeProject("{}")
   const state = activeState({
@@ -2919,6 +3191,135 @@ test("tool.execute.before denies code changes outside the execution phase", asyn
   )
   await assert.doesNotReject(() =>
     hooks["tool.execute.before"]({ tool: "read", sessionID: "ses-1" }, { args: { filePath: "src/main.c" } }),
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("tool.execute.before blocks decision artifacts while a recon pass is in flight", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    schemaVersion: 2,
+    currentCouncilMode: "recon",
+    currentRound: 1,
+    currentPhase: "status_assessment",
+    currentReconPass: 1,
+    needsContinue: true,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(project.root, ".open_magi/magi-log/round-001/recon-001/prompt.md")
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await assert.rejects(
+    () =>
+      hooks["tool.execute.before"](
+        { tool: "write", sessionID: "ses-1" },
+        { args: { filePath: ".open_magi/magi-log/round-001/verdict.md" } },
+      ),
+    /recon pass 1 is in flight/,
+  )
+  await assert.rejects(
+    () =>
+      hooks["tool.execute.before"](
+        { tool: "write", sessionID: "ses-1" },
+        { args: { filePath: ".open_magi/magi-log/round-001/council-001/prompt.md" } },
+      ),
+    /recon pass 1 is in flight/,
+  )
+  await assert.rejects(
+    () =>
+      hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "ses-1" },
+        { args: { command: "cat > .open_magi/magi-log/round-001/verdict.md <<'EOF'\nverdict\nEOF" } },
+      ),
+    /recon pass 1 is in flight/,
+  )
+  // Other magi artifacts, including the next recon pass prompt, stay writable.
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"](
+      { tool: "write", sessionID: "ses-1" },
+      { args: { filePath: ".open_magi/magi-log/checklist.md" } },
+    ),
+  )
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"](
+      { tool: "write", sessionID: "ses-1" },
+      { args: { filePath: ".open_magi/magi-log/round-001/recon-002/prompt.md" } },
+    ),
+  )
+  // Reads and mentions are not writes: the gate must not block them.
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"](
+      { tool: "read", sessionID: "ses-1" },
+      { args: { filePath: ".open_magi/magi-log/round-001/council-001/prompt.md" } },
+    ),
+  )
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"](
+      { tool: "bash", sessionID: "ses-1" },
+      { args: { command: "ls .open_magi/magi-log/round-001/verdict.md" } },
+    ),
+  )
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"](
+      { tool: "bash", sessionID: "ses-1" },
+      { args: { command: "test -f .open_magi/magi-log/round-001/verdict.md && echo present" } },
+    ),
+  )
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"](
+      { tool: "bash", sessionID: "ses-1" },
+      {
+        args: {
+          command:
+            "cat > notes.md <<'EOF'\nsee .open_magi/magi-log/round-001/verdict.md for details\nEOF",
+        },
+      },
+    ),
+  )
+  await assert.rejects(
+    () =>
+      hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "ses-1" },
+        { args: { command: "echo v > .open_magi/magi-log/round-001/verdict.md" } },
+      ),
+    /recon pass 1 is in flight/,
+  )
+  await assert.rejects(
+    () =>
+      hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "ses-1" },
+        { args: { command: "echo v | tee .open_magi/magi-log/round-001/verdict.md" } },
+      ),
+    /recon pass 1 is in flight/,
+  )
+  // Non-redirect write vectors are blocked as well.
+  for (const command of [
+    "cp draft.md .open_magi/magi-log/round-001/verdict.md",
+    "mv draft.md .open_magi/magi-log/round-001/verdict.md",
+    "dd of=.open_magi/magi-log/round-001/verdict.md",
+    `python3 -c "open('.open_magi/magi-log/round-001/verdict.md','w').write('v')"`,
+    "echo v | tee --append .open_magi/magi-log/round-001/verdict.md",
+  ]) {
+    await assert.rejects(
+      () => hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-1" }, { args: { command } }),
+      /recon pass 1 is in flight/,
+      command,
+    )
+  }
+
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await writeArtifact(project.root, `.open_magi/magi-log/round-001/recon-001/report-${sage}.md`)
+  }
+  await assert.doesNotReject(() =>
+    hooks["tool.execute.before"](
+      { tool: "write", sessionID: "ses-1" },
+      { args: { filePath: ".open_magi/magi-log/round-001/verdict.md" } },
+    ),
   )
 
   await rm(project.root, { recursive: true, force: true })

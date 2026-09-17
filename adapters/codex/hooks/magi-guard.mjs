@@ -146,6 +146,67 @@ process.stdin.on("end", () => {
   const filePath = toolInput?.file_path ?? toolInput?.filePath ?? toolInput?.path
   const command = typeof toolInput?.command === "string" ? toolInput.command : toolInput?.cmd
 
+  // Decision artifacts are gated while a recon pass is in flight: writing the
+  // decision council prompt or the verdict before recon reports land is
+  // forbidden, even though other .open_magi writes are always allowed. Reads
+  // and mentions are not writes — only file-writing tools, patch bodies, and
+  // shell redirect/tee targets gate.
+  const decisionTargets = []
+  if (FILE_TOOL_PATTERN.test(toolName) && typeof filePath === "string" && filePath) {
+    decisionTargets.push(filePath)
+  }
+  if (FILE_TOOL_PATTERN.test(toolName)) {
+    const patchText =
+      typeof toolInput?.patch === "string"
+        ? toolInput.patch
+        : typeof toolInput?.input === "string"
+          ? toolInput.input
+          : null
+    if (patchText) {
+      for (const m of patchText.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) decisionTargets.push(m[0])
+    }
+  }
+  if (typeof command === "string") {
+    const stripped = sanitizeShellText(command)
+    const teePattern = /(?:^|[\s;&|])tee\s+(?:(?:-a|--append)\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
+    for (const pattern of [REDIRECT_PATTERN, teePattern]) {
+      for (const m of stripped.matchAll(pattern)) {
+        const target = m[1] || m[2] || m[3]
+        if (typeof target === "string" && target) decisionTargets.push(target)
+      }
+    }
+    // Non-redirect write vectors (cp/mv/dd destinations, interpreter -c/-e
+    // code) hide the target from redirect parsing; for these commands any
+    // mention of a decision artifact path is treated as a write attempt.
+    if (/(?:^|[\s;&|])(?:cp|mv|install|rsync|dd|python3?|node|ruby|perl)(?=[\s;&|]|$)/.test(stripped)) {
+      for (const m of command.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) decisionTargets.push(m[0])
+    }
+  }
+  const decisionMatch = decisionTargets
+    .map((t) => t.match(/\.open_magi\/magi-log\/round-(\d{3})\/(?:council-\d{3}\/prompt\.md|verdict\.md)/))
+    .find(Boolean)
+  if (decisionMatch) {
+    const round = Number(decisionMatch[1])
+    const mode =
+      state.currentCouncilMode === "recon" || state.currentCouncilMode === "review"
+        ? state.currentCouncilMode
+        : "decision"
+    if (round === (Number(state.currentRound) || 1) && mode === "recon") {
+      const reconPass = Number(state.currentReconPass) || 1
+      const prefix = join(logDir, `round-${String(round).padStart(3, "0")}`, `recon-${String(reconPass).padStart(3, "0")}`)
+      if (existsSync(join(prefix, "prompt.md"))) {
+        const missing = ["melchior", "balthasar", "casper"].filter(
+          (sage) => !existsSync(join(prefix, `report-${sage}.md`)),
+        )
+        if (missing.length > 0) {
+          deny(
+            `[magi] recon pass ${reconPass} is in flight (${missing.join(", ")} reports pending). Wait for the council; do not write decision artifacts or the verdict until recon completes.`,
+          )
+        }
+      }
+    }
+  }
+
   // run-council in the foreground dies silently at the host's Bash ceiling;
   // force the documented background launch (or the explicit foreground
   // fallback with --timeout-ms).

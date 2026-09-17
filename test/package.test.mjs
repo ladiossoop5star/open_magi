@@ -3,7 +3,7 @@ import { execFile as execFileCallback, spawn } from "node:child_process"
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
 import { constants, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, relative } from "node:path"
+import { dirname, join, relative } from "node:path"
 import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
@@ -712,6 +712,111 @@ test("Codex PreToolUse guard allows build and test commands in any phase", async
     { script: "adapters/codex/hooks/magi-guard.mjs" },
   )
   assert.equal(JSON.parse(edit.stdout).hookSpecificOutput.permissionDecision, "deny")
+})
+
+test("Codex PreToolUse guard blocks decision artifacts while a recon pass is in flight", async () => {
+  const project = await mkTempProject("open-magi-codex-guard-recon-flight-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  const reconDir = join(logDir, "round-001", "recon-001")
+  await mkdir(reconDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify({
+      active: true,
+      projectRoot: project,
+      schemaVersion: 2,
+      currentCouncilMode: "recon",
+      currentRound: 1,
+      currentPhase: "status_assessment",
+      currentReconPass: 1,
+    })}\n`,
+  )
+  await writeFile(join(reconDir, "prompt.md"), "recon\n")
+
+  function run(payload) {
+    return runInteractiveCli([], JSON.stringify({ cwd: project, ...payload }), {
+      script: "adapters/codex/hooks/magi-guard.mjs",
+    })
+  }
+
+  const verdict = await run({ tool_name: "Write", tool_input: { file_path: ".open_magi/magi-log/round-001/verdict.md" } })
+  assert.equal(JSON.parse(verdict.stdout).hookSpecificOutput.permissionDecision, "deny")
+  assert.match(
+    JSON.parse(verdict.stdout).hookSpecificOutput.permissionDecisionReason,
+    /recon pass 1 is in flight/,
+  )
+
+  const councilPrompt = await run({
+    tool_name: "Write",
+    tool_input: { file_path: ".open_magi/magi-log/round-001/council-001/prompt.md" },
+  })
+  assert.equal(JSON.parse(councilPrompt.stdout).hookSpecificOutput.permissionDecision, "deny")
+
+  const shellVerdict = await run({
+    tool_name: "shell",
+    tool_input: { command: "cat > .open_magi/magi-log/round-001/verdict.md <<'EOF'\nverdict\nEOF" },
+  })
+  assert.equal(JSON.parse(shellVerdict.stdout).hookSpecificOutput.permissionDecision, "deny")
+
+  const teeVerdict = await run({
+    tool_name: "shell",
+    tool_input: { command: "echo v | tee .open_magi/magi-log/round-001/verdict.md" },
+  })
+  assert.equal(JSON.parse(teeVerdict.stdout).hookSpecificOutput.permissionDecision, "deny")
+
+  // Non-redirect write vectors are blocked as well.
+  for (const command of [
+    "cp draft.md .open_magi/magi-log/round-001/verdict.md",
+    "mv draft.md .open_magi/magi-log/round-001/verdict.md",
+    "dd of=.open_magi/magi-log/round-001/verdict.md",
+    `python3 -c "open('.open_magi/magi-log/round-001/verdict.md','w').write('v')"`,
+    "echo v | tee --append .open_magi/magi-log/round-001/verdict.md",
+  ]) {
+    const result = await run({ tool_name: "shell", tool_input: { command } })
+    assert.equal(
+      JSON.parse(result.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      command,
+    )
+  }
+
+  const patchBody = "*** Begin Patch\n*** Add File: .open_magi/magi-log/round-001/verdict.md\n+verdict\n*** End Patch\n"
+  for (const patchInput of [{ patch: patchBody }, { input: patchBody }]) {
+    const applyPatch = await run({ tool_name: "apply_patch", tool_input: patchInput })
+    assert.equal(
+      JSON.parse(applyPatch.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      JSON.stringify(patchInput),
+    )
+  }
+
+  // Reads and mentions are not writes: the gate must not block them.
+  const readVerdict = await run({ tool_name: "Read", tool_input: { file_path: ".open_magi/magi-log/round-001/verdict.md" } })
+  assert.equal(readVerdict.stdout, "")
+
+  const lsVerdict = await run({ tool_name: "shell", tool_input: { command: "ls .open_magi/magi-log/round-001/verdict.md" } })
+  assert.equal(lsVerdict.stdout, "")
+
+  const mentionVerdict = await run({
+    tool_name: "shell",
+    tool_input: { command: "cat > notes.md <<'EOF'\nsee .open_magi/magi-log/round-001/verdict.md\nEOF" },
+  })
+  assert.equal(mentionVerdict.stdout, "")
+
+  const checklist = await run({ tool_name: "Write", tool_input: { file_path: ".open_magi/magi-log/checklist.md" } })
+  assert.equal(checklist.stdout, "")
+
+  const nextRecon = await run({
+    tool_name: "Write",
+    tool_input: { file_path: ".open_magi/magi-log/round-001/recon-002/prompt.md" },
+  })
+  assert.equal(nextRecon.stdout, "")
+
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await writeFile(join(reconDir, `report-${sage}.md`), "report\n")
+  }
+  const after = await run({ tool_name: "Write", tool_input: { file_path: ".open_magi/magi-log/round-001/verdict.md" } })
+  assert.equal(after.stdout, "")
 })
 
 test("Claude PreToolUse guard forces run-council onto a background task", async () => {
@@ -1910,6 +2015,89 @@ test("CLI run-council writes reports through configured Codex subprocesses", asy
     await readFile(join(projectRoot, ".open_magi", "magi-log", "round-001", "council-001", "report-melchior.md"), "utf8"),
     /report_source: codex_exec/,
   )
+})
+
+test("CLI run-council marks bubblewrap sandbox failure as sandbox_unavailable", async () => {
+  const projectRoot = await mkTempProject("open-magi-codex-cli-sandbox-fail-")
+  const agentsDir = await mkTempProject("open-magi-codex-cli-sandbox-fail-agents-")
+  const binDir = await mkTempProject("open-magi-codex-cli-sandbox-fail-bin-")
+  const promptPath = join(projectRoot, ".open_magi", "magi-log", "round-001", "recon-001", "prompt.md")
+  const fakeCodex = join(binDir, "codex")
+
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# Recon Prompt\n")
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await writeFile(
+      join(agentsDir, `deliberator-${sage}.toml`),
+      [
+        `name = "deliberator-${sage}"`,
+        `model = "model-${sage}"`,
+        'sandbox_mode = "read-only"',
+        'developer_instructions = """',
+        `Role: ${sage}.`,
+        '"""',
+        "",
+      ].join("\n"),
+    )
+  }
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { writeFileSync } from 'node:fs'",
+      "let stdin = ''",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (chunk) => { stdin += chunk })",
+      "process.stdin.on('end', () => {",
+      "  process.stderr.write(\"warning: Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.\\n\")",
+      "  const output = process.argv[process.argv.indexOf('-o') + 1]",
+      "  writeFileSync(output, 'stance: needs_evidence\\nblocking_objection: no\\nrecommended_plan: none\\nverification_plan: none\\nrisk_level: high\\n')",
+      "})",
+      "",
+    ].join("\n"),
+  )
+  await chmod(fakeCodex, 0o755)
+
+  const result = await execFile(
+    "node",
+    [
+      "adapters/codex/bin/open-magi.js",
+      "run-council",
+      "--project-root",
+      projectRoot,
+      "--prompt-path",
+      promptPath,
+      "--round",
+      "1",
+      "--pass",
+      "1",
+      "--timeout-ms",
+      "5000",
+      "--agents-dir",
+      agentsDir,
+      "--codex-bin",
+      fakeCodex,
+      "--executor",
+      "spawn",
+    ],
+    { cwd: repoRoot },
+  ).catch((error) => error)
+  const output = JSON.parse(result.stdout)
+
+  assert.equal(output.ok, false)
+  assert.equal(output.halt, true)
+  assert.equal(output.haltReason, "sandbox_unavailable")
+  assert.equal(output.results.length, 3)
+  for (const result of output.results) {
+    assert.equal(result.ok, false)
+    assert.equal(result.failureType, "sandbox_unavailable")
+  }
+  const report = await readFile(
+    join(projectRoot, ".open_magi", "magi-log", "round-001", "recon-001", "report-melchior.md"),
+    "utf8",
+  )
+  assert.match(report, /report_source: codex_exec_failed/)
+  assert.match(report, /codex_failure_type: sandbox_unavailable/)
 })
 
 test("CLI setup-codex interactive leaves provider unset when user has no custom provider", async () => {

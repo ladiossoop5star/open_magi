@@ -144,6 +144,57 @@ The plugin also bundles an MCP server for resources and future compatibility.
 On Codex CLI 0.142.5, plugin MCP resources are visible but custom MCP tools are
 not exposed to the model, so the CLI runner is the supported execution path.
 
+## Linux Sandbox Troubleshooting
+
+Deliberators run with `codex exec --sandbox read-only`, which on Linux uses
+bubblewrap and needs to create user namespaces. When the host blocks that
+(Ubuntu 24.04+ sets `kernel.apparmor_restrict_unprivileged_userns = 1` without
+a bubblewrap AppArmor profile), every command a deliberator runs fails — even
+`true` — so reports are reconstructed from the prompt instead of the repo.
+
+Symptoms:
+
+- `run-council` output shows `haltReason: "sandbox_unavailable"` and reports
+  carry `codex_failure_type: sandbox_unavailable` (the runner detects the
+  bubblewrap warning on stderr and fails the council instead of accepting
+  prompt-only reports).
+- Deliberator reports mention sandbox or `bwrap` failures, or cite file lines
+  they never re-read.
+
+Quick check, outside Magi:
+
+```bash
+bwrap --dev-bind / / true
+```
+
+`bwrap: setting up uid map: Permission denied` confirms the AppArmor
+restriction. The fix is an AppArmor profile that allows user namespaces for
+`/usr/bin/bwrap` only (Ubuntu ships `bwrap-userns-restrict` on newer releases;
+on 24.04 create it yourself):
+
+```bash
+sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
+Then re-run the `bwrap` check above. Codex prefers the system `bwrap` on PATH,
+so profiling `/usr/bin/bwrap` covers it; if a host has no system `bwrap`
+(`codex` falls back to its bundled copy), attach the same profile to the
+bundled path instead. The less surgical alternative is
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (persisted via
+`/etc/sysctl.d/`), which disables the restriction for every program on the
+host.
+
+This only affects Codex deliberators. Claude deliberators are restricted at
+the tool level (no OS sandbox) and OpenCode deliberators run in-process, so
+neither touches user namespaces.
+
 ## Stop Hook Backstop
 
 The plugin bundles a minimal Codex Stop hook. When Codex is about to stop, the

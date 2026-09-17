@@ -337,9 +337,10 @@ failed verification and the next deliberator pass.
    filesystem. Round 1 splits into Phase 1a minimal scoping (main agent writes
    `recon-001/prompt.md`, no deep-dive) and Phase 1b parallel recon (all three
    deliberators investigate read-only; main agent writes `evidence-base.md`).
-   Later rounds skip recon and reuse previous verification evidence. If
-   criteria are already satisfied, go to the Phase 6 completion review instead
-   of writing `final-report.md` directly.
+   Recon is repeatable in any round (`recon-MMM`, at most 3 per round); after
+   a failed round, the next round starts with a recon pass carrying the
+   failure evidence. While a recon pass is in flight, never write the decision
+   council prompt or the verdict.
 2. Research Task: write `round-NNN/research-prompt.md` (round 1 draws from
    `evidence-base.md`) and `round-NNN/council-PPP/prompt.md`; for pass 1 this
    is an evidence packet, not a proposed fix; for pass 2+ include

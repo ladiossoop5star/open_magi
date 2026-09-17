@@ -115,8 +115,12 @@ function usesCouncilModes(state) {
   )
 }
 
-function councilModePrefix(round, mode, pass) {
-  if (mode === "recon") return `${roundPrefix(round)}/recon-001`
+function reconPassNumber(state) {
+  return positiveInteger(state?.currentReconPass, 1)
+}
+
+function councilModePrefix(round, mode, pass, reconPass) {
+  if (mode === "recon") return `${roundPrefix(round)}/recon-${String(positiveInteger(reconPass, 1)).padStart(3, "0")}`
   if (mode === "review") return `${roundPrefix(round)}/review-001`
   return councilPrefix(round, pass)
 }
@@ -173,8 +177,8 @@ function councilReportArtifacts(round, pass) {
   ]
 }
 
-function reconReportArtifacts(round) {
-  const prefix = councilModePrefix(round, "recon")
+function reconReportArtifacts(round, reconPass = 1) {
+  const prefix = councilModePrefix(round, "recon", undefined, reconPass)
   return [
     `${prefix}/prompt.md`,
     `${prefix}/report-melchior.md`,
@@ -183,8 +187,11 @@ function reconReportArtifacts(round) {
   ]
 }
 
-function completeReconArtifacts(round) {
-  return [...reconReportArtifacts(round), `${roundPrefix(round)}/evidence-base.md`]
+function completeReconArtifacts(round, reconPass = 1) {
+  return [
+    ...reconReportArtifacts(round, reconPass),
+    ...(reconPass === 1 ? [`${roundPrefix(round)}/evidence-base.md`] : []),
+  ]
 }
 
 function reviewReportArtifacts(round) {
@@ -205,7 +212,7 @@ function deliberatorReportArtifact(state, sage, entry = {}) {
   const round = positiveInteger(entry.round, roundNumber(state))
   const entryMode = entry.mode === "recon" || entry.mode === "review" ? entry.mode : null
   if (entryMode) {
-    return `${councilModePrefix(round, entryMode)}/report-${sage}.md`
+    return `${councilModePrefix(round, entryMode, undefined, entry.pass)}/report-${sage}.md`
   }
   if (usesCouncilPasses(state) || entry.pass !== undefined) {
     return `${councilPrefix(round, positiveInteger(entry.pass, deliberationPassNumber(state)))}/report-${sage}.md`
@@ -250,8 +257,16 @@ function currentCouncilRoundArtifacts(state) {
   const modes = usesCouncilModes(state)
   const required = []
 
-  if (modes && round === 1 && phaseAtLeast(phase, "research_task")) {
-    required.push(...completeReconArtifacts(round))
+  if (modes && phaseAtLeast(phase, "research_task")) {
+    if (round === 1) {
+      required.push(...completeReconArtifacts(round))
+    }
+    for (let reconPass = round === 1 ? 2 : 1; reconPass < reconPassNumber(state); reconPass += 1) {
+      required.push(...reconReportArtifacts(round, reconPass))
+    }
+    if (round > 1 && reconPassNumber(state) > 1) {
+      required.push(`${prefix}/evidence-base.md`)
+    }
   }
 
   if (phaseAtLeast(phase, "research_task")) {
@@ -397,22 +412,50 @@ function needsRoundTransitionRepair(state) {
   return Boolean(state?.active && roundNumber(state) > 1 && state.currentPhase === "goal_definition")
 }
 
-function normalizeCouncilRoundEntry(state) {
+async function reconInFlightEvidence(directory, state) {
+  // A legitimately in-progress recon pass at round>=2 must survive
+  // normalization: evidence is a running recon deliberator registered for
+  // this round, or a written recon prompt whose reports are still pending.
+  if (currentCouncilMode(state) !== "recon") return false
+  const round = roundNumber(state)
+  const running = Object.values(state?.activeDeliberators || {}).some(
+    (entry) =>
+      entry?.mode === "recon" &&
+      entry?.status === "running" &&
+      positiveInteger(entry?.round, round) === round,
+  )
+  if (running) return true
+  if (!directory) return false
+  const prefix = councilModePrefix(round, "recon", undefined, reconPassNumber(state))
+  if (!(await fileExists(directory, `${prefix}/prompt.md`))) return false
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    if (!(await fileExists(directory, `${prefix}/report-${sage}.md`))) return true
+  }
+  return false
+}
+
+async function normalizeCouncilRoundEntry(state, directory) {
   if (!usesCouncilPasses(state)) return state
   if (state?.currentPhase !== "status_assessment") return state
   if (roundNumber(state) <= 1) return state
   if (
     deliberationPassNumber(state) <= 1 &&
     (state.deliberationStatus ?? "not_started") === "not_started" &&
-    currentCouncilMode(state) === "decision"
+    currentCouncilMode(state) === "decision" &&
+    reconPassNumber(state) <= 1
   ) {
     return state
   }
+  // Repeatable recon (round>=2) made mode=recon a legitimate in-progress
+  // state, not just round-1 residue: never reset it while evidence of an
+  // in-flight recon pass exists.
+  if (await reconInFlightEvidence(directory, state)) return state
   return {
     ...state,
     currentDeliberationPass: 1,
     deliberationStatus: "not_started",
     ...(state.currentCouncilMode !== undefined ? { currentCouncilMode: "decision" } : {}),
+    ...(state.currentReconPass !== undefined ? { currentReconPass: 1 } : {}),
   }
 }
 
@@ -615,7 +658,7 @@ function phaseActionText(state, missingArtifacts = []) {
   const council = councilPrefix(round, pass)
 
   if (state.currentPhase === "status_assessment" && round === 1 && usesCouncilModes(state)) {
-    const recon = councilModePrefix(round, "recon")
+    const recon = councilModePrefix(round, "recon", undefined, reconPassNumber(state))
     return [
       "",
       "",
@@ -624,12 +667,26 @@ function phaseActionText(state, missingArtifacts = []) {
       `Write ${recon}/prompt.md with the goal, observed symptoms, identified files, and one recon question per sage angle.`,
       "Set currentCouncilMode=recon, then immediately launch exactly these three subtasks with the same recon prompt: deliberator-melchior, deliberator-balthasar, deliberator-casper.",
       `After results return, write ${recon}/report-melchior.md, ${recon}/report-balthasar.md, and ${recon}/report-casper.md.`,
-      `Then synthesize ${prefix}/evidence-base.md with confirmed facts, open questions, key files, and constraints; reset currentCouncilMode=decision; set currentPhase=research_task.`,
+      `Then synthesize ${prefix}/evidence-base.md with confirmed facts, open questions, key files, and constraints; increment currentReconPass; reset currentCouncilMode=decision; set currentPhase=research_task.`,
       "If the acceptance criteria are already satisfied, skip recon and run the completion review pass instead.",
     ].join("\n")
   }
 
-  if (state.currentPhase === "status_assessment" && round > 1) {
+  if (state.currentPhase === "status_assessment" && round > 1 && usesCouncilModes(state)) {
+    const recon = councilModePrefix(round, "recon", undefined, reconPassNumber(state))
+    return [
+      "",
+      "",
+      "[magi] Phase 1 recon-first path.",
+      "This is not a new goal-definition round.",
+      "Perform only a short acceptance-criteria check against the latest verification evidence.",
+      `If the goal is still incomplete, write ${recon}/prompt.md carrying the previous round's failure and diagnostic evidence, set currentCouncilMode=recon, and launch all three deliberator subtasks.`,
+      `After the recon reports return, update ${prefix}/evidence-base.md, increment currentReconPass, then set currentCouncilMode=decision and currentPhase=research_task.`,
+      "Do not do extended single-agent debugging, diagnostics, or direction selection before the next deliberator round.",
+    ].join("\n")
+  }
+
+  if (state.currentPhase === "status_assessment" && round > 1 && !usesCouncilModes(state)) {
     return [
       "",
       "",
@@ -1205,7 +1262,76 @@ function guardToolAction(directory, tool, args) {
   return false
 }
 
+const DECISION_ARTIFACT_PATTERN = /\.open_magi\/magi-log\/round-(\d{3})\/(?:council-\d{3}\/prompt\.md|verdict\.md)/
+
+async function enforceReconFlightGate(directory, tool, args) {
+  // Decision artifacts are exempt from the "magi paths are always allowed"
+  // rule: while a recon pass is in flight, writing the decision council prompt
+  // or the verdict is forbidden. Reads and mentions are not writes — only
+  // file-writing tools, patch bodies, and shell redirect/tee targets gate.
+  const targets = []
+  if (["write", "edit", "multi_edit", "apply_patch"].includes(tool)) {
+    const filePath = args?.filePath ?? args?.file_path ?? args?.path
+    if (typeof filePath === "string" && filePath) targets.push(filePath)
+    const patchText = typeof args?.patch === "string" ? args.patch : null
+    if (patchText) {
+      for (const match of patchText.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) {
+        targets.push(match[0])
+      }
+    }
+  }
+  const command = typeof args?.command === "string" ? args.command : args?.cmd
+  if (typeof command === "string") {
+    const stripped = guardSanitizeShellText(command)
+    const teePattern = /(?:^|[\s;&|])tee\s+(?:(?:-a|--append)\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
+    for (const pattern of [GUARD_REDIRECT_PATTERN, teePattern]) {
+      for (const match of stripped.matchAll(pattern)) {
+        const target = match[1] || match[2] || match[3]
+        if (typeof target === "string" && target) targets.push(target)
+      }
+    }
+    // Non-redirect write vectors (cp/mv/dd destinations, interpreter -c/-e
+    // code) hide the target from redirect parsing; for these commands any
+    // mention of a decision artifact path is treated as a write attempt.
+    if (/(?:^|[\s;&|])(?:cp|mv|install|rsync|dd|python3?|node|ruby|perl)(?=[\s;&|]|$)/.test(stripped)) {
+      for (const match of command.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) {
+        targets.push(match[0])
+      }
+    }
+  }
+
+  let round = null
+  for (const target of targets) {
+    const match = target.match(DECISION_ARTIFACT_PATTERN)
+    if (match) {
+      round = Number(match[1])
+      break
+    }
+  }
+  if (round === null) return
+
+  const state = await readState(directory)
+  if (!state?.active || state.projectRoot !== directory) return
+  if (!usesCouncilModes(state)) return
+  if (round !== roundNumber(state)) return
+  if (currentCouncilMode(state) !== "recon") return
+
+  const prefix = councilModePrefix(round, "recon", undefined, reconPassNumber(state))
+  if (!(await fileExists(directory, `${prefix}/prompt.md`))) return
+
+  const missing = []
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    if (!(await fileExists(directory, `${prefix}/report-${sage}.md`))) missing.push(sage)
+  }
+  if (missing.length === 0) return
+
+  throw new Error(
+    `[magi] recon pass ${reconPassNumber(state)} is in flight (${missing.join(", ")} reports pending). Wait for the council; do not write decision artifacts or the verdict until recon completes.`,
+  )
+}
+
 async function enforcePhaseGuard(directory, tool, args) {
+  await enforceReconFlightGate(directory, tool, args)
   if (!guardToolAction(directory, tool, args)) return
 
   const state = await readState(directory)
@@ -1685,6 +1811,10 @@ function isCurrentDeliberatorEntry(state, entry) {
   const entryMode = entry?.mode === "recon" || entry?.mode === "review" ? entry.mode : "decision"
   if (entryMode !== currentCouncilMode(state)) return false
 
+  if (entryMode === "recon") {
+    return positiveInteger(entry?.pass, 1) === reconPassNumber(state)
+  }
+
   if (!usesCouncilPasses(state)) return true
 
   const currentPass = deliberationPassNumber(state)
@@ -1864,7 +1994,12 @@ async function registerDeliberatorEntry(
     sessionID: childSessionID,
     parentSessionID,
     round: roundNumber(state),
-    pass: usesCouncilPasses(state) ? deliberationPassNumber(state) : undefined,
+    pass:
+      currentCouncilMode(state) === "recon"
+        ? reconPassNumber(state)
+        : usesCouncilPasses(state)
+          ? deliberationPassNumber(state)
+          : undefined,
     mode: usesCouncilModes(state) ? currentCouncilMode(state) : undefined,
     errorRetried: existing?.errorRetried || undefined,
     startedAt,
@@ -1992,12 +2127,12 @@ async function repairActiveRoundTransitionState(directory, toolInput, stateTouch
   if (!needsRoundTransitionRepair(state)) return
 
   const nowIso = new Date().toISOString()
-  await writeState(directory, normalizeCouncilRoundEntry({
+  await writeState(directory, await normalizeCouncilRoundEntry({
     ...state,
     currentPhase: "status_assessment",
     needsContinue: true,
     lastError: roundTransitionRepairError(state, nowIso),
-  }))
+  }, directory))
 }
 
 async function repairClosedStateArtifacts(client, directory, toolInput, stateTouched) {
@@ -2148,7 +2283,7 @@ export const server = async (input) => {
         const noProgressResult = await enforceNoProgressLimit(directory, state, now)
         state = noProgressResult.state
         if (noProgressResult.blocked) return
-        state = normalizeCouncilRoundEntry(state)
+        state = await normalizeCouncilRoundEntry(state, directory)
 
         const questionRequest = await readQuestionRequest(directory)
         if (questionRequest && isQuestionAllowed(state, questionRequest)) {
@@ -2169,8 +2304,9 @@ export const server = async (input) => {
 
         const nowIso = new Date(now).toISOString()
         const roundTransitionRepair = needsRoundTransitionRepair(state)
-        const continueState = normalizeCouncilRoundEntry(
+        const continueState = await normalizeCouncilRoundEntry(
           roundTransitionRepair ? { ...state, currentPhase: "status_assessment" } : state,
+          directory,
         )
         const lockedState = {
           ...continueState,

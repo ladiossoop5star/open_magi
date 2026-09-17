@@ -9,8 +9,8 @@ The council runs in three modes. All three share the same launch mechanics,
 timeout handling, and report file rules; only the prompt contract and the gate
 differ.
 
-- `recon` (Phase 1b, round 1 only): parallel evidence gathering. Reports land
-  in `round-NNN/recon-001/`.
+- `recon` (repeatable, any round): parallel evidence gathering. Reports land in
+  `round-NNN/recon-MMM/`.
 - `decision` (Phase 2-4): proposal-first direction selection before execution.
   Reports land in `round-NNN/council-PPP/`.
 - `review` (Phase 6, completion claim only): adversarial review of the actual
@@ -20,22 +20,38 @@ Set `state.json.currentCouncilMode` to the active mode before launching
 deliberators so runtime adapters route timeout and hard-error reports to the
 correct directory.
 
-## Phase 1b: Recon Pass (Round 1 Only)
+## Recon Passes (Parallel Research)
 
-Write `round-NNN/recon-001/prompt.md` with:
-- the goal and acceptance criteria;
-- observed symptoms: error messages, failing test output, git status/diff
-  summary;
-- files or areas already identified during Phase 1a minimal scoping;
-- one precise recon question per sage angle;
-- forbidden actions for sub-agents;
-- the required report format.
+Recon is repeatable within any round and is the default way to research. When
+the main agent has a hypothesis or an open question, it writes a focused recon
+prompt and launches the council in the background instead of researching alone
+for hours. The research loop per round:
 
-Launch all three deliberators with the same recon prompt. Each deliberator
-investigates read-only from its own angle and reports findings, not a fix:
-- Melchior: implementation status, risk points, relevant code paths.
-- Balthasar: architecture boundaries, module dependencies, design context.
-- Casper: reproduction conditions, evidence gaps, unverified assumptions.
+1. Write `round-NNN/recon-MMM/prompt.md` (MMM is `state.json.currentReconPass`)
+   with the goal, the current hypothesis, observed symptoms or failure evidence
+   from the previous round, and one precise recon question per sage angle.
+   For MMM > 1, attach the previous recon's three reports so the council digs
+   deeper from shared findings instead of starting over.
+2. Launch all three deliberators in the background with the same recon prompt.
+   Each investigates read-only from its own angle and reports findings, not a
+   fix:
+   - Melchior: implementation status, risk points, relevant code paths.
+   - Balthasar: architecture boundaries, module dependencies, design context.
+   - Casper: reproduction conditions, evidence gaps, unverified assumptions.
+3. While the council runs, the main agent may do bounded parallel work: reading
+   code, grepping, running quick verifications. Do not start a new deep-dive
+   investigation while a recon is in flight; if bounded work is done, wait for
+   the council.
+4. When all three `round-NNN/recon-MMM/report-*.md` files exist, synthesize them
+   into `round-NNN/evidence-base.md`: append confirmed facts (each tied to a
+   file, output, or report), remaining open questions, key files and symbols,
+   and constraints.
+5. If the evidence is still insufficient, refine the hypothesis and start the
+   next recon pass. Each round allows at most 3 recon passes; after the third,
+   the main agent researches and decides on its own — but the decision council
+   before any code change is still mandatory.
+6. After a failed round, the next round starts with a recon pass carrying the
+   failure and diagnostic evidence, not with a decision council.
 
 Recon report semantics reuse the standard report header:
 - `stance: approve` means the evidence is sufficient to draft the decision
@@ -43,12 +59,9 @@ Recon report semantics reuse the standard report header:
 - `recommended_plan` is normally `none`; recon reports findings, not fixes.
 - `verification_plan` lists candidate checks discovered during recon.
 
-After the three `round-NNN/recon-001/report-*.md` files exist, write
-`round-NNN/evidence-base.md` with:
-- confirmed facts, each tied to a file, output, or report;
-- open questions the decision council must answer;
-- key files and symbols;
-- constraints and candidate verification approaches.
+Gate: writing `round-NNN/council-PPP/prompt.md` or `round-NNN/verdict.md` while
+a recon pass is in flight (prompt written but reports missing) is forbidden.
+Runtime adapters may block these writes.
 
 Phase 2 must draw its evidence packet from `evidence-base.md`. Do not perform
 extended single-agent debugging between recon and the decision council.

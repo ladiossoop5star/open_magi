@@ -265,6 +265,17 @@ OpenCode npm package or OpenCode setup command for Codex. See
 [Codex experimental notes](adapters/codex/README.md) for the current install,
 setup, and limitation details.
 
+Codex deliberators run under Codex's bubblewrap sandbox (`--sandbox
+read-only`). On Ubuntu 24.04+ hosts that restrict unprivileged user namespaces
+via AppArmor without a bubblewrap profile, every deliberator command fails and
+council reports degrade to prompt-only guesses; `run-council` detects this and
+fails the council with `haltReason: "sandbox_unavailable"`. Verify with
+`bwrap --dev-bind / / true` and fix by installing a `bwrap` AppArmor profile —
+see the
+[Linux sandbox troubleshooting](adapters/codex/README.md#linux-sandbox-troubleshooting)
+section. Claude and OpenCode deliberators do not use an OS sandbox and are not
+affected.
+
 ## Claude Experimental Notes
 
 Claude Code support is packaged separately under `adapters/claude`. Do not use
