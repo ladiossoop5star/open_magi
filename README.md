@@ -521,9 +521,13 @@ idempotently, and verifies the actual config path with
 may share that exclude file.
 
 Never commit `.open-magi-herdr`, and do not embed secrets or tokens in its raw
-commands. Raw commands stay confined to the config file, the immediate launch,
-and a correction question; they are never copied into Magi reports or logs. In
-a non-Git project, exclusion is skipped; protect the file manually.
+commands. Raw commands stay confined to the config file and the immediate
+launch. The only exception is an exact targeted correction question. That exact
+question may exist only in the owner-only transient
+`.open_magi/magi-log/question-request.md`; the plugin consumes and removes it.
+Raw commands never appear in Magi reports, persistent logs, or general
+diagnostics. In a non-Git project, exclusion is skipped; protect the file
+manually.
 
 Inside Herdr this configuration replaces, rather than supplements, the native
 Codex, Claude, or OpenCode deliberator settings. Magi does not add a new runner:

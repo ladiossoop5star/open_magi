@@ -699,9 +699,11 @@ idempotent 地加入精確 pattern；繼續前再以實際 config path 執行
 同一份 exclude。
 
 `.open-magi-herdr` 必須 `never commit`，而且 raw commands 不得內嵌 secrets 或
-tokens。Raw commands 只留在 config、當下 launch 與 correction question 中，
-絕不複製到 Magi reports 或 logs。非 Git project 會略過 exclusion；使用者必須
-自行保護這個檔案。
+tokens。Raw commands 只留在 config file 與 immediate launch。唯一例外是
+`exact targeted correction question`；該 exact question 只能存在 owner-only
+transient `.open_magi/magi-log/question-request.md`，由 plugin consume 後 remove。
+Raw commands 絕不進入 Magi reports、persistent logs 或 general diagnostics。
+非 Git project 會略過 exclusion；使用者必須自行保護這個檔案。
 
 在 Herdr 中，這份設定會取代而不是補充 Codex、Claude 或 OpenCode 的原生
 deliberator 設定；Magi 不會新增 runner，而是使用 Herdr 現有的 pane 與 agent
