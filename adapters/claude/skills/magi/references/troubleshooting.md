@@ -34,7 +34,7 @@ provider, auth, sandbox, runner, or config file.
 | Letting sub-agents edit files | Sub-agents research only; main agent acts |
 | Reusing different prompts for the three deliberators | Use one identical research prompt per round |
 | Forgetting `needsContinue=true` after partial progress | Set it before stopping so the plugin can wake the session |
-| Setting `inFlight=true` from the main agent | Do not do this; the plugin owns the continuation lock |
+| Setting `inFlight=true` from the main agent | Do not do this for native transports; only under Herdr does the main controller own and set `inFlight=true` while a pass is active |
 | Asking whether to write required reports | Do not ask procedural questions; write the required artifact |
 | Asking which role each deliberator should play | Use the fixed role table in this skill |
 | Asking the user which debug direction to try after Phase 1 | Pick the direction from evidence unless verification is impossible or execution is blocked |
@@ -43,6 +43,19 @@ provider, auth, sandbox, runner, or config file.
 | Committing runtime logs or unrelated files | Commit only this round's code changes; never stage `.open_magi/` |
 | Waiting indefinitely for a deliberator | The plugin aborts timed-out child sessions; use the timeout report and continue the council gate |
 | Treating a deliberator hard error as a normal veto | Halt the loop, report the repair target to the user, and resume only after the runtime configuration is fixed |
+
+## Herdr Recovery
+
+Herdr failure never triggers a native fallback. Preserve the recorded Herdr
+session and classify or repair the failure through the question firewall.
+
+| Symptom | Recovery |
+|---|---|
+| Startup-unrecognized pane or agent | Live inspect the workspace, source working directory, pane ID relationship, and recorded ownership before any mutation |
+| Stalled prompt | Inspect the current agent lifecycle and report path; resume observation of the same turn instead of resubmitting it |
+| Busy reuse | Confirm the busy agent belongs to this session and turn; otherwise request approval before takeover or stale busy recovery |
+| Partial cleanup | Leave surviving panes untouched and request approval before closing any pane created by a recorded startup attempt |
+| Config drift | Stop the pass, preserve diagnostics, and request approval before cleanup or replacement; never switch transports |
 
 ## Repeated Failure
 

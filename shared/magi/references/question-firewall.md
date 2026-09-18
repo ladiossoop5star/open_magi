@@ -30,6 +30,9 @@ resolved, continue from `state.json` and do not recreate the old request file.
 If a request is denied, read `question-denied.md` once, self-answer, and
 continue without writing the same request again.
 
+For a denied Herdr request, make no pane or agent mutation: leave panes untouched
+and perform no synthesis from incomplete or stale reports.
+
 ## Allowed Requests
 
 - `goal_ambiguity` only in the first round during goal definition or status
@@ -39,6 +42,12 @@ continue without writing the same request again.
 - `execution_blocker`, `impossible_verification`,
   `destructive_or_unrelated_risk`, and `ambiguous_file_ownership` when local
   evidence cannot resolve the blocker safely.
+
+For Herdr operations, classify invalid or missing commands, a command failed
+result, or a blocked UI as `execution_blocker`. Classify a name collision,
+takeover of an unowned pane, config drift cleanup, stale busy recovery, or
+agent termination as `destructive_or_unrelated_risk`. These classifications
+require the same request-file review as other allowed requests.
 
 ## Denied Requests
 

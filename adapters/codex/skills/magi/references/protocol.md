@@ -44,6 +44,33 @@ Create this file before the first research round:
 }
 ```
 
+`schemaVersion: 2` remains the current schema. The Herdr fields below are
+backward-compatible and optional, so a non-Herdr state file does not need to
+include them.
+
+Each entry in `activeDeliberators` may include these optional fields:
+
+```json
+{
+  "transport": "herdr",
+  "paneID": "stable pane id",
+  "turnID": "current prompt turn id",
+  "reportPath": "round-NNN/<mode-dir>/report-<sage>.md",
+  "controllerMutablePaths": [".open_magi/magi-log/state.json"]
+}
+```
+
+When an entry uses `transport: "herdr"`, the main controller, rather than a
+runtime plugin, owns updates to `inFlight`, `inFlightSince`,
+`lastPromptedRound`, `lastPromptedAt`, `activeDeliberators`, and
+`deliberatorTimeoutCounts`. This ownership transfer applies only to the Herdr
+transport; preserve the existing runtime ownership rules for non-Herdr
+sessions.
+
+`.open_magi/magi-log/herdr-session.json` is local operational log state. It
+records pane identity and lifecycle details needed to recover a Herdr session;
+it is not a replacement for the portable `state.json` protocol contract.
+
 `schemaVersion: 2` enables council modes. `currentCouncilMode` is one of:
 - `recon`: parallel evidence gathering, repeatable in any round. Reports land in
   `round-NNN/recon-MMM/`, where MMM is `currentReconPass`.

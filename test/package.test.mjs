@@ -1590,6 +1590,11 @@ test("bundled magi skill assets contain the expected contract", async () => {
   const references = await readMagiReferences()
   const contract = [skill, ...Object.values(references)].join("\n")
   const herdr = references["herdr.md"]
+  const protocol = references["protocol.md"]
+  const deliberation = references["deliberation.md"]
+  const questionFirewall = references["question-firewall.md"]
+  const checklist = references["checklist-template.md"]
+  const troubleshooting = references["troubleshooting.md"]
 
   assert.match(skill, /^---\nname: magi\n/m)
   assert.match(skill, /start deliberation/)
@@ -1672,6 +1677,32 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(herdr, /submission.*activity.*idle.*done/i)
   assert.match(herdr, /herdr agent list/)
   assert.match(herdr, /replace the affected role pane/i)
+  assert.match(contract, /transport[^\n]*herdr/i)
+  assert.match(contract, /controllerMutablePaths/)
+  assert.match(contract, /report_source: herdr_agent/)
+  assert.match(contract, /turn_id/)
+  assert.match(contract, /completed_at/)
+  assert.match(protocol, /activeDeliberators[\s\S]*transport[\s\S]*paneID[\s\S]*turnID[\s\S]*reportPath[\s\S]*controllerMutablePaths/)
+  assert.match(protocol, /transport["`: ]+herdr[\s\S]*main controller[\s\S]*inFlight[\s\S]*inFlightSince[\s\S]*lastPromptedRound[\s\S]*lastPromptedAt[\s\S]*activeDeliberators[\s\S]*deliberatorTimeoutCounts/i)
+  assert.match(protocol, /herdr-session\.json[\s\S]*local operational log state/i)
+  assert.match(protocol, /schemaVersion["`: ]+2[\s\S]*backward-compatible[\s\S]*optional/i)
+  assert.match(deliberation, /Herdr[\s\S]*read-only[\s\S]*assigned report/i)
+  assert.match(deliberation, /report_source: herdr_agent\nstatus: ok \| timeout \| hard_error\nfailure_type: none \| timeout \| hard_error\nsage: melchior \| balthasar \| casper\nagent: <recorded name>\nturn_id: <turn id>\nround: <positive integer>\nmode: recon \| decision \| review\npass: <positive integer>\nsubmitted_at: <ISO-8601>\ncompleted_at: <ISO-8601>\n---/)
+  assert.match(deliberation, /three concurrent blocking prompt calls[\s\S]*one absolute deadline/i)
+  assert.match(deliberation, /lifecycle[\s\S]*(?:idle|done)[\s\S]*fresh matching envelope/i)
+  assert.match(deliberation, /do not resubmit[\s\S]*observation timeout[\s\S]*live inspect/i)
+  assert.match(deliberation, /Herdr pass[\s\S]*main agent[\s\S]*proven read-only worktree operations/i)
+  assert.match(questionFirewall, /invalid or missing commands[\s\S]*execution_blocker/i)
+  assert.match(questionFirewall, /command failed[\s\S]*execution_blocker/i)
+  assert.match(questionFirewall, /blocked UI[\s\S]*execution_blocker/i)
+  assert.match(questionFirewall, /name collision[\s\S]*takeover[\s\S]*config drift[\s\S]*stale busy[\s\S]*agent termination[\s\S]*destructive_or_unrelated_risk/i)
+  assert.match(questionFirewall, /denied[\s\S]*leave panes untouched[\s\S]*no synthesis/i)
+  assert.match(checklist, /Herdr preflight[\s\S]*HERDR_ENV[\s\S]*source working directory[\s\S]*configuration validation[\s\S]*session ownership state[\s\S]*frozen baseline[\s\S]*controllerMutablePaths[\s\S]*all three[\s\S]*ready/i)
+  assert.match(checklist, /Phase 3 -> Phase 4[\s\S]*inFlight=false[\s\S]*three final statuses[\s\S]*fresh[\s\S]*Herdr envelopes[\s\S]*current turn[\s\S]*no unexpected workspace delta/i)
+  assert.match(checklist, /persistent panes remain[\s\S]*explicit user cleanup/i)
+  assert.match(troubleshooting, /Herdr[\s\S]*main controller[\s\S]*inFlight=true/i)
+  assert.match(troubleshooting, /startup[\s-]*unrecognized[\s\S]*stalled prompt[\s\S]*busy reuse[\s\S]*partial cleanup[\s\S]*config drift/i)
+  assert.match(troubleshooting, /Herdr failure[\s\S]*never[\s\S]*native fallback/i)
   assert.match(codexRuntime, /marked complete but `final-report\.md` is missing/)
   assert.match(codexRuntime, /If the goal is already complete, write `final-report\.md`/)
   assert.match(codexRuntime, /final report exists but required round artifacts are missing/)

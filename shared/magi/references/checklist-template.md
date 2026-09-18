@@ -35,6 +35,7 @@ Universal gate before any user question:
 - [ ] `state.json.maxDeliberationPasses` is set to 3 by default and never above 5.
 - [ ] `state.json.deliberatorTimeoutMs` is set to 1800000 by default unless a harder task requires a longer timeout.
 - [ ] `state.json.currentPhase` is `research_task`.
+- [ ] Where Herdr is selected, Herdr preflight passed: `HERDR_ENV=1` is present, the source working directory and configuration validation succeeded, session ownership state is recorded, the frozen baseline and `controllerMutablePaths` are recorded, and all three sage panes are ready.
 
 ## Phase 3 -> Phase 4
 
@@ -45,6 +46,7 @@ Universal gate before any user question:
 - [ ] Every report includes `stance`, `blocking_objection`, `recommended_plan`, `verification_plan`, and `risk_level`.
 - [ ] If a deliberator failed or timed out, its report file records failure evidence instead of being omitted.
 - [ ] `state.json.currentPhase` is `parallel_deliberation`.
+- [ ] Where Herdr is selected, `inFlight=false`, all three final statuses are recorded, all assigned reports have valid fresh exact Herdr envelopes for the current turn only, and there is no unexpected workspace delta.
 
 ## Phase 4 -> Phase 5
 
@@ -87,3 +89,4 @@ Universal gate before any user question:
 - [ ] If incomplete with no progress, history was appended with `progress: true|false`, consecutiveNoProgress was incremented and only stops at >= 5.
 - [ ] `state.json.needsContinue` is correct.
 - [ ] `state.json.inFlight=false` and `state.json.inFlightSince=null` when the assistant is actively resuming or finishing.
+- [ ] Herdr persistent panes remain after completion unless explicit user cleanup was requested.

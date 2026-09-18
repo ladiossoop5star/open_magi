@@ -147,6 +147,42 @@ When the plugin writes a timeout report, do not overwrite it unless the same
 deliberator later produces a complete report for the same council pass before
 synthesis begins. If overwritten, preserve timeout evidence in `synthesis.md`.
 
+### Herdr Transport Rules
+
+When Herdr is selected, each sage is read-only except for writing only its
+assigned report path. It must not edit any other Magi artifact or worktree
+file. The assigned report starts with this exact envelope, followed immediately
+by the existing report body described below:
+
+```md
+report_source: herdr_agent
+status: ok | timeout | hard_error
+failure_type: none | timeout | hard_error
+sage: melchior | balthasar | casper
+agent: <recorded name>
+turn_id: <turn id>
+round: <positive integer>
+mode: recon | decision | review
+pass: <positive integer>
+submitted_at: <ISO-8601>
+completed_at: <ISO-8601>
+---
+```
+
+Launch the pass with three concurrent blocking prompt calls and enforce one absolute deadline
+shared by all three calls. A role is complete only when its
+recorded agent lifecycle is `idle` or `done` and its assigned report contains a
+fresh matching envelope for the current turn. A report left over from an older
+turn, or a report without the exact envelope, is not completion evidence.
+
+An observation timeout is not proof that the prompt failed. Do not resubmit
+merely because an observation timeout occurred; first live inspect the recorded
+agent and pane. Resume observation of the same turn when it is still active.
+
+During a Herdr pass, the main agent may perform only proven read-only worktree operations
+while the three prompts are in flight. Controller state updates
+within the declared `controllerMutablePaths` remain allowed.
+
 ## Deliberator Failure Classification
 
 Classify deliberator failures before synthesis:
