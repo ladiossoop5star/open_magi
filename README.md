@@ -483,10 +483,23 @@ open-magi setup --interactive
 
 ## Herdr-Native Deliberation
 
-When the main agent starts with `HERDR_ENV=1`, Magi uses Herdr-native
-deliberation. In the main pane's captured starting working directory, create the
-project-local `.open-magi-herdr` file with one raw wrapper command per sage, for
-example:
+When a user explicitly asks to start or use Magi for a project with
+`HERDR_ENV=1`, an activation hard gate runs before any repository/project
+read/search, reference load, state creation, runtime bootstrap, or Herdr call.
+Its only operation is an existence/lstat check of the exact absolute
+`.open-magi-herdr` path in the already-current working directory. If that file
+is missing, the first user-facing action is a direct request for all three
+commands. This is a zero-discovery branch: there is no Git or Herdr command,
+filesystem search, `.open_magi` access, state/question artifact, pane split, or
+agent launch before the question.
+
+If the exact file exists, Magi validates and reads only it. Invalid permissions,
+format, roles, or commands cause the same immediate direct question without a
+search elsewhere. After the user supplies the three commands, Magi safely
+writes and revalidates the local file, then performs exclusion checks. Only a
+locally valid file permits `herdr pane current --current`, project exploration,
+state creation, and pane or agent setup. The file has one raw wrapper command
+per sage, for example:
 
 ```text
 melchior=replace-with-melchior-agent-command

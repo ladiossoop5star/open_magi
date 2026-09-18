@@ -5,25 +5,44 @@ description: Use when the user asks for magi, Open-Magi, @Open-Magi, deliberatio
 
 # Magi
 
+## Herdr Magi Activation Hard Gate
+
+When user explicitly asks to start/use Magi for a repository/project and
+`HERDR_ENV=1`, apply this before any other action: before repository/project
+read/search, other reference loading, state/checklist creation, runtime
+bootstrap, or pane split/agent launch.
+
+From the already-current working directory, without search, only check
+existence/`lstat` of exact absolute
+`<current-cwd>/.open-magi-herdr`. On `ENOENT`, the next/only and first
+user-facing action directly asks for exact `melchior`, `balthasar`, and `casper`
+commands. This is direct pre-activation: `state.active` is not set and
+`question-request.md` is not created.
+
+Before asking, do not search other directories/repositories, `.open_magi`, HOME,
+filesystem, PATH, runtime/native configs, agent names, prior reports/history,
+or standard commands. No Herdr/Git call, `find`/`rg`, fallback, or inference. If
+the exact file exists, lstat ownership/mode; only if valid read/parse that exact file. Invalid
+permission, format, role, or command means ask immediately; search nowhere else.
+
+Only after the user answers may it atomically write/update owner-only `0600`,
+apply exclusion, and revalidate. Only after local validity may it
+run `herdr pane current --current`, load `references/herdr.md`, explore, create
+state/checklists, bootstrap, split panes, or launch agents.
+
 ## Overview
 
-Run a coding-agent proposal-first deliberation loop. The main agent owns
-decisions, implementation, verification, checkpoint commits, rollback, and final
-reporting; three read-only deliberators only research and report. Runtime
-adapters may add guardrails; otherwise the main agent enforces gates.
-
-Completion requires explicit `acceptanceCriteria`, `verificationCommands`, and
-review-council approval of the actual diff before `final-report.md`, not
-confidence or judgment.
-
-Proposal-first: before direction selection, the main agent prepares an evidence packet and does not propose a fix. Deliberators propose; the main agent selects one
-for their pre-execution review.
-
-Council modes tracked in `currentCouncilMode`: `recon`, `decision`, `review`.
+Run a coding-agent proposal-first loop. Main owns decisions, edits, verification,
+commits, rollback, and reporting; three read-only deliberators research.
+Completion requires `acceptanceCriteria`, `verificationCommands`, and review
+approval of the diff before `final-report.md`. Before selection, the
+main agent prepares an evidence packet and does not propose a fix; deliberators propose,
+then review the selection. Track `recon`, `decision`, or `review` in
+`currentCouncilMode`.
 
 ## Required Reference Loading
 
-Load each reference before its situation:
+Load each before its situation:
 
 | Situation | Required reference |
 |---|---|
@@ -31,9 +50,9 @@ Load each reference before its situation:
 | Checklist creation/phase change | `references/checklist-template.md` |
 | Prompt/report/synthesis/verdict writing | `references/deliberation.md` |
 | Subagent launch/runtime adapter behavior | `references/runtime.md` |
-| Running in Herdr, launching/reusing sages, or explicit Herdr cleanup | `references/herdr.md` |
+| Herdr launch/reuse/cleanup | `references/herdr.md` |
 | User-facing question | `references/question-firewall.md` |
-| Execution/verification/checkpoint/rollback/next-round evidence | `references/execution-and-verification.md` |
+| Execute/verify/checkpoint/rollback evidence | `references/execution-and-verification.md` |
 | Plugin repair/corrupt state/timeout/repeated failure | `references/troubleshooting.md` |
 
 ## When to Use
@@ -44,36 +63,19 @@ synthesize -> act -> verify until completion.
 
 Do not use it for small one-shot answers.
 
-## Herdr Runtime Gate
-
-Before runtime-specific setup, check `HERDR_ENV`.
-
-When `HERDR_ENV=1`, read `references/herdr.md` for launch, state ownership,
-reporting, recovery, and explicit cleanup. Do not run the runtime-specific bootstrap,
-agent preflight, runner, tmux, or subprocess launch path. For other values,
-native instructions stay unchanged. Never silently fall back from Herdr to native.
-
 ## Roles
 
-Main agent:
-- Extracts goal, criteria, and verification commands; writes
-  `.open_magi/magi-log/state.json`, prompts, reports, decisions, checks,
-  checkpoint commits, rollback evidence, and final report; launches all three
-  deliberators and synthesizes their reports.
+Main extracts the goal, criteria, and verification; writes artifacts; launches
+three deliberators; synthesizes; edits, commits, and rolls back.
 
 Sub-agents:
 - `deliberator-melchior`: practical engineering feasibility and edge cases.
 - `deliberator-balthasar`: architecture, maintainability, long-term design.
 - `deliberator-casper`: debugging, root cause, failure paths.
 
-Use these role names for generic subagent reports.
-
-Sub-agent restrictions:
-- sub-agents do not edit files; only a Herdr sage may write its assigned report
-  path per `references/herdr.md`;
-- no build/test/format/deploy commands;
-- no final user answer;
-- report analysis only to the main agent.
+Use these names in reports. Sub-agents only report analysis to the main agent:
+no edits (except a Herdr sage's assigned report per `references/herdr.md`),
+build/test/format/deploy commands, or final user answer.
 
 ## Runtime State
 
@@ -146,11 +148,9 @@ editing code or running verification. State fields are
 `currentDeliberationPass` and `maxDeliberationPasses`.
 
 Rules:
-- The default `maxDeliberationPasses` is 3.
-- The hard maximum is 5.
-- The enforced minimum is 3, because proposal-first deliberation needs one
-  proposal pass, one review pass, and one bounded refinement/decision budget.
-- Effective veto passes equal `maxDeliberationPasses - 2`.
+- `maxDeliberationPasses` defaults to and has a minimum of 3; maximum is 5.
+  Proposal-first needs proposal, review, and refinement/decision capacity.
+- Effective veto passes are `maxDeliberationPasses - 2`.
 - Pass 1 is the proposal pass. Deliberators propose directions from the
   evidence packet. Pass 1 is not a veto pass.
 - After Pass 1, the main agent writes `round-NNN/direction-selection.md` with

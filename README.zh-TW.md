@@ -665,9 +665,20 @@ open-magi setup --interactive
 
 ## Herdr 原生審議
 
-主 agent 以 `HERDR_ENV=1` 啟動時，Magi 會使用 Herdr 原生審議。在主 pane
-所記錄的起始工作目錄中，建立專案本地的 `.open-magi-herdr`，為每位賢者設定
-一條原始 wrapper command，例如：
+使用者明確要求在 project 啟動或使用 Magi，且 `HERDR_ENV=1` 時，會先執行
+`activation hard gate`，而且時機在 `before repository/project read/search`、載入
+reference、建立 state、runtime bootstrap 或任何 Herdr call 之前。唯一允許的操作是
+從 already-current working directory 對精確 absolute `.open-magi-herdr` path 做一次
+existence/lstat check。若檔案 `missing`，`first user-facing action` 必須直接詢問
+`three commands`。這是 `zero-discovery` branch：詢問之前不得執行 Git 或 Herdr
+command、filesystem search、存取 `.open_magi`、建立 state/question artifact、split
+pane 或 launch agent。
+
+若精確檔案存在，Magi 只能驗證並讀取該檔案。permissions、format、role 或 command
+無效時，必須立即直接詢問，不得往別處搜尋。使用者提供三條 command 後，Magi 才
+能安全寫入並重新驗證本地檔案，再處理 exclusion。只有 locally valid file 才允許
+執行 `herdr pane current --current`、探索 project、建立 state，以及設定 pane/agent。
+這份檔案為每位賢者設定一條原始 wrapper command，例如：
 
 ```text
 melchior=replace-with-melchior-agent-command
