@@ -53,7 +53,7 @@ herdr session list --json
 
 The `herdr session list --json` evidence taken before attach must prove that the exact `$HERDR_TEST_SESSION` name is absent. Record that preflight evidence with its timestamp and owner token in the external temporary report. On any collision, generate a new unique name and repeat the inventory, or abort. Never attach an existing session.
 
-Only after the absence proof, attach the exact exported name and preserve the exact JSON response:
+Only after the absence proof, attach the exact exported name. Record the exact interactive attach outcome separately; attach is interactive and is not expected to produce a JSON response:
 
 ```sh
 herdr session attach "$HERDR_TEST_SESSION"
@@ -69,7 +69,7 @@ herdr session list --json
 herdr pane current --current
 ```
 
-Perform every remaining scenario action only inside that exact named shell. Before any scenario mutation, match `$HERDR_TEST_SESSION` and `$HERDR_TEST_OWNER` against the preflight record and attach response, prove the active socket or exact session context belongs to the newly created named session, and record the ownership evidence. Also prove no discovered target belongs to the current/default/developer session. If `HERDR_ENV=1`, either exported value, the expected named session context, or the ownership evidence does not match, abort without mutation. Never redirect the test to an existing session.
+JSON ownership evidence comes solely from the pre-attach session list and the post-attach session list, supplemented by the post-attach current pane and context JSON or output supported by live help. Perform every remaining scenario action only inside that exact named shell. Before any scenario mutation, match `$HERDR_TEST_SESSION` and `$HERDR_TEST_OWNER` against the preflight record and post-attach ownership evidence, prove the active socket or exact session context belongs to the newly created named session, and record the ownership evidence. Also prove no discovered target belongs to the current/default/developer session. If `HERDR_ENV=1`, either exported value, the expected named session context, or the ownership evidence does not match, abort without mutation. Never redirect the test to an existing session.
 
 Freeze these baselines in the external temporary report:
 
@@ -107,7 +107,7 @@ Require `completed_at >= submitted_at`, the expected identity fields, the curren
 
 ## Scenario 2: layout and reuse
 
-Create the controller/worker layout in the isolated session only, using live-help-supported no-focus splits and IDs returned by JSON. Execute this exact geometric sequence: split at ratio `0.5` to create the council region on the right; split that region down at ratio `0.6666667` to separate the lower third; then split the upper two-thirds down at ratio `0.5`. Verify the result from JSON: the controller retains the left half, the three council panes have equal width and equal heights, with Melchior top, Balthasar middle, and Casper bottom. Assert that focus did not move.
+Create the controller/worker layout in the isolated session only, using live-help-supported no-focus splits and IDs returned by JSON. Execute this exact geometric sequence: split at ratio `0.5` to create the council region on the right; split that region down at ratio `0.6666667` to separate the lower third; then split the upper two-thirds down at ratio `0.5`. Verify the split tree and resulting order from JSON: the controller stays left, the right council region is at most half of the available width, and the roles are Melchior top, Balthasar middle, and Casper bottom. Record each pane's rect JSON. Permit unavoidable one-cell rounding in the three role heights, requiring `max(height) - min(height) <= 1 cell`; do not require pixel or integer identity. Assert that focus did not move.
 
 Record all pane sizes. Manually resize one owned role pane, run another deliberation pass, and assert that all healthy recognized agents are reused and the manual resize is preserved. Perform no resize on the next pass. Record JSON layout and identity evidence before and after the pass.
 
@@ -141,7 +141,7 @@ Inject one close failure. Assert that successful owned closures are recorded, th
 
 ## Teardown
 
-Before teardown, write exact JSON inventories and identify only the unique isolated session and test-owned subordinate resources. Re-match the owner token, exact session name, and active socket or session context against the external preflight record and attach response. Require evidence that the session was created by this run. If any ownership field is absent, ambiguous, or mismatched, refuse teardown without issuing stop or delete.
+Before teardown, write exact JSON inventories and identify only the unique isolated session and test-owned subordinate resources. Re-match the owner token, exact session name, and active socket or session context against the external preflight record and post-attach ownership evidence. Require evidence that the session was created by this run. If any ownership field is absent, ambiguous, or mismatched, refuse teardown without issuing stop or delete.
 
 Validate the name and owner token as nonempty, validate both exact prefixes, and do this before either destructive command:
 

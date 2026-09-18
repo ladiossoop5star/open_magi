@@ -286,14 +286,34 @@ function validateIntegrationShellCommands(markdown) {
     /^herdr session (?:stop|delete) "\$HERDR_TEST_SESSION" --json$/,
   ]
   const shellLines = []
+  const lines = markdown.split("\n")
 
-  for (const match of markdown.matchAll(/```([^\n]*)\n([\s\S]*?)```/g)) {
-    const language = match[1].trim()
-    if (language === "text") continue
+  for (let index = 0; index < lines.length; index += 1) {
+    const opener = lines[index].match(/^ {0,3}(`{3,}|~{3,})(.*)$/)
+    if (!opener) continue
+    const marker = opener[1][0]
+    const markerLength = opener[1].length
+    const info = opener[2]
+    if (marker === "`" && info.includes("`")) continue
+    let closeIndex = -1
+    for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
+      const closing = lines[candidate].match(/^ {0,3}(`+|~+)[ \t]*$/)
+      if (closing && closing[1][0] === marker && closing[1].length >= markerLength) {
+        closeIndex = candidate
+        break
+      }
+    }
+    if (closeIndex === -1) throw new Error(`unclosed integration fence: ${opener[1]}`)
+
+    const language = info.trim().split(/\s+/, 1)[0]
+    if (language === "text") {
+      index = closeIndex
+      continue
+    }
     if (language !== "sh" && language !== "bash") {
       throw new Error(`unsupported executable fence language: ${language || "unlabeled"}`)
     }
-    for (const rawLine of match[2].split("\n")) {
+    for (const rawLine of lines.slice(index + 1, closeIndex)) {
       const line = rawLine.trim()
       if (!line || line.startsWith("#")) continue
       if (!allowedShellLines.some((pattern) => pattern.test(line))) {
@@ -301,6 +321,7 @@ function validateIntegrationShellCommands(markdown) {
       }
       shellLines.push(line)
     }
+    index = closeIndex
   }
 
   return shellLines
@@ -1636,6 +1657,10 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
   assert.match(ownership, /collision[\s\S]*(?:generate a new|new unique)[\s\S]*or abort[\s\S]*never attach[^\n]*existing/i)
   assert.match(ownership, /export[\s\S]*attach[\s\S]*inherit[\s\S]*after attach[\s\S]*HERDR_TEST_SESSION[\s\S]*HERDR_TEST_OWNER/i)
   assert.match(ownership, /inside[^\n]*named shell[\s\S]*before[^\n]*mutation[\s\S]*exact session context[\s\S]*ownership evidence/i)
+  assert.match(ownership, /record[^\n]*interactive attach outcome[^\n]*separately/i)
+  assert.match(ownership, /attach[^.\n]*not expected[^.\n]*JSON response/i)
+  assert.doesNotMatch(ownership, /preserve[^.\n]*attach[^.\n]*JSON response|preserve[^.\n]*JSON response[^.\n]*attach/i)
+  assert.match(ownership, /JSON ownership evidence[\s\S]*pre-attach[^\n]*session list[\s\S]*post-attach[^\n]*session list[\s\S]*current pane[^\n]*context/i)
   assert.match(teardown, /owner token[\s\S]*session name[\s\S]*(?:socket or session )?context[\s\S]*created by this run[\s\S]*refuse/i)
 
   assert.match(prerequisites, /operator[\s\S]*supply and record[\s\S]*three exact harmless test-owned recognized agent commands[\s\S]*no production credentials/i)
@@ -1646,10 +1671,12 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
   assert.match(prerequisites, /if any[\s\S]*missing[\s\S]*BLOCKED before mutation/i)
   assert.match(prerequisites, /populate[^\n]*config[^\n]*recorded commands[\s\S]*installed Magi skill[\s\S]*no new runner/i)
   assert.match(layoutReuse, /0\.5[\s\S]*0\.6666667[\s\S]*0\.5/i)
-  assert.match(layoutReuse, /equal[^\n]*width[\s\S]*Melchior top[\s\S]*Balthasar middle[\s\S]*Casper bottom/i)
+  assert.match(layoutReuse, /tree[\s\S]*right[^\n]*(?:at most|<=)[^\n]*half[\s\S]*Melchior top[\s\S]*Balthasar middle[\s\S]*Casper bottom/i)
+  assert.match(layoutReuse, /rect JSON[\s\S]*(?:one-cell rounding|max[^\n]*min[^\n]*<= 1 cell)/i)
+  assert.doesNotMatch(layoutReuse, /equal heights/i)
 
   assert.match(recognizedAgent, /raw command[\s\S]*recognized agent[\s\S]*split[\s\S]*working directory[\s\S]*herdr pane run[\s\S]*agent get[\s\S]*pane[- ]id[\s\S]*rename[\s\S]*prompt[\s\S]*observed activity[\s\S]*idle or done[\s\S]*report[\s\S]*envelope/i)
-  assert.match(layoutReuse, /no-focus[\s\S]*0\.5[\s\S]*right[\s\S]*equal width[\s\S]*manual resize[\s\S]*no resize on the next pass/i)
+  assert.match(layoutReuse, /no-focus[\s\S]*0\.5[\s\S]*right[\s\S]*at most[^\n]*half[\s\S]*manual resize[\s\S]*no resize on the next pass/i)
   assert.match(guide, /invalid or unrecognized[\s\S]*user question[\s\S]*automatic config update[\s\S]*(?:failed-role-only replacement|replace only that failed role)[\s\S]*no fallback/i)
   assert.match(guide, /three[^\n]*concurrent[\s\S]*absolute deadline[\s\S]*timeout[\s\S]*Esc[\s\S]*blocked UI[\s\S]*missing(?: or invalid)? report[\s\S]*single retry[\s\S]*frozen baseline[\s\S]*(?:no|do not) blind(?:ly)? resubmi/i)
   assert.match(guide, /config drift[\s\S]*continue[\s\S]*cleanup[\s\S]*denied[\s\S]*untouched/i)
@@ -1676,8 +1703,8 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
   assert.doesNotMatch(guide, /herdr session (?:stop|delete) (?:default|current)(?:\s|`|$)/i)
   assert.doesNotMatch(guide, /herdr session (?:stop|delete) --json/)
 
-  const teardownCommands = [...guide.matchAll(/```(?:sh|bash)\n([\s\S]*?)```/g)]
-    .flatMap((match) => match[1].split("\n").map((line) => line.trim()))
+  const integrationShellCommands = validateIntegrationShellCommands(guide)
+  const teardownCommands = integrationShellCommands
     .filter((line) => /^herdr session (?:stop|delete)\b/.test(line))
   assert.deepEqual(teardownCommands, [
     'herdr session stop "$HERDR_TEST_SESSION" --json',
@@ -1687,7 +1714,6 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
     assert.match(command, /^herdr session (?:stop|delete) "\$HERDR_TEST_SESSION" --json$/)
     assert.doesNotMatch(command, /\b(?:default|current|developer)\b/)
   }
-  assert.doesNotThrow(() => validateIntegrationShellCommands(guide))
   assert.throws(
     () => validateIntegrationShellCommands(`${guide}\n\`\`\`sh\nherdr session stop default --json\n\`\`\`\n`),
     /not allowed/,
@@ -1703,6 +1729,10 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
   assert.throws(
     () => validateIntegrationShellCommands(`${guide}\n\`\`\`python\nprint\("unsafe"\)\n\`\`\`\n`),
     /unsupported executable fence language/,
+  )
+  assert.throws(
+    () => validateIntegrationShellCommands(`${guide}\n~~~sh\nherdr session stop developer --json\n~~~~\n`),
+    /not allowed/,
   )
 })
 
