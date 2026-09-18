@@ -25,6 +25,7 @@ const sharedMagiReferences = [
   "checklist-template.md",
   "deliberation.md",
   "execution-and-verification.md",
+  "herdr.md",
   "protocol.md",
   "question-firewall.md",
   "troubleshooting.md",
@@ -1588,6 +1589,7 @@ test("bundled magi skill assets contain the expected contract", async () => {
   const claudeRuntime = await readFile(new URL("../adapters/claude/skills/magi/references/runtime.md", import.meta.url), "utf8")
   const references = await readMagiReferences()
   const contract = [skill, ...Object.values(references)].join("\n")
+  const herdr = references["herdr.md"]
 
   assert.match(skill, /^---\nname: magi\n/m)
   assert.match(skill, /start deliberation/)
@@ -1633,6 +1635,14 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(codexRuntime, /hard_error/)
   assert.match(codexRuntime, /state\.active=true/)
   assert.match(codexRuntime, /stale or premature/)
+  assert.match(herdr, /HERDR_ENV/)
+  assert.match(herdr, /\.open-magi-herdr/)
+  assert.match(herdr, /herdr pane run/)
+  assert.match(herdr, /magi-<sage>-<hash10>/)
+  assert.match(herdr, /three concurrent invocations/i)
+  assert.match(herdr, /controllerMutablePaths/)
+  assert.match(herdr, /herdr pane close/)
+  assert.match(herdr, /Do not silently fall back/i)
   assert.match(codexRuntime, /marked complete but `final-report\.md` is missing/)
   assert.match(codexRuntime, /If the goal is already complete, write `final-report\.md`/)
   assert.match(codexRuntime, /final report exists but required round artifacts are missing/)
@@ -1646,7 +1656,10 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.doesNotMatch(skill, /\.omo|deliberation-log/)
   assert.doesNotMatch(skill, hanPattern)
   for (const name of requiredMagiReferences) {
-    assert.match(skill, new RegExp(`references/${name.replace(".", "\\.")}`), `SKILL.md should route to ${name}`)
+    // Herdr routing is asserted with the packaged skill changes in Task 3.
+    if (name !== "herdr.md") {
+      assert.match(skill, new RegExp(`references/${name.replace(".", "\\.")}`), `SKILL.md should route to ${name}`)
+    }
     assert.doesNotMatch(references[name], hanPattern, `${name} should not contain Chinese characters`)
   }
 
