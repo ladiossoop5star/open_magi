@@ -1647,6 +1647,8 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(herdr, /lastPromptedRound/)
   assert.match(herdr, /lastPromptedAt/)
   assert.match(herdr, /deliberatorTimeoutCounts/)
+  assert.match(herdr, /retain(?:s)? all three `activeDeliberators` entries.*final per-role statuses/i)
+  assert.doesNotMatch(herdr, /clear(?:s|ing)? `activeDeliberators`/i)
   assert.match(herdr, /exact predeclared wait-result path/i)
   assert.match(herdr, /execution_blocker/)
   assert.match(herdr, /destructive_or_unrelated_risk/)

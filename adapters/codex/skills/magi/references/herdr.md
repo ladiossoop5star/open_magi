@@ -48,7 +48,7 @@ The main controller owns all runtime fields in `.open_magi/magi-log/state.json`.
 
 `herdr-session.json` supplements these runtime fields; it is not their replacement. Persist its turn lock only after the atomic `state.json` write. Record the same turn identity, deadline, report paths, exact wait-result paths, and frozen `controllerMutablePaths` and workspace fingerprint there.
 
-Native runtime handlers ignore entries whose transport is `herdr`; they must not replace, abort, timeout, or clear them. After all three roles are classified, the main controller atomically writes final role statuses, clears `activeDeliberators`, sets `inFlight=false` and `inFlightSince=null`, and maintains the final `lastPromptedRound`, `lastPromptedAt`, and `deliberatorTimeoutCounts` values in `state.json`; then it clears the Herdr session lock. Never clear either lock role-by-role while sibling prompts are unresolved.
+Native runtime handlers ignore entries whose transport is `herdr`; they must not replace, abort, timeout, or clear them. After all three roles are classified, the main controller atomically retains all three `activeDeliberators` entries and updates them with final per-role statuses, sets `inFlight=false` and `inFlightSince=null`, and maintains the final `lastPromptedRound`, `lastPromptedAt`, `deliberatorTimeoutCounts`, ownership, and history fields required by the protocol in `state.json`; then it clears the Herdr session turn lock. Never finalize or clear either in-flight lock role-by-role while sibling prompts are unresolved.
 
 ## Report Envelope
 
