@@ -1522,6 +1522,30 @@ test("Claude PostToolUse hook is silent without an active loop", async () => {
 
 test("Herdr integration guide uses an isolated named session and covers safe lifecycle scenarios", async () => {
   const guide = await readFile(new URL("./herdr-integration.md", import.meta.url), "utf8")
+  const section = (heading) => {
+    const start = guide.indexOf(`## ${heading}\n`)
+    assert.notEqual(start, -1, `missing guide section: ${heading}`)
+    const next = guide.indexOf("\n## ", start + heading.length + 4)
+    return guide.slice(start, next === -1 ? guide.length : next)
+  }
+  const paragraph = (text, pattern) => {
+    const match = text.split(/\n\n+/).find((block) => pattern.test(block))
+    assert.ok(match, `missing guide paragraph: ${pattern}`)
+    return match
+  }
+  const matchingLine = (text, pattern) => {
+    const match = text.split("\n").find((line) => pattern.test(line))
+    assert.ok(match, `missing guide line: ${pattern}`)
+    return match
+  }
+  const invalidConfig = section("Scenario 3: invalid or unrecognized configuration")
+  const parallelFailures = section("Scenario 4: parallel work and failures")
+  const persistenceRecovery = section("Scenario 5: persistence, drift, firewall, and recovery")
+  section("Teardown")
+  const invalidConfigDenial = paragraph(invalidConfig, /refusal or cancellation/i)
+  const reportRetry = paragraph(parallelFailures, /missing or invalid report/i)
+  const firewallDenial = matchingLine(persistenceRecovery, /question firewall/i)
+  const inFlightRecovery = matchingLine(persistenceRecovery, /recoverable[^\n]*inFlight/i)
 
   assert.match(guide, /^# Herdr Integration Procedure$/m)
   assert.doesNotMatch(guide, hanPattern)
@@ -1545,7 +1569,7 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
   assert.match(guide, /raw command[\s\S]*recognized agent[\s\S]*split[\s\S]*working directory[\s\S]*herdr pane run[\s\S]*agent get[\s\S]*pane[- ]id[\s\S]*rename[\s\S]*prompt[\s\S]*activity[\s\S]*idle[\s\S]*done[\s\S]*report[\s\S]*envelope/i)
   assert.match(guide, /0\.5[\s\S]*right[\s\S]*equal stacked thirds[\s\S]*no-focus[\s\S]*manual resize[\s\S]*no resize on the next pass/i)
   assert.match(guide, /invalid or unrecognized[\s\S]*user question[\s\S]*automatic config update[\s\S]*(?:failed-role-only replacement|replace only that failed role)[\s\S]*no fallback/i)
-  assert.match(guide, /three[^\n]*concurrent[\s\S]*absolute deadline[\s\S]*timeout[\s\S]*Esc[\s\S]*blocked UI[\s\S]*missing report[\s\S]*single retry[\s\S]*frozen baseline[\s\S]*(?:no|do not) blind(?:ly)? resubmi/i)
+  assert.match(guide, /three[^\n]*concurrent[\s\S]*absolute deadline[\s\S]*timeout[\s\S]*Esc[\s\S]*blocked UI[\s\S]*missing(?: or invalid)? report[\s\S]*single retry[\s\S]*frozen baseline[\s\S]*(?:no|do not) blind(?:ly)? resubmi/i)
   assert.match(guide, /config drift[\s\S]*continue[\s\S]*cleanup[\s\S]*denied[\s\S]*untouched/i)
   assert.match(guide, /recoverable[^\n]*`?inFlight`?[\s\S]*resume/i)
   assert.match(guide, /busy reuse[\s\S]*wait[\s\S]*Esc[\s\S]*replace[\s\S]*denied/i)
@@ -1556,6 +1580,12 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
   assert.match(guide, /(?:unresolved state|state remains unresolved)/i)
   assert.match(guide, /unrelated[\s\S]*survive/i)
 
+  assert.match(invalidConfigDenial, /refusal or cancellation[\s\S]*config(?:uration)?[\s\S]*panes[\s\S]*agents[\s\S]*unchanged[\s\S]*no retry[\s\S]*no (?:native )?fallback/i)
+  assert.match(firewallDenial, /question firewall.*zero pane or agent mutation.*no synthesis/i)
+  assert.match(reportRetry, /missing or invalid report[\s\S]*same turn[\s\S]*same[^\n]*agent[\s\S]*exactly once[\s\S]*single retry/i)
+  assert.match(reportRetry, /second missing or invalid report[\s\S]*status: `?"hard_error"`?[\s\S]*halt[\s\S]*no synthesis/i)
+  assert.match(inFlightRecovery, /recoverable[^\n]*`?inFlight`?.*original turn.*original absolute deadline.*(?:must not|without).*(?:duplicate|resubmit)/i)
+
   assert.match(guide, /validate[\s\S]*nonempty[\s\S]*exact[^\n]*prefix[\s\S]*before[\s\S]*stop[\s\S]*delete/i)
   assert.match(guide, /herdr session stop "\$HERDR_TEST_SESSION" --json/)
   assert.match(guide, /herdr session delete "\$HERDR_TEST_SESSION" --json/)
@@ -1563,6 +1593,18 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
   assert.match(guide, /teardown[^\n]*invent[^\n]*only[\s\S]*unique[^\n]*session/i)
   assert.doesNotMatch(guide, /herdr session (?:stop|delete) (?:default|current)(?:\s|`|$)/i)
   assert.doesNotMatch(guide, /herdr session (?:stop|delete) --json/)
+
+  const teardownCommands = [...guide.matchAll(/```(?:sh|bash)\n([\s\S]*?)```/g)]
+    .flatMap((match) => match[1].split("\n").map((line) => line.trim()))
+    .filter((line) => /^herdr session (?:stop|delete)\b/.test(line))
+  assert.deepEqual(teardownCommands, [
+    'herdr session stop "$HERDR_TEST_SESSION" --json',
+    'herdr session delete "$HERDR_TEST_SESSION" --json',
+  ])
+  for (const command of teardownCommands) {
+    assert.match(command, /^herdr session (?:stop|delete) "\$HERDR_TEST_SESSION" --json$/)
+    assert.doesNotMatch(command, /\b(?:default|current|developer)\b/)
+  }
 })
 
 test("English README documents install and avoids local-only model warnings", async () => {

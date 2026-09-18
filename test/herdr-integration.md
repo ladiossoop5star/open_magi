@@ -73,21 +73,21 @@ Record all pane sizes. Manually resize one owned role pane, run another delibera
 
 In test-owned configuration only, provide an invalid or unrecognized command for one role. Assert that the controller asks a user question instead of guessing. Exercise the authorized answer that causes an automatic config update, then verify only that role is retried. If startup created a failed-role pane and ownership is proven, replace only that failed role pane; healthy siblings and their sizes must remain unchanged. Assert that no fallback transport or model is used.
 
-Also exercise refusal or cancellation of the question. It must leave the invalid role unresolved without silently changing configuration, launching an alternative, or falling back.
+Also exercise refusal or cancellation of the question. It must leave the invalid role unresolved. On this branch, the test-owned configuration, panes, and agents remain unchanged; perform no retry and use no native fallback.
 
 ## Scenario 4: parallel work and failures
 
 Submit three role prompts concurrently and record three submission timestamps before waiting. Enforce the frozen absolute deadline; do not extend it per agent. Validate success only after each role has observed submission, activity, idle, done, and a valid current-turn report.
 
-For a test-owned timeout, send `Esc` using the live supported agent input command, record timeout status, and stop waiting at the absolute deadline. Exercise a blocked UI and prove the controller reports it rather than treating idle as done. When a completed agent has a missing report, prompt the same discovered agent exactly once for the missing report. This is a single retry: preserve the frozen baseline and do not blindly resubmit the original task. A second missing or invalid report is a hard failure.
+For a test-owned timeout, send `Esc` using the live supported agent input command, record timeout status, and stop waiting at the absolute deadline. Exercise a blocked UI and prove the controller reports it rather than treating idle as done. When a completed agent has a missing or invalid report for the same turn, prompt the same discovered agent exactly once for that report. This is a single retry: preserve the frozen baseline and do not blindly resubmit the original task. A second missing or invalid report becomes `status: "hard_error"`; halt the scenario and perform no synthesis.
 
 ## Scenario 5: persistence, drift, firewall, and recovery
 
 Run these cases against test-owned state in the isolated session:
 
 - Change test configuration after agents exist. Detect config drift and exercise each offered decision: continue with the recorded agents, explicit cleanup, and denied cleanup. Continue must preserve the existing recorded identities. Cleanup may affect only proven-owned subordinates. Denied cleanup must leave panes, agents, configuration, and unrelated state untouched.
-- Cause a harmless test agent to ask a question that the question firewall classifies as denied. Record the denial and prove the filesystem, commands, credentials, configuration, panes, and unrelated sessions remain untouched.
-- Restore a recoverable state with `inFlight` set and sufficient recorded identity, prompt, deadline, and report-path information. Assert that recovery resumes observation of the existing turn without duplicate submission.
+- Cause a harmless test agent to ask a question that the question firewall classifies as denied. Record the denial and prove the filesystem, commands, credentials, configuration, panes, agents, and unrelated sessions remain untouched. This is zero pane or agent mutation and no synthesis.
+- Restore a recoverable state with `inFlight` set and sufficient recorded identity, prompt, deadline, and report-path information. Assert that recovery resumes the original turn with the original absolute deadline. It must not duplicate or resubmit the prompt.
 - Mark a recorded agent busy. Exercise busy reuse decisions to wait, send `Esc`, replace the proven-owned affected role, and select the denied action. Denial must not mutate state; replacement must not affect healthy siblings.
 - Exercise missing state by removing session state while leaving deterministic agent names and reconstructable pane, workspace, source-command, creation-working-directory, and pane-ID relationships. Assert deterministic reconstruction. Then remove one ownership fact to make the case ambiguous and assert refusal without mutation.
 
