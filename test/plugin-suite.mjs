@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
+import { createHash } from "node:crypto"
 import { setTimeout as sleep } from "node:timers/promises"
 import test from "node:test"
 
@@ -1699,10 +1700,10 @@ test("idle event denies forbidden question requests and tells the agent to self-
   const updated = JSON.parse(await readFile(project.statePath, "utf8"))
   assert.equal(updated.inFlight, true)
   assert.match(updated.lastError, /question request denied/i)
-  assert.match(
-    await readFile(join(project.logDir, "question-denied.md"), "utf8"),
-    /classification: debug_direction/,
-  )
+  const denial = await readFile(join(project.logDir, "question-denied.md"), "utf8")
+  assert.match(denial, /classification: debug_direction/)
+  assert.match(denial, /question: Which debug direction should I try next\?/)
+  assert.match(denial, /default_action_if_denied: choose the highest-evidence recommendation and write verdict\.md\./)
   assert.equal(existsSync(join(project.logDir, "question-request.md")), false)
 
   await rm(project.root, { recursive: true, force: true })
@@ -1859,6 +1860,7 @@ test("Herdr turn allows a firewall-approved question without changing ownership 
     ".open_magi/magi-log/question-request.md",
     [
       "# Question Request",
+      "sensitive: herdr_raw_command",
       "classification: execution_blocker",
       "phase: parallel_deliberation",
       "question: Herdr UI is blocked. Please restore access.",
@@ -1904,18 +1906,21 @@ test("Herdr turn records a denied question without native continuation or owners
     lastPromptedAt: startedAt,
   })
   const state = { ...base, activeDeliberators: runningHerdrTurnEntries(base, startedAt) }
+  const sentinel = "launch-secret-provider --token raw-secret-123"
+  const expectedDigest = createHash("sha256").update(sentinel, "utf8").digest("hex")
   await writeFile(project.statePath, JSON.stringify(state, null, 2))
   await writeArtifact(
     project.root,
     ".open_magi/magi-log/question-request.md",
     [
       "# Question Request",
+      "sensitive: herdr_raw_command",
       "classification: procedural",
       "phase: parallel_deliberation",
-      "question: Should I synthesize before the Herdr agents finish?",
-      "why_local_context_failed: I did not read the turn state.",
-      "commands_or_files_checked: .open_magi/magi-log/state.json",
-      "default_action_if_denied: keep waiting for the owned Herdr turn.",
+      `question: ${sentinel}`,
+      `why_local_context_failed: failed command ${sentinel}`,
+      `commands_or_files_checked: ${sentinel}`,
+      `default_action_if_denied: retry ${sentinel}`,
       "",
     ].join("\n"),
   )
@@ -1933,12 +1938,71 @@ test("Herdr turn records a denied question without native continuation or owners
   const updated = JSON.parse(await readFile(project.statePath, "utf8"))
   assert.deepEqual(updated, state)
   assert.equal(existsSync(join(project.logDir, "question-request.md")), false)
-  assert.match(await readFile(join(project.logDir, "question-denied.md"), "utf8"), /classification: procedural/)
+  const denial = await readFile(join(project.logDir, "question-denied.md"), "utf8")
+  assert.match(denial, /classification: procedural/)
+  assert.match(denial, /sensitive: herdr_raw_command/)
+  assert.match(denial, new RegExp(`question_sha256: ${expectedDigest}`))
+  assert.match(denial, /question: \[redacted\]/)
+  assert.match(denial, /why_local_context_failed: \[redacted\]/)
+  assert.match(denial, /commands_or_files_checked: \[redacted\]/)
+  assert.match(denial, /default_action_if_denied: \[redacted\]/)
+  assert.doesNotMatch(denial, new RegExp(sentinel))
   assert.equal(calls.length, 0)
   assert.equal(aborts.length, 0)
   for (const entry of Object.values(state.activeDeliberators)) {
     assert.equal(existsSync(entry.reportPath), false)
   }
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("marked typo classification redacts denial artifact and prompt text", async () => {
+  const project = await makeProject("{}")
+  const sentinel = "fix-secret-command --credential raw-secret-456"
+  const expectedDigest = createHash("sha256").update(sentinel, "utf8").digest("hex")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    needsContinue: true,
+    inFlight: false,
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(
+    project.root,
+    ".open_magi/magi-log/question-request.md",
+    [
+      "# Question Request",
+      "sensitive: herdr_raw_command",
+      "classification: destructive_or_unrelated_rsk",
+      "phase: parallel_deliberation",
+      `question: ${sentinel}`,
+      `why_local_context_failed: failed command ${sentinel}`,
+      `commands_or_files_checked: ${sentinel}`,
+      `default_action_if_denied: retry ${sentinel}`,
+      "",
+    ].join("\n"),
+  )
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  const prompt = calls[0].body.parts[0].text
+  assert.doesNotMatch(prompt, new RegExp(sentinel))
+  assert.match(prompt, new RegExp(`question_sha256: ${expectedDigest}`))
+  const denial = await readFile(join(project.logDir, "question-denied.md"), "utf8")
+  assert.doesNotMatch(denial, new RegExp(sentinel))
+  assert.match(denial, /classification: destructive_or_unrelated_rsk/)
+  assert.match(denial, /sensitive: herdr_raw_command/)
+  assert.match(denial, new RegExp(`question_sha256: ${expectedDigest}`))
+  assert.equal(existsSync(join(project.logDir, "question-request.md")), false)
 
   await rm(project.root, { recursive: true, force: true })
 })

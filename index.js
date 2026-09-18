@@ -1,6 +1,6 @@
 import { access, appendFile, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 
 const LOG_DIR = ".open_magi/magi-log"
 const STATE_FILE = "state.json"
@@ -608,8 +608,17 @@ function questionDeniedError(request, nowIso) {
   return `question request denied at ${nowIso}: classification=${request?.classification || "missing"} phase=${request?.phase || "unknown"}`
 }
 
+function isSensitiveHerdrRawCommand(request) {
+  return request?.sensitive?.toLowerCase() === "herdr_raw_command"
+}
+
+function questionSha256(request) {
+  return createHash("sha256").update(String(request?.question || ""), "utf8").digest("hex")
+}
+
 function questionDeniedText(request) {
   if (!request) return ""
+  const sensitive = isSensitiveHerdrRawCommand(request)
 
   return [
     "",
@@ -617,10 +626,18 @@ function questionDeniedText(request) {
     "[magi] Question request denied.",
     `classification: ${request.classification || "missing"}`,
     `phase: ${request.phase || "unknown"}`,
-    `question: ${request.question || "(not provided)"}`,
+    ...(sensitive
+      ? [
+          "sensitive: herdr_raw_command",
+          "question: [redacted]",
+          `question_sha256: ${questionSha256(request)}`,
+        ]
+      : [`question: ${request.question || "(not provided)"}`]),
     "Do not ask the user.",
     "Find the answer from local context, existing artifacts, verification output, repository files, or deliberator reports.",
-    request.default_action_if_denied
+    sensitive
+      ? "Execute this default action now: [redacted]"
+      : request.default_action_if_denied
       ? `Execute this default action now: ${request.default_action_if_denied}`
       : "Choose the safest verifiable action allowed by the Magi contract and record it in the next artifact.",
     "Write the decision and evidence into the appropriate Magi artifact, then continue the loop.",
@@ -629,6 +646,7 @@ function questionDeniedText(request) {
 
 async function writeQuestionDenied(projectRoot, request, nowIso) {
   const target = questionDeniedPath(projectRoot)
+  const sensitive = isSensitiveHerdrRawCommand(request)
   await mkdir(dirname(target), { recursive: true })
   await writeFile(
     target,
@@ -638,10 +656,21 @@ async function writeQuestionDenied(projectRoot, request, nowIso) {
       `denied_at: ${nowIso}`,
       `classification: ${request?.classification || "missing"}`,
       `phase: ${request?.phase || "unknown"}`,
-      `question: ${request?.question || ""}`,
-      `why_local_context_failed: ${request?.why_local_context_failed || ""}`,
-      `commands_or_files_checked: ${request?.commands_or_files_checked || ""}`,
-      `default_action_if_denied: ${request?.default_action_if_denied || ""}`,
+      ...(sensitive
+        ? [
+            "sensitive: herdr_raw_command",
+            "question: [redacted]",
+            `question_sha256: ${questionSha256(request)}`,
+            "why_local_context_failed: [redacted]",
+            "commands_or_files_checked: [redacted]",
+            "default_action_if_denied: [redacted]",
+          ]
+        : [
+            `question: ${request?.question || ""}`,
+            `why_local_context_failed: ${request?.why_local_context_failed || ""}`,
+            `commands_or_files_checked: ${request?.commands_or_files_checked || ""}`,
+            `default_action_if_denied: ${request?.default_action_if_denied || ""}`,
+          ]),
       "",
       "Decision: denied by Magi question firewall. The main agent must self-answer from local context and continue.",
       "",
