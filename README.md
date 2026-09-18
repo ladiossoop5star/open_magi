@@ -522,9 +522,13 @@ may share that exclude file.
 
 Never commit `.open-magi-herdr`, and do not embed secrets or tokens in its raw
 commands. Raw commands stay confined to the config file and the immediate
-launch. The only exception is an exact targeted correction question. That exact
-question may exist only in the owner-only transient
+launch. The only exception is an exact targeted correction question, which the
+controller marks `sensitive: herdr_raw_command`. That exact question may exist
+only in the owner-only transient
 `.open_magi/magi-log/question-request.md`; the plugin consumes and removes it.
+If the request is denied, the persistent `question-denied.md` record stores only
+the marker, a lowercase SHA-256 digest, and redacted free text; it never stores
+the raw command.
 Raw commands never appear in Magi reports, persistent logs, or general
 diagnostics. In a non-Git project, exclusion is skipped; protect the file
 manually.

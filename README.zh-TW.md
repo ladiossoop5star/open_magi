@@ -700,8 +700,11 @@ idempotent 地加入精確 pattern；繼續前再以實際 config path 執行
 
 `.open-magi-herdr` 必須 `never commit`，而且 raw commands 不得內嵌 secrets 或
 tokens。Raw commands 只留在 config file 與 immediate launch。唯一例外是
-`exact targeted correction question`；該 exact question 只能存在 owner-only
-transient `.open_magi/magi-log/question-request.md`，由 plugin consume 後 remove。
+`exact targeted correction question`，controller 會設定
+`sensitive: herdr_raw_command`。該 exact question 只能存在 owner-only transient
+`.open_magi/magi-log/question-request.md`，由 plugin consume 後 remove。若 request
+被 denied，persistent `question-denied.md` 只保存 marker、lowercase SHA-256 digest
+與 redacted free text；never 保存 raw command。
 Raw commands 絕不進入 Magi reports、persistent logs 或 general diagnostics。
 非 Git project 會略過 exclusion；使用者必須自行保護這個檔案。
 
