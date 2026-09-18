@@ -510,6 +510,7 @@ function noProgressLimitError(count, nowIso) {
 
 async function enforceNoProgressLimit(directory, state, nowMs = Date.now()) {
   if (!state?.active || state.projectRoot !== directory) return { state, blocked: false }
+  if (isHerdrOwnedTurn(state)) return { state, blocked: false }
 
   const stateCount = nonNegativeInteger(state.consecutiveNoProgress, 0)
   const historyCount = trailingNoProgressHistoryCount(state.history)
@@ -1452,6 +1453,7 @@ function canRebindActiveSession(state, sessionID, agent, directory, nowMs = Date
   if (isTerminalPhase(state.currentPhase)) return false
   if (isDeliberatorAgent(agent)) return false
   if (state.mainAgent && agent && state.mainAgent !== agent) return false
+  if (isHerdrOwnedTurn(state)) return false
   if (state.inFlight && !isStaleLock(state, nowMs)) return false
   return true
 }
@@ -1475,6 +1477,7 @@ function shouldContinue(state, event, directory, nowMs, missingArtifacts = [], q
   if (!state?.active) return { ok: false }
   if (state.sessionID !== eventSessionID(event)) return { ok: false }
   if (state.projectRoot !== directory) return { ok: false }
+  if (isHerdrOwnedTurn(state)) return { ok: false }
 
   const artifactRepair = missingArtifacts.length > 0
   const recover = (!state.needsContinue && !isTerminalPhase(state.currentPhase)) || artifactRepair || questionDenied
@@ -1829,6 +1832,22 @@ function isCurrentDeliberatorEntry(state, entry) {
   return entryPass === currentPass
 }
 
+function isHerdrOwnedTurn(state) {
+  if (!state?.inFlight) return false
+  const entries = Object.values(state.activeDeliberators || {}).filter(
+    (entry) => isHerdrDeliberatorEntry(entry) && isCurrentDeliberatorEntry(state, entry),
+  )
+  if (entries.some((entry) => entry.status === "running")) return true
+
+  const lockMs = Date.parse(state.inFlightSince)
+  if (!Number.isFinite(lockMs)) return false
+  return entries.some((entry) => {
+    if (!["completed", "timed_out", "hard_error"].includes(entry.status)) return false
+    const startedMs = Date.parse(entry.startedAt)
+    return Number.isFinite(startedMs) && startedMs >= lockMs
+  })
+}
+
 function supersededDeliberatorEntry(state, entry, nowIso) {
   return {
     ...entry,
@@ -2145,7 +2164,7 @@ async function recordDeliberatorSession(client, directory, event, nowMs, schedul
 
 async function clearInFlightOnMessage(directory, sessionID) {
   const state = await loadMatchingState(directory, sessionID)
-  if (!state?.inFlight) return
+  if (!state?.inFlight || isHerdrOwnedTurn(state)) return
   await writeState(directory, { ...state, inFlight: false, inFlightSince: null })
 }
 
@@ -2154,6 +2173,7 @@ async function bindSessionOnMessage(client, directory, sessionID, agent, schedul
   const state = await readState(directory)
   if (isDeliberatorAgent(agent)) return
   if (!state?.active || state.projectRoot !== directory) return
+  if (isHerdrOwnedTurn(state)) return
   if (state.mainAgent && agent && state.mainAgent !== agent) return
   if (state.sessionID && state.sessionID !== sessionID) {
     if (canRebindActiveSession(state, sessionID, agent, directory)) {
@@ -2176,6 +2196,7 @@ async function bindSessionOnStateWrite(client, directory, toolInput, scheduleTim
   if (!sessionID || !stateTouched) return
   const state = await readState(directory)
   if (!state?.active || state.projectRoot !== directory) return
+  if (isHerdrOwnedTurn(state)) return
   if (state.sessionID && state.sessionID !== sessionID) {
     return
   }
@@ -2348,6 +2369,8 @@ export const server = async (input) => {
           }
         }
         NO_STATE_DIRS.delete(directory)
+
+        if (isHerdrOwnedTurn(state)) return
 
         const timeoutResult = await enforceExpiredDeliberators(input.client, directory, state, now)
         state = timeoutResult.state

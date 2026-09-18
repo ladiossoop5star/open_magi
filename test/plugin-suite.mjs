@@ -48,6 +48,28 @@ function activeState(overrides = {}) {
   }
 }
 
+function runningHerdrTurnEntries(state, startedAt = new Date().toISOString()) {
+  return Object.fromEntries(
+    ["melchior", "balthasar", "casper"].map((sage, index) => [
+      sage,
+      {
+        transport: "herdr",
+        agent: `magi-${sage}-owned`,
+        paneID: `w1:p${index + 2}`,
+        sessionID: `herdr-${sage}`,
+        round: state.currentRound,
+        mode: state.currentCouncilMode || "decision",
+        pass: state.currentDeliberationPass || 1,
+        turnID: "turn-herdr-owned",
+        reportPath: join(state.projectRoot, `.open_magi/magi-log/report-${sage}.md`),
+        startedAt,
+        deadlineAt: new Date(Date.parse(startedAt) + 30 * 60 * 1000).toISOString(),
+        status: "running",
+      },
+    ]),
+  )
+}
+
 function fakeClient(calls, options = {}) {
   return {
     session: {
@@ -2593,6 +2615,226 @@ test("inFlight locks only go stale after the configured staleLockMs window", asy
     event: { type: "session.idle", properties: { sessionID: "ses-1" } },
   })
   assert.equal(calls.length, 1)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("main chat messages preserve a running Herdr turn lock and ownership state", async () => {
+  const project = await makeProject("{}")
+  const base = activeState({
+    projectRoot: project.root,
+    currentRound: 3,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    needsContinue: true,
+    inFlight: true,
+    inFlightSince: new Date().toISOString(),
+    lastPromptedRound: 3,
+    lastPromptedAt: new Date().toISOString(),
+    deliberatorTimeoutCounts: { melchior: 1 },
+  })
+  const state = { ...base, activeDeliberators: runningHerdrTurnEntries(base, base.inFlightSince) }
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient(calls, { aborts }),
+    directory: project.root,
+  })
+
+  await hooks["chat.message"]({ sessionID: "ses-1", agent: "build" })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated, state)
+  assert.equal(calls.length, 0)
+  assert.equal(aborts.length, 0)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("main chat messages preserve terminal Herdr entries tied to the current turn lock", async () => {
+  const project = await makeProject("{}")
+  const startedAt = new Date().toISOString()
+  const base = activeState({
+    projectRoot: project.root,
+    currentRound: 3,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    needsContinue: true,
+    inFlight: true,
+    inFlightSince: startedAt,
+    lastPromptedRound: 3,
+    lastPromptedAt: startedAt,
+  })
+  const activeDeliberators = Object.fromEntries(
+    Object.entries(runningHerdrTurnEntries(base, startedAt)).map(([sage, entry]) => [
+      sage,
+      { ...entry, status: "completed", completedAt: startedAt },
+    ]),
+  )
+  const state = { ...base, activeDeliberators }
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient(calls, { aborts }),
+    directory: project.root,
+  })
+
+  await hooks["chat.message"]({ sessionID: "ses-1", agent: "build" })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated, state)
+  assert.equal(calls.length, 0)
+  assert.equal(aborts.length, 0)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("stale idle recovery preserves a running Herdr turn without native continuation", async () => {
+  const project = await makeProject("{}")
+  const startedAt = new Date(Date.now() - 45 * 60 * 1000).toISOString()
+  const base = activeState({
+    projectRoot: project.root,
+    currentRound: 3,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    needsContinue: false,
+    inFlight: true,
+    inFlightSince: startedAt,
+    lastPromptedRound: 3,
+    lastPromptedAt: startedAt,
+  })
+  const state = { ...base, activeDeliberators: runningHerdrTurnEntries(base, startedAt) }
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient(calls, { aborts }),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated, state)
+  assert.equal(calls.length, 0)
+  assert.equal(aborts.length, 0)
+  for (const entry of Object.values(state.activeDeliberators)) {
+    assert.equal(existsSync(entry.reportPath), false)
+  }
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("stale primary rebind preserves Herdr session ownership and turn lock", async () => {
+  const project = await makeProject("{}")
+  const startedAt = new Date(Date.now() - 45 * 60 * 1000).toISOString()
+  const base = activeState({
+    projectRoot: project.root,
+    sessionID: "ses-old",
+    currentRound: 3,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    needsContinue: true,
+    inFlight: true,
+    inFlightSince: startedAt,
+    lastPromptedRound: 3,
+    lastPromptedAt: startedAt,
+  })
+  const state = { ...base, activeDeliberators: runningHerdrTurnEntries(base, startedAt) }
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient(calls, { aborts }),
+    directory: project.root,
+  })
+
+  await hooks["chat.message"]({ sessionID: "ses-new", agent: "build" })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated, state)
+  assert.equal(calls.length, 0)
+  assert.equal(aborts.length, 0)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("main chat messages still clear native inFlight locks", async () => {
+  const project = await makeProject("{}")
+  const historicalHerdrStartedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+  const state = activeState({
+    projectRoot: project.root,
+    currentPhase: "parallel_deliberation",
+    needsContinue: true,
+    inFlight: true,
+    inFlightSince: new Date().toISOString(),
+    activeDeliberators: {
+      melchior: {
+        agent: "deliberator-melchior",
+        sessionID: "native-melchior",
+        parentSessionID: "ses-1",
+        round: 3,
+        status: "running",
+      },
+      casper: {
+        transport: "herdr",
+        agent: "magi-casper-old",
+        sessionID: "herdr-casper-old",
+        round: 3,
+        mode: "decision",
+        pass: 1,
+        turnID: "turn-herdr-completed",
+        startedAt: historicalHerdrStartedAt,
+        completedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+        status: "completed",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await hooks["chat.message"]({ sessionID: "ses-1", agent: "build" })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.inFlight, false)
+  assert.equal(updated.inFlightSince, null)
+  assert.deepEqual(updated.activeDeliberators, state.activeDeliberators)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("stale native inFlight locks still permit primary session rebind", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    sessionID: "ses-old",
+    mainAgent: "build",
+    currentPhase: "research_task",
+    needsContinue: true,
+    inFlight: true,
+    inFlightSince: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await hooks["chat.message"]({ sessionID: "ses-new", agent: "build" })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.equal(updated.sessionID, "ses-new")
+  assert.equal(updated.previousSessionID, "ses-old")
+  assert.equal(updated.inFlight, false)
+  assert.equal(updated.inFlightSince, null)
+  assert.match(updated.lastError, /rebound active loop from ses-old to ses-new/)
 
   await rm(project.root, { recursive: true, force: true })
 })
