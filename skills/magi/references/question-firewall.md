@@ -19,6 +19,13 @@ commands_or_files_checked: repo files, logs, reports, commands, or docs already 
 default_action_if_denied: concrete action to take if the plugin denies the question
 ```
 
+Optional sensitive marker (omit for ordinary requests; when required, place it
+immediately below `# Question Request`):
+
+```md
+sensitive: herdr_raw_command
+```
+
 The plugin may deny the request and write
 `.open_magi/magi-log/question-denied.md`. If denied, do not repeat the question.
 Find the answer from local context, choose the safest verifiable default action,
@@ -30,14 +37,22 @@ resolved, continue from `state.json` and do not recreate the old request file.
 If a request is denied, read `question-denied.md` once, self-answer, and
 continue without writing the same request again.
 
-For a Herdr targeted raw-command correction, the affected role's exact
-configured command may appear only in the transient, owner-only (`0600` where
-supported) `.open_magi/magi-log/question-request.md`. This is the sole log
-exception for raw command text. The request must contain no secrets, tokens, or
-credentials. The plugin consumes and removes `question-request.md` whether it
-allows or denies the question; make no persistent report or log copies of the
-command. All other artifacts store only its lowercase hexadecimal SHA-256
-digest.
+For every Herdr targeted raw-command correction, the controller must set
+`sensitive: herdr_raw_command`. The affected role's exact configured command
+may appear only in the transient, owner-only (`0600` where supported)
+`.open_magi/magi-log/question-request.md`. This is the sole log exception for
+raw command text, and the request must contain no secrets, tokens, or
+credentials.
+
+If the marked request is allowed, the plugin may display the exact question
+only to the user, then consumes and removes the transient request. If it is
+denied, the persistent `question-denied.md` retains
+`sensitive: herdr_raw_command` and `question_sha256: <lowercase hexadecimal
+SHA-256>`. All raw or free-text fields are `[redacted]`; the marker and digest
+are the only stored representation of the sensitive question. Keep no raw
+command copy in that denial, any report, or any other persistent log. Unmarked
+requests retain their existing behavior unchanged. In all cases, make no
+persistent report or log copies of the raw command.
 
 For a denied Herdr request, make no pane or agent mutation: leave panes untouched
 and perform no synthesis from incomplete or stale reports.
