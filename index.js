@@ -2370,7 +2370,16 @@ export const server = async (input) => {
         }
         NO_STATE_DIRS.delete(directory)
 
-        if (isHerdrOwnedTurn(state)) return
+        if (isHerdrOwnedTurn(state)) {
+          if (!isIdleEvent(event) || state.sessionID !== eventSessionID(event)) return
+          const questionRequest = await readQuestionRequest(directory)
+          if (!questionRequest) return
+          if (!isQuestionAllowed(state, questionRequest)) {
+            await writeQuestionDenied(directory, questionRequest, new Date(now).toISOString())
+          }
+          await removeQuestionRequest(directory)
+          return
+        }
 
         const timeoutResult = await enforceExpiredDeliberators(input.client, directory, state, now)
         state = timeoutResult.state

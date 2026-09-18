@@ -1838,6 +1838,111 @@ test("idle event allows execution blocker question requests to wait for the user
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("Herdr turn allows a firewall-approved question without changing ownership state", async () => {
+  const project = await makeProject("{}")
+  const startedAt = new Date().toISOString()
+  const base = activeState({
+    projectRoot: project.root,
+    currentRound: 3,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    needsContinue: true,
+    inFlight: true,
+    inFlightSince: startedAt,
+    lastPromptedRound: 3,
+    lastPromptedAt: startedAt,
+  })
+  const state = { ...base, activeDeliberators: runningHerdrTurnEntries(base, startedAt) }
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(
+    project.root,
+    ".open_magi/magi-log/question-request.md",
+    [
+      "# Question Request",
+      "classification: execution_blocker",
+      "phase: parallel_deliberation",
+      "question: Herdr UI is blocked. Please restore access.",
+      "why_local_context_failed: The controller cannot operate the external UI.",
+      "commands_or_files_checked: herdr pane current --current",
+      "default_action_if_denied: preserve the turn and stop.",
+      "",
+    ].join("\n"),
+  )
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient(calls, { aborts }),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated, state)
+  assert.equal(existsSync(join(project.logDir, "question-request.md")), false)
+  assert.equal(existsSync(join(project.logDir, "question-denied.md")), false)
+  assert.equal(calls.length, 0)
+  assert.equal(aborts.length, 0)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("Herdr turn records a denied question without native continuation or ownership changes", async () => {
+  const project = await makeProject("{}")
+  const startedAt = new Date().toISOString()
+  const base = activeState({
+    projectRoot: project.root,
+    currentRound: 3,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    needsContinue: true,
+    inFlight: true,
+    inFlightSince: startedAt,
+    lastPromptedRound: 3,
+    lastPromptedAt: startedAt,
+  })
+  const state = { ...base, activeDeliberators: runningHerdrTurnEntries(base, startedAt) }
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  await writeArtifact(
+    project.root,
+    ".open_magi/magi-log/question-request.md",
+    [
+      "# Question Request",
+      "classification: procedural",
+      "phase: parallel_deliberation",
+      "question: Should I synthesize before the Herdr agents finish?",
+      "why_local_context_failed: I did not read the turn state.",
+      "commands_or_files_checked: .open_magi/magi-log/state.json",
+      "default_action_if_denied: keep waiting for the owned Herdr turn.",
+      "",
+    ].join("\n"),
+  )
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient(calls, { aborts }),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated, state)
+  assert.equal(existsSync(join(project.logDir, "question-request.md")), false)
+  assert.match(await readFile(join(project.logDir, "question-denied.md"), "utf8"), /classification: procedural/)
+  assert.equal(calls.length, 0)
+  assert.equal(aborts.length, 0)
+  for (const entry of Object.values(state.activeDeliberators)) {
+    assert.equal(existsSync(entry.reportPath), false)
+  }
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("idle event recovers an active non-terminal loop even when needsContinue was left false", async () => {
   const project = await makeProject("{}")
   const state = activeState({
