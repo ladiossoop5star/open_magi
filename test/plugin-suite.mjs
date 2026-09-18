@@ -378,6 +378,100 @@ test("session.created preserves a Herdr-owned deliberator entry", async () => {
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("session.created preserves Herdr ownership acquired while native replacement aborts", async () => {
+  const project = await makeProject("{}")
+  const nativeEntry = {
+    agent: "deliberator-melchior",
+    sessionID: "native-melchior-old",
+    parentSessionID: "ses-1",
+    round: 2,
+    pass: 1,
+    startedAt: new Date(Date.now() - 60000).toISOString(),
+    deadlineAt: new Date(Date.now() + 600000).toISOString(),
+    status: "running",
+  }
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    activeDeliberators: { melchior: nativeEntry },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+
+  let releaseAbort
+  let signalAbortStarted
+  const abortGate = new Promise((resolve) => {
+    releaseAbort = resolve
+  })
+  const abortStarted = new Promise((resolve) => {
+    signalAbortStarted = resolve
+  })
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: {
+      session: {
+        async promptAsync(payload) {
+          calls.push(payload)
+          return { ok: true }
+        },
+        async abort(payload) {
+          aborts.push(payload)
+          signalAbortStarted()
+          await abortGate
+          return true
+        },
+      },
+    },
+    directory: project.root,
+  })
+
+  const created = hooks.event({
+    event: {
+      type: "session.created",
+      properties: {
+        info: {
+          id: "native-melchior-new",
+          parentID: "ses-1",
+          agent: "deliberator-melchior",
+        },
+      },
+    },
+  })
+  await abortStarted
+
+  const herdrEntry = {
+    transport: "herdr",
+    agent: "magi-melchior-owned",
+    paneID: "w1:p2",
+    sessionID: "herdr-melchior",
+    round: 2,
+    mode: "decision",
+    pass: 1,
+    startedAt: new Date().toISOString(),
+    deadlineAt: new Date(Date.now() + 600000).toISOString(),
+    status: "running",
+  }
+  await writeFile(
+    project.statePath,
+    JSON.stringify(
+      { ...state, activeDeliberators: { ...state.activeDeliberators, melchior: herdrEntry } },
+      null,
+      2,
+    ),
+  )
+  releaseAbort()
+  await created
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated.activeDeliberators.melchior, herdrEntry)
+  assert.equal(aborts.length, 1)
+  assert.equal(calls.length, 0)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("concurrent session.created events preserve all deliberator child sessions", async () => {
   const project = await makeProject("{}")
   const state = activeState({
@@ -786,6 +880,107 @@ test("expired Herdr-owned deliberators are untouched by the native timeout backs
   assert.equal(calls.length, 0)
   assert.equal(
     existsSync(join(project.root, ".open_magi/magi-log/round-003/council-002/report-melchior.md")),
+    false,
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("native timeout preserves Herdr ownership acquired while abort is in flight", async () => {
+  const project = await makeProject("{}")
+  const nativeEntry = {
+    agent: "deliberator-casper",
+    sessionID: "native-casper",
+    parentSessionID: "ses-1",
+    round: 2,
+    pass: 1,
+    startedAt: new Date(Date.now() - 900000).toISOString(),
+    deadlineAt: new Date(Date.now() + 600000).toISOString(),
+    status: "running",
+  }
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    needsContinue: false,
+    inFlight: false,
+    activeDeliberators: { casper: nativeEntry },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+
+  let releaseAbort
+  let signalAbortStarted
+  const abortGate = new Promise((resolve) => {
+    releaseAbort = resolve
+  })
+  const abortStarted = new Promise((resolve) => {
+    signalAbortStarted = resolve
+  })
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: {
+      session: {
+        async promptAsync(payload) {
+          calls.push(payload)
+          return { ok: true }
+        },
+        async abort(payload) {
+          aborts.push(payload)
+          signalAbortStarted()
+          await abortGate
+          return true
+        },
+      },
+    },
+    directory: project.root,
+  })
+
+  const expiredNativeEntry = {
+    ...nativeEntry,
+    deadlineAt: new Date(Date.now() - 1000).toISOString(),
+  }
+  await writeFile(
+    project.statePath,
+    JSON.stringify(
+      { ...state, activeDeliberators: { ...state.activeDeliberators, casper: expiredNativeEntry } },
+      null,
+      2,
+    ),
+  )
+  const sweep = hooks["chat.message"]({ sessionID: "ses-1", agent: "build" })
+  await abortStarted
+
+  const herdrEntry = {
+    transport: "herdr",
+    agent: "magi-casper-owned",
+    paneID: "w1:p4",
+    sessionID: "herdr-casper",
+    round: 2,
+    mode: "decision",
+    pass: 1,
+    startedAt: new Date().toISOString(),
+    deadlineAt: new Date(Date.now() + 600000).toISOString(),
+    status: "running",
+  }
+  await writeFile(
+    project.statePath,
+    JSON.stringify(
+      { ...state, activeDeliberators: { ...state.activeDeliberators, casper: herdrEntry } },
+      null,
+      2,
+    ),
+  )
+  releaseAbort()
+  await sweep
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated.activeDeliberators.casper, herdrEntry)
+  assert.equal(aborts.length, 1)
+  assert.equal(calls.length, 0)
+  assert.equal(
+    existsSync(join(project.root, ".open_magi/magi-log/round-002/council-001/report-casper.md")),
     false,
   )
 
@@ -2978,7 +3173,14 @@ test("round transition normalize resets a stale currentReconPass", async () => {
   await rm(project.root, { recursive: true, force: true })
 })
 
-test("round-entry normalize preserves an in-progress recon with a running Herdr-owned deliberator", async () => {
+for (const { name, transport } of [
+  { name: "round-entry normalize preserves an in-progress recon with a running deliberator" },
+  {
+    name: "round-entry normalize preserves an in-progress recon with a running Herdr-owned deliberator",
+    transport: "herdr",
+  },
+]) {
+test(name, async () => {
   const project = await makeProject("{}")
   const state = activeState({
     projectRoot: project.root,
@@ -2998,7 +3200,7 @@ test("round-entry normalize preserves an in-progress recon with a running Herdr-
         agent: "deliberator-melchior",
         sessionID: "ses-melchior",
         parentSessionID: "ses-1",
-        transport: "herdr",
+        ...(transport ? { transport } : {}),
         round: 2,
         pass: 2,
         mode: "recon",
@@ -3027,6 +3229,7 @@ test("round-entry normalize preserves an in-progress recon with a running Herdr-
 
   await rm(project.root, { recursive: true, force: true })
 })
+}
 
 test("round-entry normalize preserves an in-progress recon with pending reports", async () => {
   const project = await makeProject("{}")

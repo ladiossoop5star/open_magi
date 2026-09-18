@@ -1839,6 +1839,20 @@ function supersededDeliberatorEntry(state, entry, nowIso) {
   }
 }
 
+function runningNativeDeliberatorEntry(state, directory, sage, sessionID) {
+  if (!state?.active || state.projectRoot !== directory) return null
+  const entry = state.activeDeliberators?.[sage]
+  if (
+    !entry ||
+    entry.status !== "running" ||
+    entry.sessionID !== sessionID ||
+    isHerdrDeliberatorEntry(entry)
+  ) {
+    return null
+  }
+  return entry
+}
+
 async function enforceExpiredDeliberators(client, directory, state, nowMs = Date.now()) {
   if (!state?.active || state.projectRoot !== directory) return { state, timedOut: [] }
   if (!state.activeDeliberators || typeof state.activeDeliberators !== "object") {
@@ -1846,8 +1860,6 @@ async function enforceExpiredDeliberators(client, directory, state, nowMs = Date
   }
 
   const nowIso = new Date(nowMs).toISOString()
-  const activeDeliberators = { ...state.activeDeliberators }
-  const timeoutCounts = { ...(state.deliberatorTimeoutCounts || {}) }
   const timedOut = []
   const superseded = []
 
@@ -1857,67 +1869,105 @@ async function enforceExpiredDeliberators(client, directory, state, nowMs = Date
     const deadlineMs = Date.parse(entry.deadlineAt)
     if (!Number.isFinite(deadlineMs) || nowMs < deadlineMs) continue
 
-    if (!isCurrentDeliberatorEntry(state, entry)) {
-      activeDeliberators[sage] = supersededDeliberatorEntry(state, entry, nowIso)
-      superseded.push({ sage, entry: activeDeliberators[sage] })
+    let currentState = await readState(directory)
+    let currentEntry = runningNativeDeliberatorEntry(currentState, directory, sage, entry.sessionID)
+    if (!currentEntry) continue
+
+    const currentDeadlineMs = Date.parse(currentEntry.deadlineAt)
+    if (!Number.isFinite(currentDeadlineMs) || nowMs < currentDeadlineMs) continue
+
+    if (!isCurrentDeliberatorEntry(currentState, currentEntry)) {
+      superseded.push({ sage, entry: supersededDeliberatorEntry(currentState, currentEntry, nowIso) })
       continue
     }
 
     let abortError = null
     try {
-      await abortDeliberatorSession(client, entry, directory)
+      await abortDeliberatorSession(client, currentEntry, directory)
     } catch (error) {
       abortError = error instanceof Error ? error.message : String(error)
       await appendError(directory, `Failed to abort timed-out deliberator ${sage}`, error)
     }
 
-    let reportResult = { relativePath: deliberatorReportArtifact(state, sage, entry), written: false }
+    currentState = await readState(directory)
+    currentEntry = runningNativeDeliberatorEntry(currentState, directory, sage, entry.sessionID)
+    if (!currentEntry) continue
+
+    let reportResult = {
+      relativePath: deliberatorReportArtifact(currentState, sage, currentEntry),
+      written: false,
+    }
     let reportError = null
     try {
-      reportResult = await writeTimeoutReport(directory, state, sage, entry, nowIso, abortError)
+      reportResult = await writeTimeoutReport(directory, currentState, sage, currentEntry, nowIso, abortError)
     } catch (error) {
       reportError = error instanceof Error ? error.message : String(error)
       await appendError(directory, `Failed to write timeout report for ${sage}`, error)
     }
 
-    timeoutCounts[sage] = positiveInteger(timeoutCounts[sage], 0) + 1
-    activeDeliberators[sage] = {
-      ...entry,
+    currentState = await readState(directory)
+    currentEntry = runningNativeDeliberatorEntry(currentState, directory, sage, entry.sessionID)
+    if (!currentEntry) continue
+
+    const timedOutEntry = {
+      ...currentEntry,
       status: "timed_out",
       timedOutAt: nowIso,
       abortRequestedAt: nowIso,
       abortError,
       reportError,
       reportPath: reportResult.relativePath,
-      reportWrittenAt: reportResult.written ? nowIso : entry.reportWrittenAt || null,
+      reportWrittenAt: reportResult.written ? nowIso : currentEntry.reportWrittenAt || null,
     }
-    timedOut.push({ sage, entry: activeDeliberators[sage] })
+    timedOut.push({ sage, entry: timedOutEntry })
   }
 
-  if (timedOut.length === 0) {
-    if (superseded.length === 0) return { state, timedOut }
+  const latestState = await readState(directory)
+  if (!latestState?.active || latestState.projectRoot !== directory) {
+    return { state: latestState || state, timedOut: [] }
+  }
+
+  const activeDeliberators = { ...(latestState.activeDeliberators || {}) }
+  const finalTimedOut = timedOut.filter(({ sage, entry }) => {
+    if (!runningNativeDeliberatorEntry(latestState, directory, sage, entry.sessionID)) return false
+    activeDeliberators[sage] = entry
+    return true
+  })
+  const finalSuperseded = superseded.filter(({ sage, entry }) => {
+    if (!runningNativeDeliberatorEntry(latestState, directory, sage, entry.sessionID)) return false
+    activeDeliberators[sage] = entry
+    return true
+  })
+
+  if (finalTimedOut.length === 0) {
+    if (finalSuperseded.length === 0) return { state: latestState, timedOut: [] }
 
     const nextState = {
-      ...state,
+      ...latestState,
       activeDeliberators,
     }
     await writeState(directory, nextState)
-    return { state: nextState, timedOut, superseded }
+    return { state: nextState, timedOut: [], superseded: finalSuperseded }
   }
 
+  const timeoutCounts = { ...(latestState.deliberatorTimeoutCounts || {}) }
+  for (const { sage } of finalTimedOut) {
+    timeoutCounts[sage] = positiveInteger(timeoutCounts[sage], 0) + 1
+  }
   const nextState = {
-    ...state,
-    currentPhase: state.currentPhase === "research_task" ? "parallel_deliberation" : state.currentPhase,
+    ...latestState,
+    currentPhase:
+      latestState.currentPhase === "research_task" ? "parallel_deliberation" : latestState.currentPhase,
     needsContinue: true,
     inFlight: false,
     inFlightSince: null,
     activeDeliberators,
     deliberatorTimeoutCounts: timeoutCounts,
-    lastError: timeoutLastError(timedOut, nowIso),
+    lastError: timeoutLastError(finalTimedOut, nowIso),
   }
 
   await writeState(directory, nextState)
-  return { state: nextState, timedOut }
+  return { state: nextState, timedOut: finalTimedOut }
 }
 
 async function sweepExpiredDeliberators(client, directory, nowMs = Date.now()) {
@@ -1974,7 +2024,7 @@ async function registerDeliberatorEntry(
   scheduleTimeout,
   clearTimeoutForSession,
 ) {
-  const state = await readState(directory)
+  let state = await readState(directory)
   if (!state?.active || state.projectRoot !== directory || state.sessionID !== parentSessionID) {
     return null
   }
@@ -1982,19 +2032,31 @@ async function registerDeliberatorEntry(
   const sage = deliberatorNameFromAgent(agent)
   if (!sage) return null
 
-  const existing = state.activeDeliberators?.[sage]
+  let existing = state.activeDeliberators?.[sage]
   if (isHerdrDeliberatorEntry(existing)) return state
   if (existing?.status === "running" && existing.sessionID && existing.sessionID !== childSessionID) {
+    state = await readState(directory)
+    if (!state?.active || state.projectRoot !== directory || state.sessionID !== parentSessionID) return null
+    existing = state.activeDeliberators?.[sage]
+    if (isHerdrDeliberatorEntry(existing)) return state
+
     // The previous entry is still running (earlier pass/round or a duplicate
     // launch). Abort it before it is replaced, otherwise the old child
     // session keeps running untracked forever.
-    try {
-      await abortDeliberatorSession(client, existing, directory)
-    } catch (error) {
-      await appendError(directory, `Failed to abort superseded deliberator ${sage}`, error)
+    if (existing?.status === "running" && existing.sessionID && existing.sessionID !== childSessionID) {
+      try {
+        await abortDeliberatorSession(client, existing, directory)
+      } catch (error) {
+        await appendError(directory, `Failed to abort superseded deliberator ${sage}`, error)
+      }
+      clearTimeoutForSession?.(existing.sessionID)
     }
-    clearTimeoutForSession?.(existing.sessionID)
   }
+
+  state = await readState(directory)
+  if (!state?.active || state.projectRoot !== directory || state.sessionID !== parentSessionID) return null
+  existing = state.activeDeliberators?.[sage]
+  if (isHerdrDeliberatorEntry(existing)) return state
 
   const startedAt = new Date(startedAtMs).toISOString()
   const deadlineAt = new Date(startedAtMs + deliberatorTimeoutMs(state)).toISOString()
