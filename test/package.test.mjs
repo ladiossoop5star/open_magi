@@ -1607,7 +1607,9 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
   const teardown = section("Teardown")
   const promptLifecycle = paragraph(recognizedAgent, /submit a harmless prompt/i)
   const invalidConfigDenial = paragraph(invalidConfig, /refusal or cancellation/i)
+  const correctionPrivacy = paragraph(invalidConfig, /targeted raw-command correction/i)
   const reportRetry = paragraph(parallelFailures, /missing or invalid report/i)
+  const structuredWaitResult = paragraph(parallelFailures, /exactly these 13 fields/i)
   const firewallDenial = matchingLine(persistenceRecovery, /question firewall/i)
   const inFlightRecovery = matchingLine(persistenceRecovery, /recoverable[^\n]*inFlight/i)
 
@@ -1699,9 +1701,37 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
   assert.match(recognizedAgent, /filename-safe turn ID[\s\S]*absolute `?waitResultPath`?[\s\S]*adjacent[^\n]*report[\s\S]*wait-result-<sage>-<filename-safe-turn-id>\.json/i)
   assert.match(recognizedAgent, /exactly three[^\n]*predeclared[^\n]*one[^\n]*(?:per role|per sage)/i)
   assert.match(recognizedAgent, /freeze all three[^\n]*paths[\s\S]*undefined convention[^\n]*not[^\n]*allowed/i)
-  assert.match(parallelFailures, /three concurrent[\s\S]*capture each[^\n]*stdout\/result JSON[^\n]*`?waitResultPath`?/i)
-  assert.match(parallelFailures, /exit status[\s\S]*process (?:handle|metadata)[\s\S]*separately[\s\S]*(?:no|do not add a) runner/i)
+  assert.match(parallelFailures, /three concurrent[\s\S]*process handles[\s\S]*stdout[\s\S]*stderr[\s\S]*combinedOutput[\s\S]*`?waitResultPath`?/i)
+  assert.match(parallelFailures, /process handle[^\n]*separately/i)
+  assert.match(parallelFailures, /exitCode[\s\S]*(?:no|do not add a) runner|(?:no|do not add a) runner[\s\S]*exitCode/i)
   assert.match(parallelFailures, /validate[\s\S]*result JSON schema[\s\S]*digest[\s\S]*herdr agent get[\s\S]*(?:assigned )?report[\s\S]*together/i)
+  const waitResultFields = structuredWaitResult.match(/exactly these 13 fields in order: ([^.]+)\./i)?.[1]
+  assert.deepEqual([...waitResultFields.matchAll(/`([A-Za-z]+)`/g)].map((match) => match[1]), [
+    "schemaVersion",
+    "sage",
+    "agent",
+    "turnID",
+    "submittedAt",
+    "completedAt",
+    "exitCode",
+    "timedOut",
+    "stdout",
+    "stderr",
+    "combinedOutput",
+    "cliResult",
+    "parseError",
+  ])
+  assert.match(parallelFailures, /after each[^\n]*(?:returns|return)[^\n]*fails[^\n]*times out[\s\S]*atomically write/i)
+  assert.match(parallelFailures, /JSON from stdout on success/i)
+  assert.match(parallelFailures, /stderr on a nonzero failure including exit 1/i)
+  assert.match(parallelFailures, /combinedOutput[^.]*only one channel/i)
+  assert.match(parallelFailures, /unavailable streams[^\n]*null[^\n]*not omitted[\s\S]*cliResult[\s\S]*parseError/i)
+  assert.match(parallelFailures, /failure fixture[^.]*exits 1[^.]*valid JSON error on stderr/i)
+  assert.match(parallelFailures, /error survives in `cliResult` with the expected digest/i)
+  assert.match(parallelFailures, /no raw prompt[\s\S]*configured command[\s\S]*report (?:body|content)[^\n]*(?:wait-result|structured result)/i)
+  assert.match(recognizedAgent, /exactly three[^\n]*final[^\n]*waitResultPath[\s\S]*companion[\s\S]*exactly three[^\n]*if used[\s\S]*(?:otherwise|if not)[^\n]*(?:zero|none)/i)
+  assert.match(correctionPrivacy, /targeted raw-command correction[\s\S]*only[\s\S]*transient[\s\S]*owner-only[\s\S]*0600[\s\S]*question-request\.md/i)
+  assert.match(correctionPrivacy, /no secrets[\s\S]*consum(?:ed|es)[\s\S]*(?:allowed|allows)[\s\S]*(?:denied|denies)[\s\S]*no persistent (?:copy|copies)[\s\S]*(?:report|log)[\s\S]*digest/i)
 
   assert.match(guide, /validate[\s\S]*nonempty[\s\S]*exact[^\n]*prefix[\s\S]*before[\s\S]*stop[\s\S]*delete/i)
   assert.match(guide, /herdr session stop "\$HERDR_TEST_SESSION" --json/)
