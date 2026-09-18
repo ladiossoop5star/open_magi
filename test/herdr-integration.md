@@ -84,8 +84,9 @@ Freeze these baselines in the external temporary report:
 2. Use `herdr pane run` with that pane ID to launch one harmless test wrapper from the verified working directory. The wrapper must be one of the three available test-owned recognized agent commands and must not require credentials.
 3. Poll the live JSON form of `herdr agent get` for the captured pane ID until the raw command is recognized as an agent. Record the pane-to-agent relationship.
 4. Rename the recognized agent deterministically with the live equivalent of `herdr agent rename <pane-id> <deterministic-test-name>`. Derive the name from the role and isolated run identity, and record it rather than hardcoding the ID.
-5. Submit a harmless prompt to that discovered agent. After submission, require observed activity such as working or blocked as appropriate, followed by a later settled state of idle or done. This is an OR condition: either later settled state is sufficient, and the procedure must never require idle followed by done. A settled pane without submission-following observed activity is not completion.
-6. Validate a report that begins directly with this exact canonical envelope in this exact key order, substituting recorded values only. The existing required Magi report body follows the separator immediately:
+5. Generate one filename-safe turn ID containing only ASCII letters, digits, dot, underscore, and hyphen, with no slash, backslash, `..`, or leading dot. Before the frozen baseline, create exactly three predeclared absolute `waitResultPath` values, one per sage and adjacent to that sage's assigned report: `<absolute-turn-dir>/wait-result-<sage>-<filename-safe-turn-id>.json`. Freeze all three concrete paths. A directory, glob, category, path discovered after submit, or undefined convention is not an allowed path.
+6. Submit a harmless prompt to that discovered agent. After submission, require observed activity such as working or blocked as appropriate, followed by a later settled state of idle or done. This is an OR condition: either later settled state is sufficient, and the procedure must never require idle followed by done. A settled pane without submission-following observed activity is not completion.
+7. Validate a report that begins directly with this exact canonical envelope in this exact key order, substituting recorded values only. The existing required Magi report body follows the separator immediately:
 
 ```text
 report_source: herdr_agent
@@ -113,6 +114,8 @@ Record all pane sizes. Manually resize one owned role pane, run another delibera
 
 ## Scenario 3: invalid or unrecognized configuration
 
+Before reading or changing config, use the captured creation working directory as the absolute config base even when it is a nested repository directory. From that captured directory, obtain `git rev-parse --show-toplevel`, `git rev-parse --show-prefix`, and `git rev-parse --git-path info/exclude`; calculate the anchored repository-relative exclude pattern from the captured prefix, update the resolved repository exclude idempotently, and validate the absolute config path with `git check-ignore --no-index --quiet`. Stop before reading commands if the check fails. Require owner-only mode `0600` where supported, then verify ownership, regular-file identity, and mode before every read or update; never read an insecure or unowned config first.
+
 In test-owned configuration only, provide an invalid or unrecognized command for one role. Assert that the controller asks a user question instead of guessing. Exercise the authorized answer that causes an automatic config update, then verify only that role is retried. If startup created a failed-role pane and ownership is proven, replace only that failed role pane; healthy siblings and their sizes must remain unchanged. Assert that no fallback transport or model is used.
 
 Also exercise refusal or cancellation of the question. It must leave the invalid role unresolved. On this branch, the test-owned configuration, panes, and agents remain unchanged; perform no retry and use no native fallback.
@@ -120,6 +123,8 @@ Also exercise refusal or cancellation of the question. It must leave the invalid
 ## Scenario 4: parallel work and failures
 
 Submit three role prompts concurrently and record three submission timestamps before waiting. Enforce the frozen absolute deadline; do not extend it per agent. Validate success only after each role has submission-following observed activity, such as working or blocked as appropriate, followed later by a settled state of idle or done and a valid current-turn report. Idle or done is an OR condition, not a sequence.
+
+For all three concurrent prompt invocations, capture each invocation's stdout/result JSON directly into that role's frozen `waitResultPath`, using the runtime's structured capture and atomic controller write or safely quoted temporary redirection followed by atomic rename. Record exit status and process handle metadata separately from the wait-result file. Do not add a runner, log raw prompts, or copy report content into the wait result. Validate the expected result JSON schema and recorded digest, then inspect that role's `herdr agent get` result and assigned report together before accepting completion.
 
 For a test-owned timeout, send `Esc` using the live supported agent input command, record timeout status, and stop waiting at the absolute deadline. Exercise a blocked UI and prove the controller reports it rather than treating idle as done. When a completed agent has a missing or invalid report for the same turn, prompt the same discovered agent exactly once for that report. This is a single retry: preserve the frozen baseline and do not blindly resubmit the original task. A second missing or invalid report becomes `status: "hard_error"`; halt the scenario and perform no synthesis.
 
