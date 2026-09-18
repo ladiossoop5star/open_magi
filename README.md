@@ -505,14 +505,25 @@ itself, validates the result, and corrects any launch or configuration failure
 with the user. It reports failures and never silently falls back to another
 transport.
 
-After creating or updating the file in a Git repository, Magi resolves the
-repository-local exclude file with `git rev-parse --git-path info/exclude` and
-adds the root config entry `/.open-magi-herdr`. Linked worktrees may share that
-exclude file. Never commit `.open-magi-herdr`, and do not embed secrets or tokens
-in its raw commands. Raw commands stay confined to the config file, the
-immediate launch, and a correction question; they are never copied into Magi
-reports or logs. In a non-Git project, exclusion is skipped; protect the file
-manually.
+Where file modes are supported, the config is created or updated with
+owner-only `0600` permissions. Magi verifies its owner/mode before every read or
+update. An insecure mode is invalid and must be fixed before config content is
+read or changed. These checks apply in both Git and non-Git projects.
+
+In a Git repository, Magi runs `git rev-parse --show-toplevel` and
+`git rev-parse --show-prefix` from the captured starting directory to compute
+the exact anchored repository-relative config pattern. A config at the
+repository root uses `/.open-magi-herdr`; one under `packages/app` uses
+`/packages/app/.open-magi-herdr`. Magi resolves the repository-local exclude
+file with `git rev-parse --git-path info/exclude`, appends the exact pattern
+idempotently, and verifies the actual config path with
+`git check-ignore --no-index <config-path>` before continuing. Linked worktrees
+may share that exclude file.
+
+Never commit `.open-magi-herdr`, and do not embed secrets or tokens in its raw
+commands. Raw commands stay confined to the config file, the immediate launch,
+and a correction question; they are never copied into Magi reports or logs. In
+a non-Git project, exclusion is skipped; protect the file manually.
 
 Inside Herdr this configuration replaces, rather than supplements, the native
 Codex, Claude, or OpenCode deliberator settings. Magi does not add a new runner:

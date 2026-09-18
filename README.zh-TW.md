@@ -683,13 +683,25 @@ Herdr 辨識。Magi 絕不自行推測 command。檔案缺少、格式無效，�
 無法辨識時，Magi 會先詢問使用者，再自行寫入或更新檔案並驗證結果。啟動或設定
 失敗時，Magi 會向使用者回報並一起修正，絕不靜默退回其他 transport。
 
-在 Git repository 建立或更新檔案後，Magi 會用
-`git rev-parse --git-path info/exclude` 找到 repository-local exclude，並加入只
-匹配 root config 的 `/.open-magi-herdr`。Linked worktrees 可能 share 同一份
-exclude。`.open-magi-herdr` 必須 `never commit`，而且 raw commands 不得內嵌
-secrets 或 tokens。Raw commands 只留在 config、當下 launch 與 correction
-question 中，絕不複製到 Magi reports 或 logs。非 Git project 會略過 exclusion；
-使用者必須自行保護這個檔案。
+在支援 file mode 的系統上，config 建立或更新時使用 owner-only `0600` 權限。
+`owner/mode` 必須在每次 `read` 或 `update` 前驗證；`insecure mode` 視為
+`invalid`，必須先 fixed，才能讀取或修改 `content`。Git 與非 Git project 都要
+執行這些檢查。
+
+在 Git repository 中，Magi 從記錄的起始目錄執行
+`git rev-parse --show-toplevel` 與 `git rev-parse --show-prefix`，算出精確且 anchored
+的 repository-relative config pattern。位於 repository root 時使用
+`/.open-magi-herdr`；位於 `packages/app` 時使用
+`/packages/app/.open-magi-herdr`。接著用
+`git rev-parse --git-path info/exclude` 找到 repository-local exclude，並
+idempotent 地加入精確 pattern；繼續前再以實際 config path 執行
+`git check-ignore --no-index <config-path>` 驗證。Linked worktrees 可能 share
+同一份 exclude。
+
+`.open-magi-herdr` 必須 `never commit`，而且 raw commands 不得內嵌 secrets 或
+tokens。Raw commands 只留在 config、當下 launch 與 correction question 中，
+絕不複製到 Magi reports 或 logs。非 Git project 會略過 exclusion；使用者必須
+自行保護這個檔案。
 
 在 Herdr 中，這份設定會取代而不是補充 Codex、Claude 或 OpenCode 的原生
 deliberator 設定；Magi 不會新增 runner，而是使用 Herdr 現有的 pane 與 agent
