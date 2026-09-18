@@ -268,6 +268,44 @@ function parseRpcFrames(output) {
   return frames
 }
 
+function validateIntegrationShellCommands(markdown) {
+  const allowedShellLines = [
+    /^herdr --help$/,
+    /^herdr (?:pane|agent|session) --help$/,
+    /^herdr session list --json$/,
+    /^herdr pane current --current$/,
+    /^export HERDR_TEST_SESSION="open-magi-itest-\$\(date \+%Y%m%d%H%M%S\)-\$\$"$/,
+    /^export HERDR_TEST_OWNER="open-magi-owner-\$\(date \+%Y%m%d%H%M%S\)-\$\$"$/,
+    /^test "\$\{HERDR_ENV:-\}" = 1$/,
+    /^test -n "\$\{HERDR_TEST_(?:SESSION|OWNER):-\}" \|\| exit 1$/,
+    /^case "\$HERDR_TEST_(?:SESSION|OWNER)" in$/,
+    /^open-magi-(?:itest|owner)-\*\) ;;$/,
+    /^\*\) exit 1 ;;$/,
+    /^esac$/,
+    /^herdr session attach "\$HERDR_TEST_SESSION"$/,
+    /^herdr session (?:stop|delete) "\$HERDR_TEST_SESSION" --json$/,
+  ]
+  const shellLines = []
+
+  for (const match of markdown.matchAll(/```([^\n]*)\n([\s\S]*?)```/g)) {
+    const language = match[1].trim()
+    if (language === "text") continue
+    if (language !== "sh" && language !== "bash") {
+      throw new Error(`unsupported executable fence language: ${language || "unlabeled"}`)
+    }
+    for (const rawLine of match[2].split("\n")) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith("#")) continue
+      if (!allowedShellLines.some((pattern) => pattern.test(line))) {
+        throw new Error(`integration shell line is not allowed: ${line}`)
+      }
+      shellLines.push(line)
+    }
+  }
+
+  return shellLines
+}
+
 test("package metadata exposes OpenCode plugin, setup CLI, and injected plugin tests", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
   const cli = await readFile(new URL("../bin/open-magi.js", import.meta.url), "utf8")
@@ -1538,10 +1576,15 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
     assert.ok(match, `missing guide line: ${pattern}`)
     return match
   }
+  const prerequisites = section("Reproducibility prerequisites and action manifest")
+  const ownership = section("Session ownership preflight and attach")
+  const recognizedAgent = section("Scenario 1: raw command to recognized agent")
+  const layoutReuse = section("Scenario 2: layout and reuse")
   const invalidConfig = section("Scenario 3: invalid or unrecognized configuration")
   const parallelFailures = section("Scenario 4: parallel work and failures")
   const persistenceRecovery = section("Scenario 5: persistence, drift, firewall, and recovery")
-  section("Teardown")
+  const teardown = section("Teardown")
+  const promptLifecycle = paragraph(recognizedAgent, /submit a harmless prompt/i)
   const invalidConfigDenial = paragraph(invalidConfig, /refusal or cancellation/i)
   const reportRetry = paragraph(parallelFailures, /missing or invalid report/i)
   const firewallDenial = matchingLine(persistenceRecovery, /question firewall/i)
@@ -1549,7 +1592,8 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
 
   assert.match(guide, /^# Herdr Integration Procedure$/m)
   assert.doesNotMatch(guide, hanPattern)
-  assert.match(guide, /HERDR_TEST_SESSION="open-magi-itest-\$\(date \+%Y%m%d%H%M%S\)-\$\$"/)
+  assert.match(guide, /export HERDR_TEST_SESSION="open-magi-itest-\$\(date \+%Y%m%d%H%M%S\)-\$\$"/)
+  assert.match(guide, /export HERDR_TEST_OWNER="open-magi-owner-\$\(date \+%Y%m%d%H%M%S\)-\$\$"/)
   assert.match(guide, /herdr session attach "\$HERDR_TEST_SESSION"/)
   assert.match(guide, /HERDR_ENV=1/)
   assert.match(guide, /unique named isolated session/i)
@@ -1566,8 +1610,46 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
   assert.match(guide, /temporary test report[\s\S]*outside[\s\S]*tracked paths/i)
   assert.match(guide, /no production credentials/i)
 
-  assert.match(guide, /raw command[\s\S]*recognized agent[\s\S]*split[\s\S]*working directory[\s\S]*herdr pane run[\s\S]*agent get[\s\S]*pane[- ]id[\s\S]*rename[\s\S]*prompt[\s\S]*activity[\s\S]*idle[\s\S]*done[\s\S]*report[\s\S]*envelope/i)
-  assert.match(guide, /0\.5[\s\S]*right[\s\S]*equal stacked thirds[\s\S]*no-focus[\s\S]*manual resize[\s\S]*no resize on the next pass/i)
+  const envelope = [...guide.matchAll(/```text\n([\s\S]*?)```/g)][0]?.[1]
+  assert.equal(envelope, [
+    "report_source: herdr_agent",
+    "status: ok | timeout | hard_error",
+    "failure_type: none | timeout | hard_error",
+    "sage: melchior | balthasar | casper",
+    "agent: <recorded name>",
+    "turn_id: <turn id>",
+    "round: <positive integer>",
+    "mode: recon | decision | review",
+    "pass: <positive integer>",
+    "submitted_at: <ISO-8601>",
+    "completed_at: <ISO-8601>",
+    "---",
+    "<existing required Magi report body>",
+    "",
+  ].join("\n"))
+  assert.doesNotMatch(envelope, /^(?:---|transport:)/)
+  assert.match(promptLifecycle, /submission[\s\S]*observed activity[\s\S]*(?:working or blocked)[\s\S]*later[\s\S]*idle or done/i)
+  assert.doesNotMatch(guide, /activity[^.\n]*(?:then )?idle[^.\n]*(?:then|,|and)[^.\n]*done/i)
+
+  assert.match(ownership, /herdr session list --json[\s\S]*before[\s\S]*attach[\s\S]*exact[^\n]*name[\s\S]*absent/i)
+  assert.match(ownership, /preflight evidence[\s\S]*time[\s\S]*owner token/i)
+  assert.match(ownership, /collision[\s\S]*(?:generate a new|new unique)[\s\S]*or abort[\s\S]*never attach[^\n]*existing/i)
+  assert.match(ownership, /export[\s\S]*attach[\s\S]*inherit[\s\S]*after attach[\s\S]*HERDR_TEST_SESSION[\s\S]*HERDR_TEST_OWNER/i)
+  assert.match(ownership, /inside[^\n]*named shell[\s\S]*before[^\n]*mutation[\s\S]*exact session context[\s\S]*ownership evidence/i)
+  assert.match(teardown, /owner token[\s\S]*session name[\s\S]*(?:socket or session )?context[\s\S]*created by this run[\s\S]*refuse/i)
+
+  assert.match(prerequisites, /operator[\s\S]*supply and record[\s\S]*three exact harmless test-owned recognized agent commands[\s\S]*no production credentials/i)
+  assert.match(prerequisites, /exact supported main-agent\/controller launch[\s\S]*Magi invocation method/i)
+  assert.match(prerequisites, /validate[\s\S]*disposable isolated panes/i)
+  assert.match(prerequisites, /invalid[\s\S]*`false`[\s\S]*exiting command[\s\S]*unrecognized non-agent[\s\S]*blocked UI[\s\S]*missing-report first[\s\S]*missing-report second[\s\S]*timeout[\s\S]*config drift[\s\S]*busy state[\s\S]*ownership ambiguity[\s\S]*cleanup partial failure/i)
+  assert.match(prerequisites, /each method[\s\S]*expected evidence[\s\S]*before[^\n]*scenario/i)
+  assert.match(prerequisites, /if any[\s\S]*missing[\s\S]*BLOCKED before mutation/i)
+  assert.match(prerequisites, /populate[^\n]*config[^\n]*recorded commands[\s\S]*installed Magi skill[\s\S]*no new runner/i)
+  assert.match(layoutReuse, /0\.5[\s\S]*0\.6666667[\s\S]*0\.5/i)
+  assert.match(layoutReuse, /equal[^\n]*width[\s\S]*Melchior top[\s\S]*Balthasar middle[\s\S]*Casper bottom/i)
+
+  assert.match(recognizedAgent, /raw command[\s\S]*recognized agent[\s\S]*split[\s\S]*working directory[\s\S]*herdr pane run[\s\S]*agent get[\s\S]*pane[- ]id[\s\S]*rename[\s\S]*prompt[\s\S]*observed activity[\s\S]*idle or done[\s\S]*report[\s\S]*envelope/i)
+  assert.match(layoutReuse, /no-focus[\s\S]*0\.5[\s\S]*right[\s\S]*equal width[\s\S]*manual resize[\s\S]*no resize on the next pass/i)
   assert.match(guide, /invalid or unrecognized[\s\S]*user question[\s\S]*automatic config update[\s\S]*(?:failed-role-only replacement|replace only that failed role)[\s\S]*no fallback/i)
   assert.match(guide, /three[^\n]*concurrent[\s\S]*absolute deadline[\s\S]*timeout[\s\S]*Esc[\s\S]*blocked UI[\s\S]*missing(?: or invalid)? report[\s\S]*single retry[\s\S]*frozen baseline[\s\S]*(?:no|do not) blind(?:ly)? resubmi/i)
   assert.match(guide, /config drift[\s\S]*continue[\s\S]*cleanup[\s\S]*denied[\s\S]*untouched/i)
@@ -1605,6 +1687,23 @@ test("Herdr integration guide uses an isolated named session and covers safe lif
     assert.match(command, /^herdr session (?:stop|delete) "\$HERDR_TEST_SESSION" --json$/)
     assert.doesNotMatch(command, /\b(?:default|current|developer)\b/)
   }
+  assert.doesNotThrow(() => validateIntegrationShellCommands(guide))
+  assert.throws(
+    () => validateIntegrationShellCommands(`${guide}\n\`\`\`sh\nherdr session stop default --json\n\`\`\`\n`),
+    /not allowed/,
+  )
+  assert.throws(
+    () => validateIntegrationShellCommands(`${guide}\n\`\`\`sh\nherdr session delete "open-magi-itest-other" --json\n\`\`\`\n`),
+    /not allowed/,
+  )
+  assert.throws(
+    () => validateIntegrationShellCommands(`${guide}\n\`\`\`sh\ntouch \/tmp\/unexpected\n\`\`\`\n`),
+    /not allowed/,
+  )
+  assert.throws(
+    () => validateIntegrationShellCommands(`${guide}\n\`\`\`python\nprint\("unsafe"\)\n\`\`\`\n`),
+    /unsupported executable fence language/,
+  )
 })
 
 test("English README documents install and avoids local-only model warnings", async () => {

@@ -19,14 +19,57 @@ herdr session --help
 
 The live help is authoritative. Use only commands and flags supported by that help. The command fragments below name the required operations; adjust nonessential argument placement to the live help rather than guessing.
 
-From the dedicated external terminal, assign the isolated name and attach it:
+## Reproducibility prerequisites and action manifest
+
+Before attach or any mutation, the operator must supply and record three exact harmless test-owned recognized agent commands that require no production credentials. The operator must also supply and record the exact supported main-agent/controller launch and Magi invocation method for the installed environment. Do not invent agent commands, claim that a command is installed without evidence, or add a new runner.
+
+The supplied evidence must show that each of the three agent commands was already validated in disposable isolated panes: it started without production credentials, became a recognized agent, accepted a harmless prompt, and exited or was cleaned up without affecting unrelated state. Record the exact command, installed agent kind, validation time, and exact JSON evidence.
+
+Before the scenarios, record an action manifest with an exact, harmless test-owned failure-injection method and expected evidence for every case below:
+
+- invalid command using `false` or another explicitly recorded exiting command;
+- unrecognized non-agent command;
+- blocked UI;
+- missing-report first failure and missing-report second failure;
+- timeout;
+- config drift;
+- busy state;
+- ownership ambiguity; and
+- cleanup partial failure.
+
+Each method and its expected evidence must be recorded before any scenario starts. If any command, launch method, invocation method, failure-injection method, or expected result is missing, mark the procedure BLOCKED before mutation. Do not substitute a similar command.
+
+Populate the test-only Magi configuration values from the three recorded commands. Launch the recorded main-agent/controller and invoke Magi through the recorded method provided by the installed Magi skill. This procedure uses the installed skill directly and creates no new runner.
+
+## Session ownership preflight and attach
+
+From the dedicated external terminal, export a unique isolated session name and a unique owner token, then inventory sessions before attach:
 
 ```sh
-HERDR_TEST_SESSION="open-magi-itest-$(date +%Y%m%d%H%M%S)-$$"
+export HERDR_TEST_SESSION="open-magi-itest-$(date +%Y%m%d%H%M%S)-$$"
+export HERDR_TEST_OWNER="open-magi-owner-$(date +%Y%m%d%H%M%S)-$$"
+herdr session list --json
+```
+
+The `herdr session list --json` evidence taken before attach must prove that the exact `$HERDR_TEST_SESSION` name is absent. Record that preflight evidence with its timestamp and owner token in the external temporary report. On any collision, generate a new unique name and repeat the inventory, or abort. Never attach an existing session.
+
+Only after the absence proof, attach the exact exported name and preserve the exact JSON response:
+
+```sh
 herdr session attach "$HERDR_TEST_SESSION"
 ```
 
-Perform every remaining scenario action only inside that exact named session. Before any scenario mutation, assert and record that `HERDR_ENV=1`, the active socket or session context is exactly the expected named session context for `$HERDR_TEST_SESSION`, and no discovered target belongs to the current/default/developer session. If `HERDR_ENV=1` is absent or the named socket or session context does not match, abort without mutation. Never redirect the test to an existing session.
+Because both values are exported, the attach process and its new named shell inherit them. Immediately after attach, verify their values rather than assuming a cross-shell handoff succeeded:
+
+```sh
+test "${HERDR_ENV:-}" = 1
+test -n "${HERDR_TEST_SESSION:-}" || exit 1
+test -n "${HERDR_TEST_OWNER:-}" || exit 1
+herdr session list --json
+herdr pane current --current
+```
+
+Perform every remaining scenario action only inside that exact named shell. Before any scenario mutation, match `$HERDR_TEST_SESSION` and `$HERDR_TEST_OWNER` against the preflight record and attach response, prove the active socket or exact session context belongs to the newly created named session, and record the ownership evidence. Also prove no discovered target belongs to the current/default/developer session. If `HERDR_ENV=1`, either exported value, the expected named session context, or the ownership evidence does not match, abort without mutation. Never redirect the test to an existing session.
 
 Freeze these baselines in the external temporary report:
 
@@ -41,31 +84,30 @@ Freeze these baselines in the external temporary report:
 2. Use `herdr pane run` with that pane ID to launch one harmless test wrapper from the verified working directory. The wrapper must be one of the three available test-owned recognized agent commands and must not require credentials.
 3. Poll the live JSON form of `herdr agent get` for the captured pane ID until the raw command is recognized as an agent. Record the pane-to-agent relationship.
 4. Rename the recognized agent deterministically with the live equivalent of `herdr agent rename <pane-id> <deterministic-test-name>`. Derive the name from the role and isolated run identity, and record it rather than hardcoding the ID.
-5. Submit a harmless prompt to that discovered agent. Record the transition from prompt submission to activity, then idle, then done. A merely idle pane without observed submission and activity is not completion.
-6. Validate a report with exactly this front-matter envelope, substituting recorded values only:
+5. Submit a harmless prompt to that discovered agent. After submission, require observed activity such as working or blocked as appropriate, followed by a later settled state of idle or done. This is an OR condition: either later settled state is sufficient, and the procedure must never require idle followed by done. A settled pane without submission-following observed activity is not completion.
+6. Validate a report that begins directly with this exact canonical envelope in this exact key order, substituting recorded values only. The existing required Magi report body follows the separator immediately:
 
 ```text
----
-transport: herdr
 report_source: herdr_agent
-status: ok
-failure_type: none
+status: ok | timeout | hard_error
+failure_type: none | timeout | hard_error
 sage: melchior | balthasar | casper
-agent: <recorded deterministic name>
-turn_id: <recorded turn id>
+agent: <recorded name>
+turn_id: <turn id>
 round: <positive integer>
 mode: recon | decision | review
 pass: <positive integer>
 submitted_at: <ISO-8601>
 completed_at: <ISO-8601>
 ---
+<existing required Magi report body>
 ```
 
 Require `completed_at >= submitted_at`, the expected identity fields, the current turn, and the exact predeclared report path. Record the complete report and its validation result. Repeat only with the other available harmless test-owned recognized agent commands if they are required by later scenarios.
 
 ## Scenario 2: layout and reuse
 
-Create the controller/worker layout in the isolated session only. Split the council region at ratio `0.5` on the right, then form equal stacked thirds for Melchior at the top, Balthasar in the middle, and Casper at the bottom. Use the live help's no-focus option for every split and assert from JSON that focus did not move.
+Create the controller/worker layout in the isolated session only, using live-help-supported no-focus splits and IDs returned by JSON. Execute this exact geometric sequence: split at ratio `0.5` to create the council region on the right; split that region down at ratio `0.6666667` to separate the lower third; then split the upper two-thirds down at ratio `0.5`. Verify the result from JSON: the controller retains the left half, the three council panes have equal width and equal heights, with Melchior top, Balthasar middle, and Casper bottom. Assert that focus did not move.
 
 Record all pane sizes. Manually resize one owned role pane, run another deliberation pass, and assert that all healthy recognized agents are reused and the manual resize is preserved. Perform no resize on the next pass. Record JSON layout and identity evidence before and after the pass.
 
@@ -77,7 +119,7 @@ Also exercise refusal or cancellation of the question. It must leave the invalid
 
 ## Scenario 4: parallel work and failures
 
-Submit three role prompts concurrently and record three submission timestamps before waiting. Enforce the frozen absolute deadline; do not extend it per agent. Validate success only after each role has observed submission, activity, idle, done, and a valid current-turn report.
+Submit three role prompts concurrently and record three submission timestamps before waiting. Enforce the frozen absolute deadline; do not extend it per agent. Validate success only after each role has submission-following observed activity, such as working or blocked as appropriate, followed later by a settled state of idle or done and a valid current-turn report. Idle or done is an OR condition, not a sequence.
 
 For a test-owned timeout, send `Esc` using the live supported agent input command, record timeout status, and stop waiting at the absolute deadline. Exercise a blocked UI and prove the controller reports it rather than treating idle as done. When a completed agent has a missing or invalid report for the same turn, prompt the same discovered agent exactly once for that report. This is a single retry: preserve the frozen baseline and do not blindly resubmit the original task. A second missing or invalid report becomes `status: "hard_error"`; halt the scenario and perform no synthesis.
 
@@ -99,7 +141,9 @@ Inject one close failure. Assert that successful owned closures are recorded, th
 
 ## Teardown
 
-Before teardown, write exact JSON inventories and identify only the unique isolated session and test-owned subordinate resources. Validate the name as nonempty and validate its exact `open-magi-itest-` prefix before either destructive command:
+Before teardown, write exact JSON inventories and identify only the unique isolated session and test-owned subordinate resources. Re-match the owner token, exact session name, and active socket or session context against the external preflight record and attach response. Require evidence that the session was created by this run. If any ownership field is absent, ambiguous, or mismatched, refuse teardown without issuing stop or delete.
+
+Validate the name and owner token as nonempty, validate both exact prefixes, and do this before either destructive command:
 
 ```sh
 test -n "${HERDR_TEST_SESSION:-}" || exit 1
@@ -107,9 +151,14 @@ case "$HERDR_TEST_SESSION" in
   open-magi-itest-*) ;;
   *) exit 1 ;;
 esac
+test -n "${HERDR_TEST_OWNER:-}" || exit 1
+case "$HERDR_TEST_OWNER" in
+  open-magi-owner-*) ;;
+  *) exit 1 ;;
+esac
 ```
 
-Re-read the JSON inventory and require one exact session-name match for `$HERDR_TEST_SESSION`. Abort teardown if the match is absent, duplicated, or associated with an unexpected socket/context. Stop and delete only that unique session:
+Re-read the JSON inventory and require one exact session-name match for `$HERDR_TEST_SESSION`, the same owner evidence, and the expected context. Abort teardown if the match is absent, duplicated, or associated with an unexpected socket/context. Stop and delete only that unique session:
 
 ```sh
 herdr session stop "$HERDR_TEST_SESSION" --json
