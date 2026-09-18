@@ -1690,6 +1690,7 @@ test("bundled magi skill assets contain the expected contract", async () => {
     assert.match(packagedSkill, /HERDR_ENV=1/)
     assert.match(packagedSkill, /do not run the runtime-specific bootstrap/i)
   }
+  assert.ok(skill.indexOf("## Herdr Runtime Gate") < skill.indexOf("## Roles"))
   assert.ok(codexSkill.indexOf("## Herdr Runtime Gate") < codexSkill.indexOf("## Codex Bootstrap Gate"))
   assert.ok(claudeSkill.indexOf("## Herdr Runtime Gate") < claudeSkill.indexOf("## Claude Bootstrap Gate"))
   for (const runtime of [references["runtime.md"], codexRuntime, claudeRuntime]) {
