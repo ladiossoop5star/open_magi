@@ -486,14 +486,16 @@ open-magi setup --interactive
 When a user explicitly asks to start or use Magi for a project with
 `HERDR_ENV=1`, an activation hard gate runs before any repository/project
 read/search, reference load, state creation, runtime bootstrap, or Herdr call.
-Its only operation is an existence/lstat check of the exact absolute
-`.open-magi-herdr` path in the already-current working directory. If that file
-is missing, the first user-facing action is a direct request for all three
-commands. This is a zero-discovery branch: there is no Git or Herdr command,
+Its only operation is exactly one initial `lstat` of the exact absolute
+`.open-magi-herdr` path in the already-current working directory. That single
+result determines `ENOENT` versus existing and supplies owner, type, and mode
+metadata. If missing, the first user-facing action is a direct request for all
+three commands. This is a zero-discovery branch: there is no Git or Herdr command,
 filesystem search, `.open_magi` access, state/question artifact, pane split, or
 agent launch before the question.
 
-If the exact file exists, Magi validates and reads only it. Invalid permissions,
+If the exact file exists, Magi reuses the returned metadata; there is no second
+`lstat` or existence check before asking or parsing. Invalid permissions, type,
 format, roles, or commands cause the same immediate direct question without a
 search elsewhere. After the user supplies the three commands, Magi safely
 writes and revalidates the local file, then performs exclusion checks. Only a

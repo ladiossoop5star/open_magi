@@ -12,21 +12,23 @@ When user explicitly asks to start/use Magi for a repository/project and
 read/search, other reference loading, state/checklist creation, runtime
 bootstrap, or pane split/agent launch.
 
-From the already-current working directory, without search, only check
-existence/`lstat` of exact absolute
-`<current-cwd>/.open-magi-herdr`. On `ENOENT`, the next/only and first
-user-facing action directly asks for exact `melchior`, `balthasar`, and `casper`
-commands. This is direct pre-activation: `state.active` is not set and
-`question-request.md` is not created.
+From the already-current working directory, without search, perform exactly one
+initial `lstat` of exact absolute `<current-cwd>/.open-magi-herdr`. Its single result
+determines `ENOENT` versus existing and supplies owner, type, and mode metadata.
+On `ENOENT`, the next/only and first user-facing action directly asks for exact
+`melchior`, `balthasar`, and `casper` commands. This is direct pre-activation:
+`state.active` is not set and `question-request.md` is not created.
 
 Before asking, do not search other directories/repositories, `.open_magi`, HOME,
 filesystem, PATH, runtime/native configs, agent names, prior reports/history,
-or standard commands. No Herdr/Git call, `find`/`rg`, fallback, or inference. If
-the exact file exists, lstat ownership/mode; only if valid read/parse that exact file. Invalid
-permission, format, role, or command means ask immediately; search nowhere else.
+or standard commands. No Herdr/Git call, `find`/`rg`, fallback, or inference.
+The existing branch must reuse the returned metadata; no second `lstat` or
+existence check is allowed before asking or parsing. Only a proven owned regular
+file with valid mode may be read/parsed. Invalid permission, format, role, or
+command means ask immediately; search nowhere else.
 
 Only after the user answers may it atomically write/update owner-only `0600`,
-apply exclusion, and revalidate. Only after local validity may it
+apply exclusion, and revalidate (a later `lstat` is allowed here). Only after local validity may it
 run `herdr pane current --current`, load `references/herdr.md`, explore, create
 state/checklists, bootstrap, split panes, or launch agents.
 
@@ -81,15 +83,8 @@ build/test/format/deploy commands, or final user answer.
 
 State file: `.open_magi/magi-log/state.json`.
 
-Before the first research round, create it with `schemaVersion`, `goal`,
-`acceptanceCriteria`, `verificationCommands`, `active`, `projectRoot`,
-`currentRound`, `currentPhase`, `currentDeliberationPass`,
-`maxDeliberationPasses`, `deliberationStatus`, `currentCouncilMode`,
-`currentReconPass`,
-`deliberatorTimeoutMs`, `activeDeliberators`, `deliberatorTimeoutCounts`,
-`needsContinue`, `inFlight`, `inFlightSince`, `consecutiveNoProgress`,
-`verdict`, `lastError`, and `history`. Use `schemaVersion: 2`; full schema and
-artifact layout: `references/protocol.md`.
+Before first research, create complete `schemaVersion: 2` state using the schema
+and artifact layout in `references/protocol.md`.
 
 Outside Herdr, the runtime adapter owns `inFlight`, `inFlightSince`,
 `lastPromptedRound`, `lastPromptedAt`, `activeDeliberators`, and
@@ -206,34 +201,18 @@ uncertainty into a user question.
 
 ## Before Asking User Gate
 
-Before asking the user anything, write or mentally apply `question_classification`:
-- `procedural`: forbidden to ask; follow the Magi contract.
-- `goal_ambiguity`: ask only in the first round during goal_definition or
-  status_assessment when no reasonable testable default can be inferred.
-- `debug_direction`: ask only in the first round during status_assessment
-  before execution; otherwise choose from evidence, reports, verification
-  output, and acceptance criteria.
-- `execution_blocker`: ask only when local context cannot resolve hardware,
-  credential, network, DUT, external service, or command execution blockers.
-- `destructive_or_unrelated_risk`: ask before destructive or unrelated changes.
-- `ambiguous_file_ownership`: ask before staging or modifying files when
-  ownership of changed files is unclear.
-
-If classification is not allowed for the current phase, do not ask. Execute the
-next Magi step and record the decision.
+Before asking, apply `question_classification` per the question firewall.
+`procedural` is forbidden. `goal_ambiguity` and `debug_direction` are first-round
+only; ask unresolved `execution_blocker`, `destructive_or_unrelated_risk`, or
+`ambiguous_file_ownership` questions only in their allowed phases. Otherwise do
+not ask; execute the next step and record the decision.
 
 ## Question Request Firewall
 
-The main agent must not ask the user directly during an active Magi loop.
-Before any user-facing question, read `references/question-firewall.md`, then
-write `.open_magi/magi-log/question-request.md` with `classification`,
-`phase`, `question`, `why_local_context_failed`, `commands_or_files_checked`,
-and `default_action_if_denied`.
-
-The plugin may deny the request and write `.open_magi/magi-log/question-denied.md`.
-If denied, do not repeat the question. Find the answer from local context,
-choose the safest verifiable default action, write the decision into the next
-Magi artifact, and continue.
+During an active loop, never ask directly. Read
+`references/question-firewall.md`, then write `question-request.md` with its
+required fields. If the plugin writes `question-denied.md`, do not repeat the
+question; choose the safest verifiable local action, record it, and continue.
 
 Allowed requests are limited to first-round `goal_ambiguity`, first-round
 `debug_direction`, `execution_blocker`, `impossible_verification`,

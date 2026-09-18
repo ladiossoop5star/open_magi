@@ -12,25 +12,27 @@ and `HERDR_ENV=1`, apply this gate before any other action: before repository or
 project read/search, other reference loading, state/checklist creation, runtime
 bootstrap, or pane split/agent launch.
 
-From the already-current working directory, without filesystem search, the only
-allowed first operation is an existence/`lstat` check of the exact absolute
-`<current-cwd>/.open-magi-herdr`. On `ENOENT`, the next and only action is the
-first user-facing action: directly ask for the exact `melchior`, `balthasar`,
-and `casper` commands. This pre-activation question is direct: `state.active`
-is not set and `question-request.md` is not created.
+From the already-current working directory, without filesystem search, perform
+exactly one initial `lstat` of exact absolute `<current-cwd>/.open-magi-herdr`. Its
+single result determines `ENOENT` versus existing and supplies owner, type, and
+mode metadata. On `ENOENT`, the next and only action is the first user-facing
+action: directly ask for the exact `melchior`, `balthasar`, and `casper`
+commands. This pre-activation question is direct: `state.active` is not set and
+`question-request.md` is not created.
 
 Before that question, do not inspect or search other directories or
 repositories, `.open_magi`, HOME, the filesystem, PATH, runtime/native
 deliberator configs, agent names, prior reports or history, or standard
 commands. No Herdr/Git call, `find` or `rg`, fallback, or inference is allowed.
-If the exact file exists, lstat its ownership/mode; only if valid, read and
-parse that exact file.
+The existing branch must reuse the returned metadata; no second `lstat` or
+existence check is allowed before asking or parsing. Only a proven owned regular
+file with valid mode may be read and parsed.
 If its permissions, format, role, or command is invalid, ask immediately; do
 not search elsewhere.
 
 Only after the user answers may Magi safely write/update the file atomically
 with owner-only `0600` mode, apply its repository exclusion, and revalidate the
-exact file. Only after the exact file is locally valid may it run
+exact file; a later `lstat` is allowed here. Only after local validity may it run
 `herdr pane current --current`, load `references/herdr.md`, explore the project,
 create state/checklists, bootstrap runtime, split panes, or launch agents.
 
