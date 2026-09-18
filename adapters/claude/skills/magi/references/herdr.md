@@ -6,7 +6,7 @@ Use this contract when `HERDR_ENV=1`. Apply it before any runtime-specific setup
 
 Require nonempty `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, and `HERDR_PANE_ID`. Before any split, call `herdr pane current --current` and capture the source main pane ID and its creation working directory from the response. Treat that captured directory, resolved with `realpath`, as `projectRoot` and as the working directory for every created pane.
 
-Before setting `state.active=true`, read `<captured-cwd>/.open-magi-herdr`. If it is missing or invalid, ask the user for the configuration, write a valid file, and read it back to revalidate it. In a Git worktree, add only `.open-magi-herdr` to that worktree's `.git/info/exclude`; do not edit a shared global ignore file. Never infer a launch command from runtime configuration, an agent name, PATH conventions, or an earlier report.
+Before setting `state.active=true`, read `<captured-cwd>/.open-magi-herdr`. If it is missing or invalid, ask the user for the configuration, write a valid file, and read it back to revalidate it. If the captured directory is in a Git repository, resolve the repository-local exclude file with `git rev-parse --git-path info/exclude`, then append the exact root-relative `/.open-magi-herdr` entry only if it is absent. Linked worktrees may share repository exclusion state; do not claim or assume a per-worktree exclude file. Outside a Git repository, skip exclusion. Never infer a launch command from runtime configuration, an agent name, PATH conventions, or an earlier report.
 
 ## Launch Configuration
 
@@ -18,13 +18,13 @@ Do not put raw commands in reports, logs, prompts, state history, or routine use
 
 Starting from the captured source main pane:
 
-1. Split the main pane right with ratio `0.5`, `--no-focus`, and the captured working directory. The new right pane is Melchior.
-2. Split the original right pane down with ratio `2/3`, `--no-focus`, and the captured working directory. The new lower pane is Casper.
-3. Split the remaining upper-right pane down with ratio `1/2`, `--no-focus`, and the captured working directory. The new lower pane is Balthasar, below Melchior.
+1. Split the main pane right with `--ratio 0.5`, `--no-focus`, and the captured working directory. The new right pane is Melchior.
+2. Split that original right pane down with `--ratio 0.6666667`, `--no-focus`, and the captured working directory. The new lower pane is Casper.
+3. Split the remaining upper-right pane down with `--ratio 0.5`, `--no-focus`, and the captured working directory. The new lower pane is Balthasar.
 
-Take every new pane ID from the split response and verify its creation working directory from that response. `herdr pane get` may be used as a second source, never as a substitute for validating the split result. Launch each configured raw command with `herdr pane run`; do not use `herdr agent start`.
+Do not infer undocumented ratio allocation semantics. Inspect the resulting layout and require the right region to be no wider than half of the main area and its vertical order to be Melchior top, Balthasar middle, Casper bottom. If width or order differs, fail startup preflight without moving or resizing an owned live session. Take every new pane ID from the split response and verify its creation working directory from that response. `herdr pane get` may be used as a second source, never as a substitute for validating the split result. Launch each configured raw command with `herdr pane run`; do not use `herdr agent start`.
 
-Poll for at most 120 seconds for both pane survival and positive agent recognition. An unknown agent is not recognized. Rename recognized panes to `magi-<sage>-<hash10>`, where `<sage>` is `melchior`, `balthasar`, or `casper`. Compute `<hash10>` as the first ten lowercase hexadecimal characters of SHA-256 over the UTF-8 compact JSON serialization of `[realpath(projectRoot), workspaceId, sourceMainPaneId]`. A matching live name that is not proven to belong to this session is a collision with destructive risk: stop and ask the user; never take it over or close it automatically.
+Poll for at most 120 seconds for both pane survival and positive agent recognition. An unknown agent is not recognized. After recognition, rename each agent with `herdr agent rename <pane-id> magi-<sage>-<hash10>`; this is an agent rename, not a pane rename. A pane label is optional and cannot replace the unique agent name. All later agent operations target either that recorded unique agent name or an ownership-validated pane ID accepted by the authoritative live command. Compute `<hash10>` as the first ten lowercase hexadecimal characters of SHA-256 over the UTF-8 compact JSON serialization of `[realpath(projectRoot), workspaceId, sourceMainPaneId]`. A matching live name that is not proven to belong to this session is a collision with destructive risk: stop and ask the user; never take it over or close it automatically.
 
 ## Persistent Session State and Reuse
 
@@ -48,7 +48,7 @@ The main controller owns all runtime fields in `.open_magi/magi-log/state.json`.
 
 `herdr-session.json` supplements these runtime fields; it is not their replacement. Persist its turn lock only after the atomic `state.json` write. Record the same turn identity, deadline, report paths, exact wait-result paths, and frozen `controllerMutablePaths` and workspace fingerprint there.
 
-Native runtime handlers ignore entries whose transport is `herdr`; they must not replace, abort, timeout, or clear them. After all three roles are classified, the main controller atomically retains all three `activeDeliberators` entries and updates them with final per-role statuses, sets `inFlight=false` and `inFlightSince=null`, and maintains the final `lastPromptedRound`, `lastPromptedAt`, `deliberatorTimeoutCounts`, ownership, and history fields required by the protocol in `state.json`; then it clears the Herdr session turn lock. Never finalize or clear either in-flight lock role-by-role while sibling prompts are unresolved.
+Native runtime handlers ignore entries whose transport is `herdr`; they must not replace, abort, timeout, or clear them. After all three roles are classified, the main controller atomically retains all three `activeDeliberators` entries and records exact final per-role statuses: a successful valid report becomes `status: "completed"`; a timeout becomes `status: "timed_out"`; and a hard error becomes `status: "hard_error"`. Retain the applicable `completedAt`, `timedOutAt`, or `hardErrorAt` timestamp together with `failureType`, `reportPath`, turn identity, and ownership fields. These state statuses are not report-envelope values (`ok`, `timeout`, `hard_error`) or live lifecycle observations (`idle`, `done`). In the same atomic write, set `inFlight=false` and `inFlightSince=null` and maintain `lastPromptedRound`, `lastPromptedAt`, `deliberatorTimeoutCounts`, ownership, and history fields required by the protocol; then clear the Herdr session turn lock. Never finalize or clear either in-flight lock role-by-role while sibling prompts are unresolved.
 
 ## Report Envelope
 
@@ -91,7 +91,7 @@ Before every concurrent turn, capture a workspace fingerprint that covers tracke
 
 Freeze the exact `controllerMutablePaths` for that turn. Before submit, enumerate the complete allowlist as concrete absolute paths: the three assigned report paths; `.open_magi/magi-log/state.json`; `.open_magi/magi-log/herdr-session.json`; `.open_magi/magi-log/question-request.md`; `.open_magi/magi-log/question-denied.md`; `.open_magi/magi-log/plugin-error.log`; and each exact predeclared wait-result path used by the three `--wait` invocations under the runtime's existing wait-result artifact convention. A category, directory, glob, or path discovered after submit is not an allowlist entry. No other path is allowed, and the list must not expand after prompts start.
 
-After all prompts settle, compare against the frozen fingerprint. Permit only the assigned report-path writes and controller writes to the frozen allowed paths. Any other delta, including an unexpected file under `.open_magi/`, blocks synthesis until ownership is established or the user resolves it.
+An allowed path does not prove who wrote it. After every expected controller write to a controller-owned mutable file, record the intended digest and, where structured, the intended canonical content or schema-relevant values. After all prompts settle, compare the workspace against the frozen fingerprint and verify every controller-owned file exactly against its last recorded intended digest, content, and schema. Validate each of the three agent report files only through its matching envelope, timestamps, turn identity, assigned path, and required body content. Any unexpected content or digest on an allowed path blocks synthesis, as does any path delta outside the allowlist, including an unexpected file under `.open_magi/`.
 
 ## Partial Startup and Recovery
 
