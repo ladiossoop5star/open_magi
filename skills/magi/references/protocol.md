@@ -55,10 +55,32 @@ Each entry in `activeDeliberators` may include these optional fields:
   "transport": "herdr",
   "paneID": "stable pane id",
   "turnID": "current prompt turn id",
-  "reportPath": "round-NNN/<mode-dir>/report-<sage>.md",
-  "controllerMutablePaths": [".open_magi/magi-log/state.json"]
+  "reportPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-<sage>.md",
+  "controllerMutablePaths": [
+    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
+    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
+    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
+    "/absolute/project/root/.open_magi/magi-log/state.json",
+    "/absolute/project/root/.open_magi/magi-log/herdr-session.json",
+    "/absolute/project/root/.open_magi/magi-log/question-request.md",
+    "/absolute/project/root/.open_magi/magi-log/question-denied.md",
+    "/absolute/project/root/.open_magi/magi-log/plugin-error.log",
+    "/absolute/project/root/<predeclared-wait-result-melchior>",
+    "/absolute/project/root/<predeclared-wait-result-balthasar>",
+    "/absolute/project/root/<predeclared-wait-result-casper>"
+  ]
 }
 ```
+
+After substituting the turn's concrete round, mode directory, report names,
+and wait-result artifact locations, `reportPath` is the sage's assigned
+absolute path. `controllerMutablePaths` is the same complete frozen per-turn
+allowlist in every Herdr `activeDeliberators` entry. Every value is a concrete
+absolute path. It contains all three assigned reports, `state.json`,
+`herdr-session.json`, both question-firewall files, `plugin-error.log`, and the
+three exact predeclared wait-result paths. A directory, glob, category, relative
+path, or path discovered after submission is not valid, and the list cannot
+expand while the turn is in flight.
 
 When an entry uses `transport: "herdr"`, the main controller, rather than a
 runtime plugin, owns updates to `inFlight`, `inFlightSince`,
@@ -118,6 +140,7 @@ evidence gathering; code edits remain execution-only.
 ```text
 .open_magi/magi-log/
 ├── state.json
+├── herdr-session.json  # local operational state
 ├── checklist.md
 ├── question-request.md
 ├── question-denied.md

@@ -170,10 +170,19 @@ completed_at: <ISO-8601>
 ```
 
 Launch the pass with three concurrent blocking prompt calls and enforce one absolute deadline
-shared by all three calls. A role is complete only when its
-recorded agent lifecycle is `idle` or `done` and its assigned report contains a
-fresh matching envelope for the current turn. A report left over from an older
-turn, or a report without the exact envelope, is not completion evidence.
+shared by all three calls. Apply all completion acceptance predicates from
+`references/herdr.md`; a role is complete only when:
+
+- the wait/result lifecycle shows submission-following observed lifecycle activity;
+- that activity is followed by a later `idle` or `done` lifecycle state;
+- the assigned report is fresh and carries the expected `turn_id`;
+- its envelope proves `completed_at >= submitted_at`; and
+- it contains a valid exact envelope and required report body.
+
+Thus the recorded lifecycle must reach `idle` or `done` only after observed
+activity, and the current report must have a fresh matching envelope. A
+pre-existing settled state, a report left over from an older turn, or a report
+without the exact envelope and body is not completion evidence.
 
 An observation timeout is not proof that the prompt failed. Do not resubmit
 merely because an observation timeout occurred; first live inspect the recorded

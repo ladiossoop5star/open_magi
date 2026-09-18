@@ -1683,13 +1683,38 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(contract, /turn_id/)
   assert.match(contract, /completed_at/)
   assert.match(protocol, /activeDeliberators[\s\S]*transport[\s\S]*paneID[\s\S]*turnID[\s\S]*reportPath[\s\S]*controllerMutablePaths/)
+  const activeDeliberatorExample = protocol.match(/Each entry in `activeDeliberators`[\s\S]*?```json\n([\s\S]*?)\n```/)?.[1]
+  assert.ok(activeDeliberatorExample, "protocol should include the Herdr activeDeliberators JSON example")
+  const activeDeliberator = JSON.parse(activeDeliberatorExample)
+  assert.equal(activeDeliberator.reportPath, "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-<sage>.md")
+  assert.deepEqual(activeDeliberator.controllerMutablePaths, [
+    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
+    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
+    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
+    "/absolute/project/root/.open_magi/magi-log/state.json",
+    "/absolute/project/root/.open_magi/magi-log/herdr-session.json",
+    "/absolute/project/root/.open_magi/magi-log/question-request.md",
+    "/absolute/project/root/.open_magi/magi-log/question-denied.md",
+    "/absolute/project/root/.open_magi/magi-log/plugin-error.log",
+    "/absolute/project/root/<predeclared-wait-result-melchior>",
+    "/absolute/project/root/<predeclared-wait-result-balthasar>",
+    "/absolute/project/root/<predeclared-wait-result-casper>",
+  ])
+  assert.ok(activeDeliberator.controllerMutablePaths.every((path) => path.startsWith("/")))
+  assert.match(protocol, /controllerMutablePaths[\s\S]*same complete frozen per-turn\s+allowlist[\s\S]*every Herdr `activeDeliberators` entry/i)
   assert.match(protocol, /transport["`: ]+herdr[\s\S]*main controller[\s\S]*inFlight[\s\S]*inFlightSince[\s\S]*lastPromptedRound[\s\S]*lastPromptedAt[\s\S]*activeDeliberators[\s\S]*deliberatorTimeoutCounts/i)
   assert.match(protocol, /herdr-session\.json[\s\S]*local operational log state/i)
+  assert.match(protocol, /\.open_magi\/magi-log\/[\s\S]*├── herdr-session\.json[ \t]+# local operational state/)
   assert.match(protocol, /schemaVersion["`: ]+2[\s\S]*backward-compatible[\s\S]*optional/i)
   assert.match(deliberation, /Herdr[\s\S]*read-only[\s\S]*assigned report/i)
   assert.match(deliberation, /report_source: herdr_agent\nstatus: ok \| timeout \| hard_error\nfailure_type: none \| timeout \| hard_error\nsage: melchior \| balthasar \| casper\nagent: <recorded name>\nturn_id: <turn id>\nround: <positive integer>\nmode: recon \| decision \| review\npass: <positive integer>\nsubmitted_at: <ISO-8601>\ncompleted_at: <ISO-8601>\n---/)
   assert.match(deliberation, /three concurrent blocking prompt calls[\s\S]*one absolute deadline/i)
   assert.match(deliberation, /lifecycle[\s\S]*(?:idle|done)[\s\S]*fresh matching envelope/i)
+  assert.match(deliberation, /submission-following observed lifecycle activity/i)
+  assert.match(deliberation, /later `idle` or `done` lifecycle state/i)
+  assert.match(deliberation, /expected `turn_id`/i)
+  assert.match(deliberation, /`completed_at >= submitted_at`/)
+  assert.match(deliberation, /valid exact envelope and required report body/i)
   assert.match(deliberation, /do not resubmit[\s\S]*observation timeout[\s\S]*live inspect/i)
   assert.match(deliberation, /Herdr pass[\s\S]*main agent[\s\S]*proven read-only worktree operations/i)
   assert.match(questionFirewall, /invalid or missing commands[\s\S]*execution_blocker/i)
@@ -1699,6 +1724,9 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(questionFirewall, /denied[\s\S]*leave panes untouched[\s\S]*no synthesis/i)
   assert.match(checklist, /Herdr preflight[\s\S]*HERDR_ENV[\s\S]*source working directory[\s\S]*configuration validation[\s\S]*session ownership state[\s\S]*frozen baseline[\s\S]*controllerMutablePaths[\s\S]*all three[\s\S]*ready/i)
   assert.match(checklist, /Phase 3 -> Phase 4[\s\S]*inFlight=false[\s\S]*three final statuses[\s\S]*fresh[\s\S]*Herdr envelopes[\s\S]*current turn[\s\S]*no unexpected workspace delta/i)
+  assert.match(checklist, /no role has `status: "hard_error"`[\s\S]*halt[\s\S]*block[\s\S]*no synthesis/i)
+  assert.match(checklist, /`status: "timed_out"`[\s\S]*valid timeout report[\s\S]*agent has settled/i)
+  assert.match(checklist, /unsettled agent or runtime blocker[\s\S]*does not advance/i)
   assert.match(checklist, /persistent panes remain[\s\S]*explicit user cleanup/i)
   assert.match(troubleshooting, /Herdr[\s\S]*main controller[\s\S]*inFlight=true/i)
   assert.match(troubleshooting, /startup[\s-]*unrecognized[\s\S]*stalled prompt[\s\S]*busy reuse[\s\S]*partial cleanup[\s\S]*config drift/i)
