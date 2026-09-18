@@ -875,6 +875,50 @@ test("Codex PreToolUse guard denies code changes before the execution phase", as
   assert.equal(inactive.stdout, "")
 })
 
+test("Codex PreToolUse guard allows append redirects into Magi artifacts and still denies code writes", async () => {
+  const project = await mkTempProject("open-magi-codex-guard-append-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "research_task" })}\n`,
+  )
+
+  function run(payload) {
+    return runInteractiveCli([], JSON.stringify({ cwd: project, ...payload }), {
+      script: "adapters/codex/hooks/magi-guard.mjs",
+    })
+  }
+
+  for (const command of [
+    "echo note >> .open_magi/magi-log/notes.md",
+    "echo note >> .open_magi/magi-log/checklist.md",
+    "printf '%s\\n' note >> .open_magi/magi-log/notes.md",
+    "echo note > .open_magi/magi-log/notes.md",
+  ]) {
+    const allowed = await run({ tool_name: "shell", tool_input: { command } })
+    assert.equal(allowed.stdout, "", command)
+  }
+
+  for (const command of [
+    "echo x >> src/main.c",
+    "echo x > src/main.c",
+    "cat payload.bin >> src/main.c",
+  ]) {
+    const denied = await run({ tool_name: "shell", tool_input: { command } })
+    assert.equal(
+      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      command,
+    )
+    assert.match(
+      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason,
+      /only allowed in the execution phase after verdict\.md/,
+      command,
+    )
+  }
+})
+
 test("Codex PreToolUse guard allows build and test commands in any phase", async () => {
   const project = await mkTempProject("open-magi-codex-guard-baseline-")
   const logDir = join(project, ".open_magi", "magi-log")
@@ -1073,6 +1117,45 @@ test("Claude PreToolUse guard denies code changes before the execution phase", a
     { script: "adapters/claude/hooks/magi-guard.mjs" },
   )
   assert.equal(allowed.stdout, "")
+})
+
+test("Claude PreToolUse guard allows append redirects into Magi artifacts and still denies code writes", async () => {
+  const project = await mkTempProject("open-magi-claude-guard-append-")
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, "state.json"),
+    `${JSON.stringify({ active: true, currentRound: 1, currentPhase: "parallel_deliberation" })}\n`,
+  )
+
+  function run(payload) {
+    return runInteractiveCli([], JSON.stringify({ cwd: project, ...payload }), {
+      script: "adapters/claude/hooks/magi-guard.mjs",
+    })
+  }
+
+  for (const command of [
+    "echo note >> .open_magi/magi-log/notes.md",
+    "echo note >> .open_magi/magi-log/checklist.md",
+    "echo note > .open_magi/magi-log/notes.md",
+  ]) {
+    const allowed = await run({ tool_name: "Bash", tool_input: { command } })
+    assert.equal(allowed.stdout, "", command)
+  }
+
+  for (const command of ["echo x >> src/main.c", "echo x > src/main.c"]) {
+    const denied = await run({ tool_name: "Bash", tool_input: { command } })
+    assert.equal(
+      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      command,
+    )
+    assert.match(
+      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason,
+      /Follow the open_magi process/,
+      command,
+    )
+  }
 })
 
 test("Claude plugin manifest exposes the portable magi skill, agents, and stop hook", async () => {
@@ -1371,6 +1454,83 @@ test("Codex Magi Stop hook allows completed loops with verified verdict adherenc
   const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
 
   assert.equal(stdout, "")
+})
+
+test("Codex Magi Stop hook accepts verdict adherence with a trailing inline comment", async () => {
+  const project = await mkTempProject("open-magi-codex-stop-adherence-comment-")
+  await writeCompleteCodexMagiRound(project, {
+    verificationText: [
+      "# Verification Results - Round 001",
+      "",
+      "verdict_reference: round-001/verdict.md",
+      "verdict_adherence: yes # confirmed against the approved verdict",
+      "applied_files:",
+      "- package.json",
+      "",
+      "command: npm test",
+      "exit_code: 0",
+      "important_output: pass",
+      "",
+    ].join("\n"),
+  })
+
+  const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
+
+  assert.equal(stdout, "")
+})
+
+test("Codex Magi Stop hook accepts commented adherence in schemaVersion 2 rounds", async () => {
+  const project = await mkTempProject("open-magi-codex-stop-adherence-v2-comment-")
+  await writeCompleteV2MagiRound(project)
+  await writeFile(
+    join(project, ".open_magi", "magi-log", "round-001", "verification.md"),
+    [
+      "verdict_reference: round-001/verdict.md",
+      "verdict_adherence: yes # council reviewed the actual diff",
+      "command: npm test",
+      "exit_code: 0",
+      "",
+    ].join("\n"),
+  )
+
+  const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
+
+  assert.equal(stdout, "")
+})
+
+test("Codex Magi Stop hook still blocks negative verdict adherence variants", async () => {
+  for (const [suffix, verificationText, expectedReason] of [
+    [
+      "comment-no-",
+      "verdict_reference: round-001/verdict.md\nverdict_adherence: no # execution diverged\n",
+      /round-001\/verification\.md: verdict_adherence: no/,
+    ],
+    [
+      "comment-no-yes-",
+      "verdict_reference: round-001/verdict.md\nverdict_adherence: no # yes it did\n",
+      /round-001\/verification\.md: verdict_adherence: no/,
+    ],
+    [
+      "comment-misspelled-",
+      "verdict_reference: round-001/verdict.md\nverdict_adherence: maybe # looks fine\n",
+      /round-001\/verification\.md: missing verdict_adherence: yes/,
+    ],
+    [
+      "comment-missing-value-",
+      "verdict_reference: round-001/verdict.md\nverdict_adherence: # yes\n",
+      /round-001\/verification\.md: missing verdict_adherence: yes/,
+    ],
+  ]) {
+    const project = await mkTempProject(`open-magi-codex-stop-adherence-${suffix}`)
+    await writeCompleteCodexMagiRound(project, { verificationText })
+
+    const { stdout } = await execFile(magiStopHookPath, [], { cwd: project })
+    const output = JSON.parse(stdout)
+
+    assert.equal(output.decision, "block", suffix)
+    assert.match(output.reason, /verdict adherence/i, suffix)
+    assert.match(output.reason, expectedReason, suffix)
+  }
 })
 
 test("Codex Magi Stop hook is silent when no Magi loop needs continuation", async () => {

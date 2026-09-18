@@ -88,7 +88,10 @@ function sanitizeShellText(command) {
   return out
 }
 
-const REDIRECT_PATTERN = /(?<![-\w])(?:\d{0,2}(?:>|>>|&>))\s*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/g
+// The alternation must try >> before > : with > first, "cmd >> file" is
+// tokenized as ">" plus the second ">" captured as the target, so the real
+// destination never appears and legal .open_magi appends are denied.
+const REDIRECT_PATTERN = /(?<![-\w])(?:\d{0,2}(?:>>|&>|>))\s*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/g
 const DOC_FILE_PATTERN = /\.(md|txt)$/i
 
 // Notes and reports are not code: .md/.txt targets are always allowed.

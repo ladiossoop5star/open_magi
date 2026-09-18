@@ -186,9 +186,11 @@ function verdictAdherenceProblems(state) {
     const text = readArtifact(relativePath)
 
     if (text === null) continue
-    if (/^\s*verdict_adherence\s*:\s*yes\s*$/im.test(text)) continue
+    // A trailing inline # comment is legal on these standalone fields; the
+    // value itself must still be exactly yes/no for the line to match.
+    if (/^\s*verdict_adherence\s*:\s*yes(?:\s*#.*)?\s*$/im.test(text)) continue
 
-    if (/^\s*verdict_adherence\s*:\s*no\s*$/im.test(text)) {
+    if (/^\s*verdict_adherence\s*:\s*no(?:\s*#.*)?\s*$/im.test(text)) {
       problems.push(`${relativePath}: verdict_adherence: no`)
     } else {
       problems.push(`${relativePath}: missing verdict_adherence: yes`)
