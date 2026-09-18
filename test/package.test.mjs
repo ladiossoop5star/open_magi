@@ -1680,6 +1680,7 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(codexRuntime, /verdict_adherence: no/)
   assert.doesNotMatch(codexRuntime, /OpenCode `session\.abort`/)
   assert.match(skill, /\.open_magi\/magi-log/)
+  assert.match(skill, /Do not use it for small one-shot answers\./)
   assert.ok(skill.split("\n").length <= 350, "SKILL.md should stay concise and route detail to references")
   assert.ok(Buffer.byteLength(skill, "utf8") <= 16384, "SKILL.md should stay below the main-load context budget")
   assert.doesNotMatch(skill, /\.omo|deliberation-log/)
@@ -1696,8 +1697,11 @@ test("bundled magi skill assets contain the expected contract", async () => {
   for (const runtime of [references["runtime.md"], codexRuntime, claudeRuntime]) {
     assert.match(runtime, /When `HERDR_ENV=1`/)
     assert.match(runtime, /references\/herdr\.md/)
-    assert.match(runtime, /native.*non-Herdr/i)
+    assert.match(runtime, /native[\s\S]{0,120}non-Herdr/i)
   }
+  assert.ok(references["runtime.md"].indexOf("When `HERDR_ENV=1`") < references["runtime.md"].indexOf("## Deliberator Launch"))
+  assert.ok(codexRuntime.indexOf("When `HERDR_ENV=1`") < codexRuntime.indexOf("## Setup Preflight"))
+  assert.ok(claudeRuntime.indexOf("When `HERDR_ENV=1`") < claudeRuntime.indexOf("## Plugin Preflight"))
   for (const name of requiredMagiReferences) {
     assert.match(skill, new RegExp(`references/${name.replace(".", "\\.")}`), `SKILL.md should route to ${name}`)
     assert.doesNotMatch(references[name], hanPattern, `${name} should not contain Chinese characters`)

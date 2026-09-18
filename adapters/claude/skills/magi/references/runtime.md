@@ -4,8 +4,8 @@ Use this when launching Magi deliberator agents or handling Claude Code plugin
 runtime behavior.
 
 When `HERDR_ENV=1`, read `references/herdr.md` and use it instead of the native
-launch instructions below. The native launch, timeout, and hard-error path in this file applies only to non-Herdr sessions.
-The Herdr path bypasses plugin
+launch instructions below. The native launch, timeout, and hard-error path in
+this file applies only to non-Herdr sessions. The Herdr path bypasses plugin
 preflight, Claude agent model files, and `run-council`.
 
 ## Plugin Preflight

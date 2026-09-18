@@ -8,33 +8,33 @@ description: Use when the user asks for magi, Open-Magi, @Open-Magi, deliberatio
 ## Overview
 
 Run a coding-agent proposal-first deliberation loop. The main agent owns
-decisions, implementation, verification, checkpoint commits, rollback, and
-final reporting. Three read-only deliberator sub-agents only research and
-report. The main agent enforces gates not supplied by runtime adapters.
+decisions, implementation, verification, checkpoint commits, rollback, and final
+reporting; three read-only deliberators only research and report. Runtime
+adapters may add guardrails; otherwise the main agent enforces gates.
 
-Core rule: completion is based on explicit `acceptanceCriteria` and
-`verificationCommands`, not on confidence or subjective judgment, and requires
-the review council to approve the actual diff before `final-report.md`.
+Completion requires explicit `acceptanceCriteria`, `verificationCommands`, and
+review-council approval of the actual diff before `final-report.md`, not
+confidence or judgment.
 
-Proposal-first rule: before selecting a fix direction, the main agent prepares an evidence packet and does not propose a fix. Deliberators propose first; the main
-agent selects one direction for their review before execution.
+Proposal-first: before direction selection, the main agent prepares an evidence packet and does not propose a fix. Deliberators propose; the main agent selects one
+for their pre-execution review.
 
 Council modes tracked in `currentCouncilMode`: `recon`, `decision`, `review`.
 
 ## Required Reference Loading
 
-Load the listed reference before acting in that situation:
+Load each reference before its situation:
 
 | Situation | Required reference |
 |---|---|
-| Starting or resuming Magi | `references/protocol.md` |
-| Creating `checklist.md` or changing phase | `references/checklist-template.md` |
-| Writing prompts, reports, synthesis, or verdict | `references/deliberation.md` |
-| Launching subagents or handling runtime adapter behavior | `references/runtime.md` |
+| Start/resume Magi | `references/protocol.md` |
+| Checklist creation/phase change | `references/checklist-template.md` |
+| Prompt/report/synthesis/verdict writing | `references/deliberation.md` |
+| Subagent launch/runtime adapter behavior | `references/runtime.md` |
 | Running in Herdr, launching/reusing sages, or explicit Herdr cleanup | `references/herdr.md` |
-| Before any user-facing question | `references/question-firewall.md` |
-| Executing changes, verification, checkpoint, rollback, or next-round evidence | `references/execution-and-verification.md` |
-| Plugin repair, corrupt state, timeout, or repeated failure | `references/troubleshooting.md` |
+| User-facing question | `references/question-firewall.md` |
+| Execution/verification/checkpoint/rollback/next-round evidence | `references/execution-and-verification.md` |
+| Plugin repair/corrupt state/timeout/repeated failure | `references/troubleshooting.md` |
 
 ## When to Use
 
@@ -42,61 +42,58 @@ Use this skill when the user says `start deliberation`, `magi`, `three sages`,
 `deliberation loop`, `loop until done`, or requests repeated research ->
 synthesize -> act -> verify until completion.
 
-Skip one-shot answers.
+Do not use it for small one-shot answers.
 
 ## Herdr Runtime Gate
 
-Before runtime-specific deliberator setup, check `HERDR_ENV`.
+Before runtime-specific setup, check `HERDR_ENV`.
 
-- When `HERDR_ENV=1`, read `references/herdr.md` and use that contract for
-  launch, state ownership, reporting, recovery, and explicit cleanup.
-  Do not run the runtime-specific bootstrap, agent preflight, runner, tmux, or
-  subprocess launch path.
-- When `HERDR_ENV` is not `1`, continue with this package's native runtime
-  instructions unchanged.
-- A selected Herdr path never silently falls back to the native path.
+When `HERDR_ENV=1`, read `references/herdr.md` for launch, state ownership,
+reporting, recovery, and explicit cleanup. Do not run the runtime-specific bootstrap,
+agent preflight, runner, tmux, or subprocess launch path. For other values,
+native instructions stay unchanged. Never silently fall back from Herdr to native.
 
 ## Roles
 
 Main agent:
-- Extracts goal, criteria, and verification commands.
-- Writes `.open_magi/magi-log/state.json`, prompts, reports, decisions, checks,
-  checkpoint commits, rollback evidence, and final report.
-- Launches all three deliberator subtasks and synthesizes their reports.
+- Extracts goal, criteria, and verification commands; writes
+  `.open_magi/magi-log/state.json`, prompts, reports, decisions, checks,
+  checkpoint commits, rollback evidence, and final report; launches all three
+  deliberators and synthesizes their reports.
 
 Sub-agents:
 - `deliberator-melchior`: practical engineering feasibility and edge cases.
 - `deliberator-balthasar`: architecture, maintainability, long-term design.
 - `deliberator-casper`: debugging, root cause, failure paths.
 
-Use these role names for report files even with generic runtime subagents.
+Use these role names for generic subagent reports.
 
 Sub-agent restrictions:
-- sub-agents do not edit files; the sole narrow exception lets a Herdr sage
-  write its assigned report path per `references/herdr.md`;
-- sub-agents do not run build/test/format/deploy commands;
-- sub-agents do not produce the final answer for the user;
-- sub-agents only report analysis to the main agent.
+- sub-agents do not edit files; only a Herdr sage may write its assigned report
+  path per `references/herdr.md`;
+- no build/test/format/deploy commands;
+- no final user answer;
+- report analysis only to the main agent.
 
 ## Runtime State
 
-State file path: `.open_magi/magi-log/state.json`.
+State file: `.open_magi/magi-log/state.json`.
 
-Create it before the first research round with `schemaVersion`, `goal`,
+Before the first research round, create it with `schemaVersion`, `goal`,
 `acceptanceCriteria`, `verificationCommands`, `active`, `projectRoot`,
 `currentRound`, `currentPhase`, `currentDeliberationPass`,
 `maxDeliberationPasses`, `deliberationStatus`, `currentCouncilMode`,
 `currentReconPass`,
 `deliberatorTimeoutMs`, `activeDeliberators`, `deliberatorTimeoutCounts`,
 `needsContinue`, `inFlight`, `inFlightSince`, `consecutiveNoProgress`,
-`verdict`, `lastError`, and `history`. Use `schemaVersion: 2`. Full schema and
-artifact layout are in `references/protocol.md`.
+`verdict`, `lastError`, and `history`. Use `schemaVersion: 2`; full schema and
+artifact layout: `references/protocol.md`.
 
 Outside Herdr, the runtime adapter owns `inFlight`, `inFlightSince`,
 `lastPromptedRound`, `lastPromptedAt`, `activeDeliberators`, and
-`deliberatorTimeoutCounts`; the main agent must not set `inFlight=true`. In
-Herdr, main agent/controller owns them per `references/herdr.md`; only
-there may it set `inFlight=true` itself.
+`deliberatorTimeoutCounts`; the main agent cannot set `inFlight=true`. In Herdr
+only, the main agent/controller owns them per `references/herdr.md` and may set
+`inFlight=true` itself.
 
 Use atomic complete writes where possible; never leave partial JSON.
 `goal_definition` is only valid for initial setup. currentRound > 1 must never use `goal_definition`; resume later rounds at `status_assessment`.

@@ -4,8 +4,8 @@ Use this when launching deliberator subagents, running the Codex setup CLI, or
 handling Codex-specific Magi limitations.
 
 When `HERDR_ENV=1`, read `references/herdr.md` and use it instead of the native
-launch instructions below. The native launch, timeout, and hard-error path in this file applies only to non-Herdr sessions.
-The Herdr path bypasses setup
+launch instructions below. The native launch, timeout, and hard-error path in
+this file applies only to non-Herdr sessions. The Herdr path bypasses setup
 preflight, Codex custom-agent model files, and `run-council`.
 
 ## Setup Preflight
