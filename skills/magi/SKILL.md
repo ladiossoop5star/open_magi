@@ -24,8 +24,11 @@ filesystem, PATH, runtime/native configs, agent names, prior reports/history,
 or standard commands. No Herdr/Git call, `find`/`rg`, fallback, or inference.
 The existing branch must reuse the returned metadata; no second `lstat` or
 existence check is allowed before asking or parsing. Only a proven owned regular
-file with valid mode may be read/parsed. Invalid permission, format, role, or
-command means ask immediately; search nowhere else.
+file with valid mode may be read/parsed. If it shows a symlink, non-regular
+entry, foreign-owned entry, or unprovable owner, do not read or mutate it. With
+ownership, type, permission, format, role, or command invalid, the next/only
+action is to ask immediately with the direct user question, with zero other
+action; search nowhere else.
 
 Only after the user answers may it atomically write/update owner-only `0600`,
 apply exclusion, and revalidate (a later `lstat` is allowed here). Only after local validity may it

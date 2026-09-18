@@ -2251,6 +2251,14 @@ test("bundled magi skill assets contain the expected contract", async () => {
     assert.match(hardGate, /No Herdr\/Git call/i)
     assert.match(hardGate, /no[\s\S]*(?:find|rg)[\s\S]*fallback[\s\S]*infer/i)
     assert.match(hardGate, /existing branch[\s\S]*returned metadata[\s\S]*only[\s\S]*(?:owned|ownership)[\s\S]*regular[\s\S]*mode[\s\S]*(?:parse|read)/i)
+    assert.match(hardGate, /symlink[\s\S]*non-regular[\s\S]*(?:foreign-owned|unprovable owner)/i)
+    assert.match(hardGate, /(?:ownership|owner)[\s\S]*type[\s\S]*invalid[\s\S]*(?:next|only)[\s\S]*action[\s\S]*(?:ask|question)/i)
+    for (const unsafeEntry of ["symlink", "non-regular", "foreign-owned", "unprovable owner"]) {
+      assert.match(
+        hardGate,
+        new RegExp(`${unsafeEntry}[\\s\\S]*do not read or mutate[\\s\\S]*(?:next|only)[\\s\\S]*action[\\s\\S]*ask immediately[\\s\\S]*zero\\s+other\\s+action`, "i"),
+      )
+    }
     assert.match(hardGate, /permissions?[\s\S]*format[\s\S]*role[\s\S]*command/i)
     assert.match(hardGate, /invalid[\s\S]{0,160}ask immediately|command is invalid, ask immediately/i)
     assert.match(hardGate, /only after[\s\S]*user[\s\S]*answer[\s\S]*0600[\s\S]*exclu[\s\S]*revalidate/i)

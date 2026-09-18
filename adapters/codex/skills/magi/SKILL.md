@@ -26,9 +26,11 @@ deliberator configs, agent names, prior reports or history, or standard
 commands. No Herdr/Git call, `find` or `rg`, fallback, or inference is allowed.
 The existing branch must reuse the returned metadata; no second `lstat` or
 existence check is allowed before asking or parsing. Only a proven owned regular
-file with valid mode may be read and parsed.
-If its permissions, format, role, or command is invalid, ask immediately; do
-not search elsewhere.
+file with valid mode may be read and parsed. If it shows a symlink, non-regular
+entry, foreign-owned entry, or unprovable owner, do not read or mutate it. With
+ownership, type, permission, format, role, or command invalid, the next and only
+action is to ask immediately with the direct user question, with zero other
+action; do not search elsewhere.
 
 Only after the user answers may Magi safely write/update the file atomically
 with owner-only `0600` mode, apply its repository exclusion, and revalidate the
