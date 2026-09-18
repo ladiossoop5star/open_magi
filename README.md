@@ -511,7 +511,7 @@ adds the root config entry `/.open-magi-herdr`. Linked worktrees may share that
 exclude file. Never commit `.open-magi-herdr`, and do not embed secrets or tokens
 in its raw commands. Raw commands stay confined to the config file, the
 immediate launch, and a correction question; they are never copied into Magi
-reports or logs. In a non-Git project, Magi warns the user to protect the file
+reports or logs. In a non-Git project, exclusion is skipped; protect the file
 manually.
 
 Inside Herdr this configuration replaces, rather than supplements, the native

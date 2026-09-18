@@ -688,8 +688,8 @@ Herdr 辨識。Magi 絕不自行推測 command。檔案缺少、格式無效，�
 匹配 root config 的 `/.open-magi-herdr`。Linked worktrees 可能 share 同一份
 exclude。`.open-magi-herdr` 必須 `never commit`，而且 raw commands 不得內嵌
 secrets 或 tokens。Raw commands 只留在 config、當下 launch 與 correction
-question 中，絕不複製到 Magi reports 或 logs。非 Git project 中，Magi 會提醒
-使用者自行保護這個檔案。
+question 中，絕不複製到 Magi reports 或 logs。非 Git project 會略過 exclusion；
+使用者必須自行保護這個檔案。
 
 在 Herdr 中，這份設定會取代而不是補充 Codex、Claude 或 OpenCode 的原生
 deliberator 設定；Magi 不會新增 runner，而是使用 Herdr 現有的 pane 與 agent
