@@ -10,14 +10,14 @@ description: Use when the user asks for magi, Open-Magi, @Open-Magi, deliberatio
 Run a coding-agent proposal-first deliberation loop. The main agent owns
 decisions, implementation, verification, checkpoint commits, rollback, and
 final reporting. Three read-only deliberator sub-agents only research and
-report. Runtime adapters may add guardrails; otherwise the main agent enforces
-gates.
+report. The main agent enforces gates not supplied by runtime adapters.
 
 Core rule: completion is based on explicit `acceptanceCriteria` and
 `verificationCommands`, not on confidence or subjective judgment, and requires
 the review council to approve the actual diff before `final-report.md`.
 
-Proposal-first rule: before any fix direction is selected, the main agent prepares an evidence packet and does not propose a fix. The three deliberators propose directions first; the main agent selects one direction; then the deliberators review that selected direction before execution.
+Proposal-first rule: before selecting a fix direction, the main agent prepares an evidence packet and does not propose a fix. Deliberators propose first; the main
+agent selects one direction for their review before execution.
 
 Council modes tracked in `currentCouncilMode`: `recon`, `decision`, `review`.
 
@@ -31,6 +31,7 @@ Load the listed reference before acting in that situation:
 | Creating `checklist.md` or changing phase | `references/checklist-template.md` |
 | Writing prompts, reports, synthesis, or verdict | `references/deliberation.md` |
 | Launching subagents or handling runtime adapter behavior | `references/runtime.md` |
+| Running in Herdr, launching/reusing sages, or explicit Herdr cleanup | `references/herdr.md` |
 | Before any user-facing question | `references/question-firewall.md` |
 | Executing changes, verification, checkpoint, rollback, or next-round evidence | `references/execution-and-verification.md` |
 | Plugin repair, corrupt state, timeout, or repeated failure | `references/troubleshooting.md` |
@@ -41,7 +42,19 @@ Use this skill when the user says `start deliberation`, `magi`, `three sages`,
 `deliberation loop`, `loop until done`, or requests repeated research ->
 synthesize -> act -> verify until completion.
 
-Do not use it for small one-shot answers.
+Skip one-shot answers.
+
+## Herdr Runtime Gate
+
+Before runtime-specific deliberator setup, check `HERDR_ENV`.
+
+- When `HERDR_ENV=1`, read `references/herdr.md` and use that contract for
+  launch, state ownership, reporting, recovery, and explicit cleanup.
+  Do not run the runtime-specific bootstrap, agent preflight, runner, tmux, or
+  subprocess launch path.
+- When `HERDR_ENV` is not `1`, continue with this package's native runtime
+  instructions unchanged.
+- A selected Herdr path never silently falls back to the native path.
 
 ## Roles
 
@@ -59,7 +72,8 @@ Sub-agents:
 Use these role names for report files even with generic runtime subagents.
 
 Sub-agent restrictions:
-- sub-agents do not edit files;
+- sub-agents do not edit files; the sole narrow exception lets a Herdr sage
+  write its assigned report path per `references/herdr.md`;
 - sub-agents do not run build/test/format/deploy commands;
 - sub-agents do not produce the final answer for the user;
 - sub-agents only report analysis to the main agent.
@@ -78,9 +92,11 @@ Create it before the first research round with `schemaVersion`, `goal`,
 `verdict`, `lastError`, and `history`. Use `schemaVersion: 2`. Full schema and
 artifact layout are in `references/protocol.md`.
 
-Runtime-adapter-owned fields: `inFlight`, `inFlightSince`, `lastPromptedRound`,
-`lastPromptedAt`, `activeDeliberators`, and `deliberatorTimeoutCounts`.
-The main agent must not set `inFlight=true` manually.
+Outside Herdr, the runtime adapter owns `inFlight`, `inFlightSince`,
+`lastPromptedRound`, `lastPromptedAt`, `activeDeliberators`, and
+`deliberatorTimeoutCounts`; the main agent must not set `inFlight=true`. In
+Herdr, main agent/controller owns them per `references/herdr.md`; only
+there may it set `inFlight=true` itself.
 
 Use atomic complete writes where possible; never leave partial JSON.
 `goal_definition` is only valid for initial setup. currentRound > 1 must never use `goal_definition`; resume later rounds at `status_assessment`.

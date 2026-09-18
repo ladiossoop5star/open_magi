@@ -3,6 +3,11 @@
 Use this when launching deliberator subagents, interpreting OpenCode runtime
 events, or handling Magi plugin backstops.
 
+When `HERDR_ENV=1`, read `references/herdr.md` and use it instead of the native
+launch instructions below. The native launch, timeout, and hard-error path in this file applies only to non-Herdr sessions.
+Herdr entries are not native
+OpenCode child sessions, and the OpenCode plugin must not abort them.
+
 ## Deliberator Launch
 
 Use the configured OpenCode subagents:

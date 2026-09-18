@@ -1684,11 +1684,21 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.ok(Buffer.byteLength(skill, "utf8") <= 16384, "SKILL.md should stay below the main-load context budget")
   assert.doesNotMatch(skill, /\.omo|deliberation-log/)
   assert.doesNotMatch(skill, hanPattern)
+  for (const packagedSkill of [skill, codexSkill, claudeSkill]) {
+    assert.match(packagedSkill, /## Herdr Runtime Gate/)
+    assert.match(packagedSkill, /references\/herdr\.md/)
+    assert.match(packagedSkill, /HERDR_ENV=1/)
+    assert.match(packagedSkill, /do not run the runtime-specific bootstrap/i)
+  }
+  assert.ok(codexSkill.indexOf("## Herdr Runtime Gate") < codexSkill.indexOf("## Codex Bootstrap Gate"))
+  assert.ok(claudeSkill.indexOf("## Herdr Runtime Gate") < claudeSkill.indexOf("## Claude Bootstrap Gate"))
+  for (const runtime of [references["runtime.md"], codexRuntime, claudeRuntime]) {
+    assert.match(runtime, /When `HERDR_ENV=1`/)
+    assert.match(runtime, /references\/herdr\.md/)
+    assert.match(runtime, /native.*non-Herdr/i)
+  }
   for (const name of requiredMagiReferences) {
-    // Herdr routing is asserted with the packaged skill changes in Task 3.
-    if (name !== "herdr.md") {
-      assert.match(skill, new RegExp(`references/${name.replace(".", "\\.")}`), `SKILL.md should route to ${name}`)
-    }
+    assert.match(skill, new RegExp(`references/${name.replace(".", "\\.")}`), `SKILL.md should route to ${name}`)
     assert.doesNotMatch(references[name], hanPattern, `${name} should not contain Chinese characters`)
   }
 

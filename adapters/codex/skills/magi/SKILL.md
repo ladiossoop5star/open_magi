@@ -35,6 +35,7 @@ acting in that situation:
 | Creating `checklist.md` or changing phase | `references/checklist-template.md` |
 | Writing prompts, reports, synthesis, or verdict | `references/deliberation.md` |
 | Launching subagents or handling runtime adapter behavior | `references/runtime.md` |
+| Running in Herdr, launching/reusing sages, or explicit Herdr cleanup | `references/herdr.md` |
 | Before any user-facing question | `references/question-firewall.md` |
 | Executing changes, verification, checkpoint, rollback, or next-round evidence | `references/execution-and-verification.md` |
 | Plugin repair, corrupt state, timeout, or repeated failure | `references/troubleshooting.md` |
@@ -50,6 +51,18 @@ synthesize -> act -> verify until completion.
 
 Do not use this for small one-shot answers where no iterative action or
 verification is needed.
+
+## Herdr Runtime Gate
+
+Before runtime-specific deliberator setup, check `HERDR_ENV`.
+
+- When `HERDR_ENV=1`, read `references/herdr.md` and use that contract for
+  launch, state ownership, reporting, recovery, and explicit cleanup.
+  Do not run the runtime-specific bootstrap, agent preflight, runner, tmux, or
+  subprocess launch path.
+- When `HERDR_ENV` is not `1`, continue with this package's native runtime
+  instructions unchanged.
+- A selected Herdr path never silently falls back to the native path.
 
 ## Codex Bootstrap Gate
 
@@ -82,7 +95,8 @@ Sub-agents:
 Use these role names for report files even with generic runtime subagents.
 
 Sub-agent restrictions:
-- sub-agents do not edit files;
+- sub-agents do not edit files; the sole narrow exception is that a Herdr sage
+  may write its assigned report path per `references/herdr.md`;
 - sub-agents do not run build/test/format/deploy commands;
 - sub-agents do not produce the final answer for the user;
 - sub-agents only report analysis to the main agent.
@@ -100,9 +114,12 @@ Create it before the first research round with `schemaVersion`, `goal`,
 `verdict`, `lastError`, and `history`. Use `schemaVersion: 2`. Full schema and
 artifact layout are in `references/protocol.md`.
 
-Runtime-adapter-owned fields: `inFlight`, `inFlightSince`, `lastPromptedRound`,
-`lastPromptedAt`, `activeDeliberators`, and `deliberatorTimeoutCounts`.
-The main agent must not set `inFlight=true` manually.
+Outside Herdr, runtime-adapter-owned fields are `inFlight`, `inFlightSince`,
+`lastPromptedRound`, `lastPromptedAt`, `activeDeliberators`, and
+`deliberatorTimeoutCounts`; the main agent must not set `inFlight=true`
+manually. During a Herdr turn, the main agent/controller owns these fields per
+`references/herdr.md`; this is the only case in which it may set
+`inFlight=true` itself.
 
 Use atomic complete writes where possible; never leave partial JSON.
 `goal_definition` is only valid for initial setup. currentRound > 1 must never use `goal_definition`; resume later rounds at `status_assessment`.
