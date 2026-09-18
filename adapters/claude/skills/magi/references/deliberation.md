@@ -170,10 +170,14 @@ completed_at: <ISO-8601>
 ```
 
 Launch the pass with three concurrent blocking prompt calls and enforce one absolute deadline
-shared by all three calls. The main controller captures each invocation's CLI stdout/result
+shared by all three calls. Use runtime command execution or process handles
+directly; do not add a runner. The main controller captures each invocation's CLI stdout/result
 in its predeclared `waitResultPath`; do not use a shared result file or discover
-the path after submission. Validate the documented JSON result schema and
-record its digest for later integrity comparison.
+the path after submission. Capture separate stdout and stderr when available,
+or labeled combined output otherwise. On a nonzero result, including exit 1,
+parse CLI JSON from stderr and preserve a valid error object in `cliResult`.
+Validate the documented JSON result schema and record its digest for later
+integrity comparison.
 
 Completion validates the wait-result schema and recorded digest together with
 the agent state and assigned report; no one source is sufficient. Apply all completion acceptance predicates from

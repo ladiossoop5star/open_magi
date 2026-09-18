@@ -2033,6 +2033,30 @@ test("bundled magi skill assets contain the expected contract", async () => {
     assert.deepEqual(activeDeliberator.controllerMutablePaths, controllerMutablePaths)
     assert.ok(activeDeliberator.controllerMutablePaths.every((path) => path.startsWith("/")))
   }
+  const waitResultExample = protocol.match(/## Structured Wait Result[\s\S]*?```json\n([\s\S]*?)\n```/)?.[1]
+  assert.ok(waitResultExample, "protocol should include the structured Herdr wait-result JSON example")
+  assert.deepEqual(Object.keys(JSON.parse(waitResultExample)), [
+    "schemaVersion",
+    "sage",
+    "agent",
+    "turnID",
+    "submittedAt",
+    "completedAt",
+    "exitCode",
+    "timedOut",
+    "stdout",
+    "stderr",
+    "combinedOutput",
+    "cliResult",
+    "parseError",
+  ])
+  assert.match(protocol, /returns, fails, or times out[\s\S]*atomically writes[\s\S]*waitResultPath/i)
+  assert.match(protocol, /separate `stdout` and `stderr`[\s\S]*labeled `combinedOutput`/i)
+  assert.match(protocol, /must not assume\s+stdout-only/i)
+  assert.match(protocol, /stderr[\s\S]*nonzero[\s\S]*exit 1[\s\S]*valid JSON error object[\s\S]*cliResult/i)
+  assert.match(protocol, /parseError[\s\S]*captured streams/i)
+  assert.match(protocol, /companion temporary[\s\S]*exact[\s\S]*absolute path[\s\S]*controllerMutablePaths[\s\S]*otherwise[\s\S]*outside the monitored worktree/i)
+  assert.match(protocol, /Do not add a\s+runner/i)
   assert.match(protocol, /controllerMutablePaths[\s\S]*same complete frozen per-turn\s+allowlist[\s\S]*every Herdr `activeDeliberators` entry/i)
   assert.match(protocol, /transport["`: ]+herdr[\s\S]*main controller[\s\S]*inFlight[\s\S]*inFlightSince[\s\S]*lastPromptedRound[\s\S]*lastPromptedAt[\s\S]*activeDeliberators[\s\S]*deliberatorTimeoutCounts/i)
   assert.match(protocol, /herdr-session\.json[\s\S]*local operational log state/i)
@@ -2049,6 +2073,7 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(deliberation, /valid exact envelope and required report body/i)
   assert.match(deliberation, /CLI stdout\/result[\s\S]*predeclared `waitResultPath`/i)
   assert.match(deliberation, /wait-result[\s\S]*schema[\s\S]*digest[\s\S]*agent state[\s\S]*report/i)
+  assert.match(deliberation, /stderr[\s\S]*nonzero[\s\S]*exit 1/i)
   assert.match(deliberation, /do not resubmit[\s\S]*observation timeout[\s\S]*live inspect/i)
   assert.match(deliberation, /Herdr pass[\s\S]*main agent[\s\S]*proven read-only worktree operations/i)
   assert.match(questionFirewall, /invalid or missing commands[\s\S]*execution_blocker/i)
@@ -2062,10 +2087,14 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(checklist, /`status: "timed_out"`[\s\S]*valid timeout report[\s\S]*agent has settled/i)
   assert.match(checklist, /unsettled agent or runtime blocker[\s\S]*does not advance/i)
   assert.match(checklist, /waitResultPath[\s\S]*schema[\s\S]*digest/i)
+  assert.match(checklist, /stdout[\s\S]*stderr[\s\S]*combinedOutput[\s\S]*exitCode[\s\S]*cliResult[\s\S]*parseError/i)
   assert.match(checklist, /persistent panes remain[\s\S]*explicit user cleanup/i)
   assert.match(troubleshooting, /Herdr[\s\S]*main controller[\s\S]*inFlight=true/i)
   assert.match(troubleshooting, /startup[\s-]*unrecognized[\s\S]*stalled prompt[\s\S]*busy reuse[\s\S]*partial cleanup[\s\S]*config drift/i)
   assert.match(troubleshooting, /Herdr failure[\s\S]*never[\s\S]*native fallback/i)
+  assert.match(troubleshooting, /exit 1[\s\S]*stderr[\s\S]*cliResult/i)
+  assert.match(questionFirewall, /targeted raw-command correction[\s\S]*exact\s+configured command[\s\S]*transient[\s\S]*owner-only[\s\S]*question-request\.md/i)
+  assert.match(questionFirewall, /sole log\s+exception[\s\S]*no secrets[\s\S]*consumes and removes[\s\S]*no persistent\s+report or log copies/i)
   assert.match(codexRuntime, /marked complete but `final-report\.md` is missing/)
   assert.match(codexRuntime, /If the goal is already complete, write `final-report\.md`/)
   assert.match(codexRuntime, /final report exists but required round artifacts are missing/)

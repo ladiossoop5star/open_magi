@@ -30,6 +30,15 @@ resolved, continue from `state.json` and do not recreate the old request file.
 If a request is denied, read `question-denied.md` once, self-answer, and
 continue without writing the same request again.
 
+For a Herdr targeted raw-command correction, the affected role's exact
+configured command may appear only in the transient, owner-only (`0600` where
+supported) `.open_magi/magi-log/question-request.md`. This is the sole log
+exception for raw command text. The request must contain no secrets, tokens, or
+credentials. The plugin consumes and removes `question-request.md` whether it
+allows or denies the question; make no persistent report or log copies of the
+command. All other artifacts store only its lowercase hexadecimal SHA-256
+digest.
+
 For a denied Herdr request, make no pane or agent mutation: leave panes untouched
 and perform no synthesis from incomplete or stale reports.
 

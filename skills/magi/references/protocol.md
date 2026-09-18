@@ -128,6 +128,56 @@ three exact per-role `waitResultPath` values. A directory, glob, category, relat
 path, or path discovered after submission is not valid, and the list cannot
 expand while the turn is in flight.
 
+## Structured Wait Result
+
+After each Herdr invocation returns, fails, or times out, the main controller
+atomically writes that role's predeclared `waitResultPath` as one JSON object
+with exactly these fields:
+
+```json
+{
+  "schemaVersion": 1,
+  "sage": "melchior",
+  "agent": "magi-melchior-<hash10>",
+  "turnID": "filename-safe-turn-id",
+  "submittedAt": "2026-01-01T00:00:00.000Z",
+  "completedAt": "2026-01-01T00:00:01.000Z",
+  "exitCode": 0,
+  "timedOut": false,
+  "stdout": "captured standard output",
+  "stderr": "",
+  "combinedOutput": null,
+  "cliResult": {},
+  "parseError": null
+}
+```
+
+`schemaVersion` is exactly `1`. `sage` is `melchior`, `balthasar`, or
+`casper`; `agent` and `turnID` match the active entry; both timestamps are
+ISO-8601; `exitCode` is an integer or `null`; `timedOut` is boolean;
+`stdout`, `stderr`, and `combinedOutput` are strings or `null`;
+`cliResult` is a parsed object or `null`; and `parseError` is a string or
+`null`.
+
+Retain separate `stdout` and `stderr` when the runtime exposes both, or an
+explicitly labeled `combinedOutput` when it exposes only one channel.
+Unavailable streams are `null`, not omitted. The controller must not assume
+stdout-only output. Parse CLI JSON from stdout on success, from stderr on a
+nonzero result including exit 1, or from combined output when that is the only
+channel. Preserve a valid JSON error object from stderr in `cliResult` even on
+exit 1. When parsing fails, retain the captured streams and set `parseError`;
+never replace failure evidence with an empty result.
+
+Use the existing atomic controller-write primitive. If it uses a
+worktree-visible companion temporary file, predeclare that companion's exact
+absolute path before the baseline and add it to the same
+`controllerMutablePaths` list in every Herdr entry. Otherwise its internal
+temporary stays outside the monitored worktree and no companion path is
+allowed. The example above assumes no worktree-visible companion. Do not add a
+runner, capture the raw prompt or configured command, or copy report contents
+into a wait-result object.
+
+
 When an entry uses `transport: "herdr"`, the main controller, rather than a
 runtime plugin, owns updates to `inFlight`, `inFlightSince`,
 `lastPromptedRound`, `lastPromptedAt`, `activeDeliberators`, and
