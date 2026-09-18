@@ -28,11 +28,11 @@ Poll for at most 120 seconds for both pane survival and positive agent recogniti
 
 ## Persistent Session State and Reuse
 
-Persist session data atomically at `.open_magi/magi-log/herdr-session.json`. It records schema version, real project root, captured creation working directory, workspace ID, tab ID, source main pane ID, the role-to-pane and role-to-agent mappings, the exact-command SHA-256 hashes, pane names, creation time, last validation time, cleanup status, and any unresolved partial-startup or in-flight turn data.
+Persist session data atomically at `.open_magi/magi-log/herdr-session.json`. It records schema version, real project root, captured creation working directory, workspace ID, tab ID, source main pane ID, the role-to-pane and role-to-agent mappings with stable pane IDs and deterministic agent names, the exact-command SHA-256 hashes, creation time, last validation time, cleanup status, and any unresolved partial-startup or in-flight turn data. Optional pane labels are not identity or ownership evidence.
 
-Reuse only when the stored project root, creation working directory, workspace, tab, and source pane match and every mapped pane is live with the expected agent. A matching live reuse never resizes or rearranges panes. If command hashes drift, ask the user to choose continued reuse with the already-running commands or explicit cleanup and restart. Do not restart silently.
+Reuse only when the stored project root, creation working directory, workspace, tab, and source pane match and every stable mapped pane ID is live with its expected deterministic agent name. A matching live reuse never resizes or rearranges panes. If command hashes drift, ask the user to choose continued reuse with the already-running commands or explicit cleanup and restart. Do not restart silently.
 
-If session state is missing, reconstruct it only when each pane's deterministic name, workspace, source main pane association, and creation working directory all match. Otherwise treat the panes as unowned and ask the user.
+If session state is missing, reconstruct it only when each deterministic agent name, workspace, source main pane association, creation working directory, and verifiable pane ID relationship all match. A pane label is irrelevant. Otherwise treat the panes and agents as unowned and ask the user.
 
 ## Concurrent Turn
 
@@ -97,7 +97,7 @@ An allowed path does not prove who wrote it. After every expected controller wri
 
 If startup succeeds for only some roles, preserve live validated siblings and record the partial mapping and failure atomically. Show the user the affected role's exact configured command and captured pane output, classify the correction question as `execution_blocker`, and ask for the corrected command. Update `.open-magi-herdr`, parse the whole file again, and revalidate all three exact commands and hashes before retrying.
 
-After revalidating ownership, close only the failed test-owned pane when replacement is necessary. Create or launch only the failed role's missing or corrected pane and retry only that role. Do not close, relaunch, move, resize, reprompt, or otherwise disturb successful siblings. Reuse never resizes.
+After revalidating ownership, close only the failed role pane proven to have been created by this recorded startup attempt when replacement is necessary. If that proof is absent, do not close it; ask the user under the destructive-risk firewall. Create or launch only the failed role's missing or corrected pane and retry only that role. Do not close, relaunch, move, resize, reprompt, or otherwise disturb successful siblings. Reuse never resizes.
 
 If a split response is ambiguous, do not guess which pane was created. Re-query safely, retain all evidence, and ask before any operation that could affect an unowned pane. Recovery ends only when all mappings and creation working directories are revalidated.
 
