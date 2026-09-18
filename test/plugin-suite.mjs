@@ -331,6 +331,53 @@ test("session.created records deliberator child sessions with deadlines", async 
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("session.created preserves a Herdr-owned deliberator entry", async () => {
+  const project = await makeProject("{}")
+  const herdrEntry = {
+    agent: "deliberator-melchior",
+    sessionID: "herdr-melchior",
+    parentSessionID: "ses-1",
+    transport: "herdr",
+    round: 2,
+    pass: 1,
+    startedAt: new Date(Date.now() - 60000).toISOString(),
+    deadlineAt: new Date(Date.now() + 600000).toISOString(),
+    status: "running",
+  }
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    activeDeliberators: { melchior: herdrEntry },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient([], { aborts }),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: {
+      type: "session.created",
+      properties: {
+        info: {
+          id: "native-melchior",
+          parentID: "ses-1",
+          agent: "deliberator-melchior",
+        },
+      },
+    },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated.activeDeliberators.melchior, herdrEntry)
+  assert.equal(aborts.length, 0)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("concurrent session.created events preserve all deliberator child sessions", async () => {
   const project = await makeProject("{}")
   const state = activeState({
@@ -699,6 +746,88 @@ test("expired current council deliberator entries still timeout and drive contin
   await rm(project.root, { recursive: true, force: true })
 })
 
+test("expired Herdr-owned deliberators are untouched by the native timeout backstop", async () => {
+  const project = await makeProject("{}")
+  const herdrEntry = {
+    agent: "deliberator-melchior",
+    sessionID: "herdr-melchior",
+    parentSessionID: "ses-1",
+    transport: "herdr",
+    round: 3,
+    pass: 2,
+    startedAt: new Date(Date.now() - 900000).toISOString(),
+    deadlineAt: new Date(Date.now() - 1000).toISOString(),
+    status: "running",
+  }
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 3,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 2,
+    maxDeliberationPasses: 3,
+    needsContinue: false,
+    inFlight: false,
+    activeDeliberators: { melchior: herdrEntry },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const aborts = []
+  const hooks = await server({
+    client: fakeClient(calls, { aborts }),
+    directory: project.root,
+  })
+
+  await hooks["chat.message"]({ sessionID: "ses-1", agent: "build" })
+  await sleep(30)
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated, state)
+  assert.equal(aborts.length, 0)
+  assert.equal(calls.length, 0)
+  assert.equal(
+    existsSync(join(project.root, ".open_magi/magi-log/round-003/council-002/report-melchior.md")),
+    false,
+  )
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("Herdr-owned timeout state does not claim that the OpenCode plugin aborted it", async () => {
+  const project = await makeProject("{}")
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 1,
+    currentPhase: "parallel_deliberation",
+    needsContinue: true,
+    inFlight: false,
+    activeDeliberators: {
+      melchior: {
+        agent: "deliberator-melchior",
+        transport: "herdr",
+        round: 1,
+        pass: 1,
+        status: "timed_out",
+        reportPath: ".open_magi/magi-log/round-001/council-001/report-melchior.md",
+      },
+    },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "ses-1" } },
+  })
+
+  assert.equal(calls.length, 1)
+  assert.doesNotMatch(calls[0].body.parts[0].text, /OpenCode plugin aborted/)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
 test("expired stale non-council deliberator entries are retired using round only", async () => {
   const project = await makeProject("{}")
   const state = activeState({
@@ -1002,6 +1131,90 @@ test("child session idle marks a deliberator complete so later sweeps do not tim
   const updated = JSON.parse(await readFile(project.statePath, "utf8"))
   assert.equal(updated.activeDeliberators.casper.status, "completed")
   assert.equal(typeof updated.activeDeliberators.casper.completedAt, "string")
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("child session idle does not complete a Herdr-owned deliberator", async () => {
+  const project = await makeProject("{}")
+  const herdrEntry = {
+    agent: "deliberator-casper",
+    sessionID: "herdr-casper",
+    parentSessionID: "ses-1",
+    transport: "herdr",
+    round: 2,
+    pass: 1,
+    startedAt: new Date(Date.now() - 60000).toISOString(),
+    deadlineAt: new Date(Date.now() + 600000).toISOString(),
+    status: "running",
+  }
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    activeDeliberators: { casper: herdrEntry },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const hooks = await server({
+    client: fakeClient([]),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: { type: "session.idle", properties: { sessionID: "herdr-casper" } },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated.activeDeliberators.casper, herdrEntry)
+
+  await rm(project.root, { recursive: true, force: true })
+})
+
+test("session.error does not mark or prompt for a Herdr-owned deliberator", async () => {
+  const project = await makeProject("{}")
+  const herdrEntry = {
+    agent: "deliberator-balthasar",
+    sessionID: "herdr-balthasar",
+    parentSessionID: "ses-1",
+    transport: "herdr",
+    round: 2,
+    pass: 1,
+    startedAt: new Date(Date.now() - 60000).toISOString(),
+    deadlineAt: new Date(Date.now() + 600000).toISOString(),
+    status: "running",
+  }
+  const state = activeState({
+    projectRoot: project.root,
+    currentRound: 2,
+    currentPhase: "parallel_deliberation",
+    currentDeliberationPass: 1,
+    activeDeliberators: { balthasar: herdrEntry },
+  })
+  await writeFile(project.statePath, JSON.stringify(state, null, 2))
+  const calls = []
+  const hooks = await server({
+    client: fakeClient(calls),
+    directory: project.root,
+  })
+
+  await hooks.event({
+    event: {
+      type: "session.error",
+      properties: {
+        sessionID: "herdr-balthasar",
+        error: { name: "ProviderAuthError", data: { message: "native event" } },
+      },
+    },
+  })
+
+  const updated = JSON.parse(await readFile(project.statePath, "utf8"))
+  assert.deepEqual(updated.activeDeliberators.balthasar, herdrEntry)
+  assert.equal(calls.length, 0)
+  assert.equal(
+    existsSync(join(project.root, ".open_magi/magi-log/round-002/council-001/report-balthasar.md")),
+    false,
+  )
 
   await rm(project.root, { recursive: true, force: true })
 })
@@ -2765,7 +2978,7 @@ test("round transition normalize resets a stale currentReconPass", async () => {
   await rm(project.root, { recursive: true, force: true })
 })
 
-test("round-entry normalize preserves an in-progress recon with a running deliberator", async () => {
+test("round-entry normalize preserves an in-progress recon with a running Herdr-owned deliberator", async () => {
   const project = await makeProject("{}")
   const state = activeState({
     projectRoot: project.root,
@@ -2785,6 +2998,7 @@ test("round-entry normalize preserves an in-progress recon with a running delibe
         agent: "deliberator-melchior",
         sessionID: "ses-melchior",
         parentSessionID: "ses-1",
+        transport: "herdr",
         round: 2,
         pass: 2,
         mode: "recon",

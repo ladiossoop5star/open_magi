@@ -1119,9 +1119,15 @@ function isDeliberatorAgent(agent) {
   return typeof agent === "string" && agent.startsWith("deliberator-")
 }
 
+function isHerdrDeliberatorEntry(entry) {
+  return entry?.transport === "herdr"
+}
+
 function activeTimeoutEntries(state) {
   if (!state?.activeDeliberators || typeof state.activeDeliberators !== "object") return []
-  return Object.entries(state.activeDeliberators).filter(([, entry]) => entry?.status === "timed_out")
+  return Object.entries(state.activeDeliberators).filter(
+    ([, entry]) => entry?.status === "timed_out" && !isHerdrDeliberatorEntry(entry),
+  )
 }
 
 function deliberatorTimeoutText(state) {
@@ -1697,6 +1703,7 @@ async function handleDeliberatorSessionError(client, directory, event, nowMs, cl
 
   const match = Object.entries(state.activeDeliberators).find(
     ([, entry]) =>
+      !isHerdrDeliberatorEntry(entry) &&
       entry?.sessionID === childSessionID &&
       (entry.status === "running" || entry.status === "relaunch_requested"),
   )
@@ -1845,7 +1852,7 @@ async function enforceExpiredDeliberators(client, directory, state, nowMs = Date
   const superseded = []
 
   for (const [sage, entry] of Object.entries(state.activeDeliberators)) {
-    if (!entry || entry.status !== "running") continue
+    if (!entry || entry.status !== "running" || isHerdrDeliberatorEntry(entry)) continue
 
     const deadlineMs = Date.parse(entry.deadlineAt)
     if (!Number.isFinite(deadlineMs) || nowMs < deadlineMs) continue
@@ -1928,7 +1935,8 @@ async function markDeliberatorCompleted(directory, event, nowMs, clearTimeoutFor
   if (!state?.activeDeliberators || typeof state.activeDeliberators !== "object") return null
 
   const match = Object.entries(state.activeDeliberators).find(
-    ([, entry]) => entry?.sessionID === childSessionID && entry.status === "running",
+    ([, entry]) =>
+      !isHerdrDeliberatorEntry(entry) && entry?.sessionID === childSessionID && entry.status === "running",
   )
   if (!match) return null
 
@@ -1975,6 +1983,7 @@ async function registerDeliberatorEntry(
   if (!sage) return null
 
   const existing = state.activeDeliberators?.[sage]
+  if (isHerdrDeliberatorEntry(existing)) return state
   if (existing?.status === "running" && existing.sessionID && existing.sessionID !== childSessionID) {
     // The previous entry is still running (earlier pass/round or a duplicate
     // launch). Abort it before it is replaced, otherwise the old child
@@ -2200,7 +2209,7 @@ export const server = async (input) => {
   }
 
   const scheduleDeliberatorTimeout = (entry) => {
-    if (!entry?.sessionID || !entry.deadlineAt) return
+    if (isHerdrDeliberatorEntry(entry) || !entry?.sessionID || !entry.deadlineAt) return
 
     const deadlineMs = Date.parse(entry.deadlineAt)
     if (!Number.isFinite(deadlineMs)) return
