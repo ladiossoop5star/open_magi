@@ -170,9 +170,16 @@ completed_at: <ISO-8601>
 ```
 
 Launch the pass with three concurrent blocking prompt calls and enforce one absolute deadline
-shared by all three calls. Apply all completion acceptance predicates from
+shared by all three calls. The main controller captures each invocation's CLI stdout/result
+in its predeclared `waitResultPath`; do not use a shared result file or discover
+the path after submission. Validate the documented JSON result schema and
+record its digest for later integrity comparison.
+
+Completion validates the wait-result schema and recorded digest together with
+the agent state and assigned report; no one source is sufficient. Apply all completion acceptance predicates from
 `references/herdr.md`; a role is complete only when:
 
+- the exact `waitResultPath` contains a schema-valid result whose digest matches the recorded digest;
 - the wait/result lifecycle shows submission-following observed lifecycle activity;
 - that activity is followed by a later `idle` or `done` lifecycle state;
 - the assigned report is fresh and carries the expected `turn_id`;

@@ -52,7 +52,7 @@ session and classify or repair the failure through the question firewall.
 | Symptom | Recovery |
 |---|---|
 | Startup-unrecognized pane or agent | Live inspect the workspace, source working directory, pane ID relationship, and recorded ownership before any mutation |
-| Stalled prompt | Inspect the current agent lifecycle and report path; resume observation of the same turn instead of resubmitting it |
+| Stalled prompt | Inspect the current agent lifecycle, exact `waitResultPath` result, and report path; resume observation of the same turn instead of resubmitting it |
 | Busy reuse | Confirm the busy agent belongs to this session and turn; otherwise request approval before takeover or stale busy recovery |
 | Partial cleanup | Leave surviving panes untouched and request approval before closing any pane created by a recorded startup attempt |
 | Config drift | Stop the pass, preserve diagnostics, and request approval before cleanup or replacement; never switch transports |

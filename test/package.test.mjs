@@ -1971,12 +1971,11 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(contract, /report_source: herdr_agent/)
   assert.match(contract, /turn_id/)
   assert.match(contract, /completed_at/)
-  assert.match(protocol, /activeDeliberators[\s\S]*transport[\s\S]*paneID[\s\S]*turnID[\s\S]*reportPath[\s\S]*controllerMutablePaths/)
+  assert.match(protocol, /activeDeliberators[\s\S]*transport[\s\S]*paneID[\s\S]*turnID[\s\S]*reportPath[\s\S]*waitResultPath[\s\S]*controllerMutablePaths/)
   const activeDeliberatorExample = protocol.match(/Each entry in `activeDeliberators`[\s\S]*?```json\n([\s\S]*?)\n```/)?.[1]
   assert.ok(activeDeliberatorExample, "protocol should include the Herdr activeDeliberators JSON example")
-  const activeDeliberator = JSON.parse(activeDeliberatorExample)
-  assert.equal(activeDeliberator.reportPath, "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-<sage>.md")
-  assert.deepEqual(activeDeliberator.controllerMutablePaths, [
+  const activeDeliberators = JSON.parse(activeDeliberatorExample)
+  const controllerMutablePaths = [
     "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
     "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
     "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
@@ -1985,11 +1984,17 @@ test("bundled magi skill assets contain the expected contract", async () => {
     "/absolute/project/root/.open_magi/magi-log/question-request.md",
     "/absolute/project/root/.open_magi/magi-log/question-denied.md",
     "/absolute/project/root/.open_magi/magi-log/plugin-error.log",
-    "/absolute/project/root/<predeclared-wait-result-melchior>",
-    "/absolute/project/root/<predeclared-wait-result-balthasar>",
-    "/absolute/project/root/<predeclared-wait-result-casper>",
-  ])
-  assert.ok(activeDeliberator.controllerMutablePaths.every((path) => path.startsWith("/")))
+    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-melchior-<filename-safe-turn-id>.json",
+    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-balthasar-<filename-safe-turn-id>.json",
+    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-casper-<filename-safe-turn-id>.json",
+  ]
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    const activeDeliberator = activeDeliberators[sage]
+    assert.equal(activeDeliberator.reportPath, `/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-${sage}.md`)
+    assert.equal(activeDeliberator.waitResultPath, `/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-${sage}-<filename-safe-turn-id>.json`)
+    assert.deepEqual(activeDeliberator.controllerMutablePaths, controllerMutablePaths)
+    assert.ok(activeDeliberator.controllerMutablePaths.every((path) => path.startsWith("/")))
+  }
   assert.match(protocol, /controllerMutablePaths[\s\S]*same complete frozen per-turn\s+allowlist[\s\S]*every Herdr `activeDeliberators` entry/i)
   assert.match(protocol, /transport["`: ]+herdr[\s\S]*main controller[\s\S]*inFlight[\s\S]*inFlightSince[\s\S]*lastPromptedRound[\s\S]*lastPromptedAt[\s\S]*activeDeliberators[\s\S]*deliberatorTimeoutCounts/i)
   assert.match(protocol, /herdr-session\.json[\s\S]*local operational log state/i)
@@ -2004,6 +2009,8 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(deliberation, /expected `turn_id`/i)
   assert.match(deliberation, /`completed_at >= submitted_at`/)
   assert.match(deliberation, /valid exact envelope and required report body/i)
+  assert.match(deliberation, /CLI stdout\/result[\s\S]*predeclared `waitResultPath`/i)
+  assert.match(deliberation, /wait-result[\s\S]*schema[\s\S]*digest[\s\S]*agent state[\s\S]*report/i)
   assert.match(deliberation, /do not resubmit[\s\S]*observation timeout[\s\S]*live inspect/i)
   assert.match(deliberation, /Herdr pass[\s\S]*main agent[\s\S]*proven read-only worktree operations/i)
   assert.match(questionFirewall, /invalid or missing commands[\s\S]*execution_blocker/i)
@@ -2016,6 +2023,7 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(checklist, /no role has `status: "hard_error"`[\s\S]*halt[\s\S]*block[\s\S]*no synthesis/i)
   assert.match(checklist, /`status: "timed_out"`[\s\S]*valid timeout report[\s\S]*agent has settled/i)
   assert.match(checklist, /unsettled agent or runtime blocker[\s\S]*does not advance/i)
+  assert.match(checklist, /waitResultPath[\s\S]*schema[\s\S]*digest/i)
   assert.match(checklist, /persistent panes remain[\s\S]*explicit user cleanup/i)
   assert.match(troubleshooting, /Herdr[\s\S]*main controller[\s\S]*inFlight=true/i)
   assert.match(troubleshooting, /startup[\s-]*unrecognized[\s\S]*stalled prompt[\s\S]*busy reuse[\s\S]*partial cleanup[\s\S]*config drift/i)

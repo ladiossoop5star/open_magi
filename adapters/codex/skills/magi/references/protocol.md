@@ -52,33 +52,79 @@ Each entry in `activeDeliberators` may include these optional fields:
 
 ```json
 {
-  "transport": "herdr",
-  "paneID": "stable pane id",
-  "turnID": "current prompt turn id",
-  "reportPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-<sage>.md",
-  "controllerMutablePaths": [
-    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
-    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
-    "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
-    "/absolute/project/root/.open_magi/magi-log/state.json",
-    "/absolute/project/root/.open_magi/magi-log/herdr-session.json",
-    "/absolute/project/root/.open_magi/magi-log/question-request.md",
-    "/absolute/project/root/.open_magi/magi-log/question-denied.md",
-    "/absolute/project/root/.open_magi/magi-log/plugin-error.log",
-    "/absolute/project/root/<predeclared-wait-result-melchior>",
-    "/absolute/project/root/<predeclared-wait-result-balthasar>",
-    "/absolute/project/root/<predeclared-wait-result-casper>"
-  ]
+  "melchior": {
+    "transport": "herdr",
+    "paneID": "stable Melchior pane id",
+    "turnID": "current prompt turn id",
+    "reportPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
+    "waitResultPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-melchior-<filename-safe-turn-id>.json",
+    "controllerMutablePaths": [
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
+      "/absolute/project/root/.open_magi/magi-log/state.json",
+      "/absolute/project/root/.open_magi/magi-log/herdr-session.json",
+      "/absolute/project/root/.open_magi/magi-log/question-request.md",
+      "/absolute/project/root/.open_magi/magi-log/question-denied.md",
+      "/absolute/project/root/.open_magi/magi-log/plugin-error.log",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-melchior-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-balthasar-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-casper-<filename-safe-turn-id>.json"
+    ]
+  },
+  "balthasar": {
+    "transport": "herdr",
+    "paneID": "stable Balthasar pane id",
+    "turnID": "current prompt turn id",
+    "reportPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
+    "waitResultPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-balthasar-<filename-safe-turn-id>.json",
+    "controllerMutablePaths": [
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
+      "/absolute/project/root/.open_magi/magi-log/state.json",
+      "/absolute/project/root/.open_magi/magi-log/herdr-session.json",
+      "/absolute/project/root/.open_magi/magi-log/question-request.md",
+      "/absolute/project/root/.open_magi/magi-log/question-denied.md",
+      "/absolute/project/root/.open_magi/magi-log/plugin-error.log",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-melchior-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-balthasar-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-casper-<filename-safe-turn-id>.json"
+    ]
+  },
+  "casper": {
+    "transport": "herdr",
+    "paneID": "stable Casper pane id",
+    "turnID": "current prompt turn id",
+    "reportPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
+    "waitResultPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-casper-<filename-safe-turn-id>.json",
+    "controllerMutablePaths": [
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
+      "/absolute/project/root/.open_magi/magi-log/state.json",
+      "/absolute/project/root/.open_magi/magi-log/herdr-session.json",
+      "/absolute/project/root/.open_magi/magi-log/question-request.md",
+      "/absolute/project/root/.open_magi/magi-log/question-denied.md",
+      "/absolute/project/root/.open_magi/magi-log/plugin-error.log",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-melchior-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-balthasar-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-casper-<filename-safe-turn-id>.json"
+    ]
+  }
 }
 ```
 
-After substituting the turn's concrete round, mode directory, report names,
-and wait-result artifact locations, `reportPath` is the sage's assigned
-absolute path. `controllerMutablePaths` is the same complete frozen per-turn
+After substituting the turn's concrete round, mode directory, and turn ID,
+`reportPath` is the sage's assigned absolute path. `waitResultPath` is the
+deterministic adjacent path
+`<absolute-turn-dir>/wait-result-<sage>-<filename-safe-turn-id>.json` for that
+role's captured CLI result. Derive `<filename-safe-turn-id>` deterministically
+from the exact `turnID` before freezing the paths. `controllerMutablePaths` is the same complete frozen per-turn
 allowlist in every Herdr `activeDeliberators` entry. Every value is a concrete
 absolute path. It contains all three assigned reports, `state.json`,
 `herdr-session.json`, both question-firewall files, `plugin-error.log`, and the
-three exact predeclared wait-result paths. A directory, glob, category, relative
+three exact per-role `waitResultPath` values. A directory, glob, category, relative
 path, or path discovered after submission is not valid, and the list cannot
 expand while the turn is in flight.
 
@@ -90,7 +136,8 @@ transport; preserve the existing runtime ownership rules for non-Herdr
 sessions.
 
 `.open_magi/magi-log/herdr-session.json` is local operational log state. It
-records pane identity and lifecycle details needed to recover a Herdr session;
+records pane identity, each exact `waitResultPath` and result digest, and
+lifecycle details needed to recover a Herdr session;
 it is not a replacement for the portable `state.json` protocol contract.
 
 `schemaVersion: 2` enables council modes. `currentCouncilMode` is one of:

@@ -47,6 +47,7 @@ Universal gate before any user question:
 - [ ] If a deliberator failed or timed out, its report file records failure evidence instead of being omitted.
 - [ ] `state.json.currentPhase` is `parallel_deliberation`.
 - [ ] Where Herdr is selected, `inFlight=false`, all three final statuses are recorded, all assigned reports have valid fresh exact Herdr envelopes for the current turn only, and there is no unexpected workspace delta.
+- [ ] Every recorded `waitResultPath` contains that role's captured CLI stdout/result with a valid result schema and matching recorded digest.
 - [ ] No role has `status: "hard_error"`; any hard error must halt the loop, block the pass, and permit no synthesis.
 - [ ] A role with `status: "timed_out"` may advance only when its valid timeout report exists and the agent has settled under the timeout policy.
 - [ ] Any unsettled agent or runtime blocker stops this transition and does not advance to synthesis.
