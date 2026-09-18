@@ -103,6 +103,9 @@ or update the file, and validate it; it must not infer commands or silently fall
 back. Outside Herdr, the existing native model templates, setup/preflight, tmux,
 and subprocess behavior remains unchanged.
 
+For configuration safety and lifecycle details, see
+[Herdr-Native Deliberation](../../README.md#herdr-native-deliberation).
+
 ## Usage
 
 Start Codex in a project and prefer Goal mode:

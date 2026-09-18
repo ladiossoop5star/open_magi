@@ -489,10 +489,13 @@ project-local `.open-magi-herdr` file with one raw wrapper command per sage, for
 example:
 
 ```text
-melchior=pcodex.sh qwenf
-balthasar=pclaude.sh opus
-casper=pgemini.sh pro
+melchior=replace-with-melchior-agent-command
+balthasar=replace-with-balthasar-agent-command
+casper=replace-with-casper-agent-command
 ```
+
+These are illustrative placeholders, not installed executables. Replace all
+three values with commands that work on your machine.
 
 The values may be arbitrary raw wrapper commands, but the application that each
 wrapper ultimately starts must be recognized by Herdr. Magi never infers these
@@ -502,6 +505,15 @@ itself, validates the result, and corrects any launch or configuration failure
 with the user. It reports failures and never silently falls back to another
 transport.
 
+After creating or updating the file in a Git repository, Magi resolves the
+repository-local exclude file with `git rev-parse --git-path info/exclude` and
+adds the root config entry `/.open-magi-herdr`. Linked worktrees may share that
+exclude file. Never commit `.open-magi-herdr`, and do not embed secrets or tokens
+in its raw commands. Raw commands stay confined to the config file, the
+immediate launch, and a correction question; they are never copied into Magi
+reports or logs. In a non-Git project, Magi warns the user to protect the file
+manually.
+
 Inside Herdr this configuration replaces, rather than supplements, the native
 Codex, Claude, or OpenCode deliberator settings. Magi does not add a new runner:
 it uses Herdr's existing panes and agent controls. The initial layout keeps the
@@ -509,10 +521,15 @@ main pane on the left and stacks Melchior, Balthasar, and Casper from top to
 bottom on the right; the right side initially occupies no more than 50% of the
 width. Later manual resizing is preserved, and a reused layout is not resized.
 
-The three deliberator agents are persistent across passes, rounds, and completed
-Magi loops. Only explicit cleanup requested by the user terminates and closes
-exactly the three Magi-owned agents and panes for the current project and source
-mapping. Explicit cleanup leaves `.open-magi-herdr` in place for later use.
+In normal operation, the three deliberator agents are persistent across passes,
+rounds, and completed Magi loops. Explicit cleanup requested by the user closes
+all three Magi-owned panes for the current project and source mapping, while
+leaving `.open-magi-herdr` in place for later use.
+
+Recovery from a startup failure, stale-busy agent, or config drift is a separate
+exception. Magi may replace or close only the affected role pane while preserving
+healthy siblings, but only after obtaining the required user authorization
+through the destructive-risk question and completing ownership validation.
 
 ## Usage
 
