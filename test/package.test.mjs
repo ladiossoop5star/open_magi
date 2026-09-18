@@ -544,6 +544,11 @@ test("Codex marketplace metadata can install this repo as a local development pl
 test("Codex documentation describes skill-first experimental support", async () => {
   const docs = await readFile(new URL("../adapters/codex/README.md", import.meta.url), "utf8")
 
+  assert.match(docs, /HERDR_ENV=1/)
+  assert.match(docs, /\.open-magi-herdr/)
+  assert.match(docs, /(?:does not use|bypasses) `?run-council`?/i)
+  assert.match(docs, /outside Herdr[\s\S]*native model templates[\s\S]*setup\/preflight[\s\S]*tmux[\s\S]*subprocess/i)
+  assert.match(docs, /missing or invalid[\s\S]*ask[\s\S]*write\s+or update/i)
   assert.match(docs, /Codex/)
   assert.match(docs, /experimental/i)
   assert.match(docs, /skill-first/i)
@@ -585,6 +590,11 @@ test("Codex documentation describes skill-first experimental support", async () 
 test("Claude documentation describes native plugin-agent support", async () => {
   const docs = await readFile(new URL("../adapters/claude/README.md", import.meta.url), "utf8")
 
+  assert.match(docs, /HERDR_ENV=1/)
+  assert.match(docs, /\.open-magi-herdr/)
+  assert.match(docs, /(?:does not use|bypasses) `?run-council`?/i)
+  assert.match(docs, /outside Herdr[\s\S]*native model templates[\s\S]*setup\/preflight[\s\S]*tmux[\s\S]*subprocess/i)
+  assert.match(docs, /missing or invalid[\s\S]*ask[\s\S]*write\s+or update/i)
   assert.match(docs, /Claude Code/)
   assert.match(docs, /experimental/i)
   assert.match(docs, /native plugin agents/i)
@@ -1507,6 +1517,13 @@ test("Claude PostToolUse hook is silent without an active loop", async () => {
 test("English README documents install and avoids local-only model warnings", async () => {
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8")
 
+  assert.match(readme, /## Herdr-Native Deliberation/)
+  assert.match(readme, /\.open-magi-herdr/)
+  assert.match(readme, /melchior=pcodex\.sh qwenf\nbalthasar=pclaude\.sh opus\ncasper=pgemini\.sh pro/)
+  assert.match(readme, /HERDR_ENV/)
+  assert.match(readme, /50%|half/i)
+  assert.match(readme, /persistent/i)
+  assert.match(readme, /explicit cleanup/i)
   assert.match(readme, /\[Traditional Chinese\]\(README\.zh-TW\.md\)/)
   assert.match(readme, /\[Codex experimental notes\]\(adapters\/codex\/README\.md\)/)
   assert.match(readme, /\[Claude experimental notes\]\(adapters\/claude\/README\.md\)/)
@@ -1552,6 +1569,12 @@ test("English README documents install and avoids local-only model warnings", as
 test("Traditional Chinese README exists for zh-TW users", async () => {
   const readme = await readFile(new URL("../README.zh-TW.md", import.meta.url), "utf8")
 
+  assert.match(readme, /\.open-magi-herdr/)
+  assert.match(readme, /melchior=pcodex\.sh qwenf\nbalthasar=pclaude\.sh opus\ncasper=pgemini\.sh pro/)
+  assert.match(readme, /HERDR_ENV/)
+  assert.match(readme, /50%/)
+  assert.match(readme, new RegExp(chars(0x4fdd, 0x7559)))
+  assert.match(readme, new RegExp(chars(0x660e, 0x78ba, 0x6e05, 0x7406)))
   assert.match(readme, hanPattern)
   assert.match(readme, /AI agent/)
   assert.match(readme, new RegExp(chars(0x9019, 0x662f, 0x505a, 0x4ec0, 0x9ebc, 0x7684)))
@@ -1578,7 +1601,7 @@ test("Traditional Chinese README exists for zh-TW users", async () => {
   assert.match(readme, new RegExp(`${chars(0x5c0f, 0x4fee, 0x6539)}[\\s\\S]*debug[\\s\\S]*commit[\\s\\S]*\`main\``))
   assert.match(readme, new RegExp(`${chars(0x9ad8, 0x98a8, 0x96aa, 0x6216, 0x5927, 0x578b, 0x8b8a, 0x66f4)}[\\s\\S]*branch`))
   assert.doesNotMatch(readme, new RegExp(oldExampleModel))
-  assert.doesNotMatch(readme, new RegExp(localOnlyModel, "i"))
+  assert.doesNotMatch(readme, new RegExp(`--model ${localOnlyModel}`, "i"))
 })
 
 test("bundled magi skill assets contain the expected contract", async () => {

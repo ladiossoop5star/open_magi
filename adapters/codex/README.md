@@ -92,6 +92,17 @@ If you run Codex with a profile (for example `codex --profile local`), add
 to the `codex exec` subprocesses so they resolve the profile's model providers.
 Without a `profile` field, no `--profile` flag is passed.
 
+## Herdr Precedence
+
+With `HERDR_ENV=1`, Codex uses the `.open-magi-herdr` file from the main
+pane's starting working directory and follows the Herdr-native contract. This
+path bypasses `run-council`: it does not use the Codex native model templates,
+setup/preflight, tmux launcher, or deliberator subprocess path. If the file is
+missing or invalid, Codex must ask the user for the raw wrapper commands, write
+or update the file, and validate it; it must not infer commands or silently fall
+back. Outside Herdr, the existing native model templates, setup/preflight, tmux,
+and subprocess behavior remains unchanged.
+
 ## Usage
 
 Start Codex in a project and prefer Goal mode:

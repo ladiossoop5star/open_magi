@@ -481,6 +481,39 @@ Interactive prompt mode:
 open-magi setup --interactive
 ```
 
+## Herdr-Native Deliberation
+
+When the main agent starts with `HERDR_ENV=1`, Magi uses Herdr-native
+deliberation. In the main pane's captured starting working directory, create the
+project-local `.open-magi-herdr` file with one raw wrapper command per sage, for
+example:
+
+```text
+melchior=pcodex.sh qwenf
+balthasar=pclaude.sh opus
+casper=pgemini.sh pro
+```
+
+The values may be arbitrary raw wrapper commands, but the application that each
+wrapper ultimately starts must be recognized by Herdr. Magi never infers these
+commands. If the file is missing, invalid, or names an unrecognized final
+application, Magi asks the user for the commands, writes or updates the file
+itself, validates the result, and corrects any launch or configuration failure
+with the user. It reports failures and never silently falls back to another
+transport.
+
+Inside Herdr this configuration replaces, rather than supplements, the native
+Codex, Claude, or OpenCode deliberator settings. Magi does not add a new runner:
+it uses Herdr's existing panes and agent controls. The initial layout keeps the
+main pane on the left and stacks Melchior, Balthasar, and Casper from top to
+bottom on the right; the right side initially occupies no more than 50% of the
+width. Later manual resizing is preserved, and a reused layout is not resized.
+
+The three deliberator agents are persistent across passes, rounds, and completed
+Magi loops. Only explicit cleanup requested by the user terminates and closes
+exactly the three Magi-owned agents and panes for the current project and source
+mapping. Explicit cleanup leaves `.open-magi-herdr` in place for later use.
+
 ## Usage
 
 Start OpenCode in a project after installation:

@@ -125,6 +125,17 @@ through that local Claude wrapper. Some wrappers may not forward extra CLI
 arguments. If yours does not, install the plugin through Claude's plugin system
 or use a skills-dir plugin rather than relying on `--plugin-dir`.
 
+## Herdr Precedence
+
+With `HERDR_ENV=1`, Claude uses the `.open-magi-herdr` file from the main
+pane's starting working directory and follows the Herdr-native contract. This
+path bypasses `run-council`: it does not use the Claude native model templates,
+setup/preflight, tmux launcher, or deliberator subprocess path. If the file is
+missing or invalid, Claude must ask the user for the raw wrapper commands, write
+or update the file, and validate it; it must not infer commands or silently fall
+back. Outside Herdr, the existing native model templates, setup/preflight, tmux,
+and subprocess behavior remains unchanged.
+
 ## Usage
 
 In a trusted project directory, invoke:

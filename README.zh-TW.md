@@ -663,6 +663,34 @@ OPENCODE_CONFIG_DIR=/path/to/opencode-config open-magi setup --model deepseek-v4
 open-magi setup --interactive
 ```
 
+## Herdr 原生審議
+
+主 agent 以 `HERDR_ENV=1` 啟動時，Magi 會使用 Herdr 原生審議。在主 pane
+所記錄的起始工作目錄中，建立專案本地的 `.open-magi-herdr`，為每位賢者設定
+一條原始 wrapper command，例如：
+
+```text
+melchior=pcodex.sh qwenf
+balthasar=pclaude.sh opus
+casper=pgemini.sh pro
+```
+
+設定值可以是任意原始 wrapper command，但 wrapper 最終啟動的應用程式必須能被
+Herdr 辨識。Magi 絕不自行推測 command。檔案缺少、格式無效，或最終應用程式
+無法辨識時，Magi 會先詢問使用者，再自行寫入或更新檔案並驗證結果。啟動或設定
+失敗時，Magi 會向使用者回報並一起修正，絕不靜默退回其他 transport。
+
+在 Herdr 中，這份設定會取代而不是補充 Codex、Claude 或 OpenCode 的原生
+deliberator 設定；Magi 不會新增 runner，而是使用 Herdr 現有的 pane 與 agent
+控制。初始版面左側是 main pane，右側由上到下依序堆疊 Melchior、Balthasar、
+Casper，且右側起始寬度不超過 50%。之後使用者手動調整的大小會保留，重用版面
+時不會重新調整。
+
+三個 deliberator agent 會跨 pass、round 與已完成的 Magi loop 持續保留。只有
+使用者明確清理時，才會終止並關閉目前 project 與 source mapping 所對應、且由
+Magi 擁有的三個 agent 和 pane；明確清理後仍會保留 `.open-magi-herdr`，供下次
+使用。
+
 ## 使用方式
 
 安裝後，在專案目錄啟動 OpenCode：
