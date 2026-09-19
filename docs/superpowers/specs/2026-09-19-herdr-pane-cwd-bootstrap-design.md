@@ -11,9 +11,11 @@ The Herdr Magi contract currently tells the controller to pass the captured main
 
 This is a generic Herdr transport requirement, independent of the application hosting Magi or the application launched in each pane. It applies equally to the generic, OpenCode, Codex, Claude, and Pi skill distributions. It does not add behavior to the Pi extension, a native adapter runner, or any host-specific subprocess implementation.
 
+Herdr-launched sages must also be isolated from main-agent Stop hooks. Native Codex and Claude runners already set `OPEN_MAGI_DISABLE_STOP_BACKSTOP=1`, but the Herdr path currently launches the configured raw command without that environment marker. Consequently a project-wide Stop hook can mistake a read-only sage for the main controller and repeatedly force it to continue the Magi loop.
+
 ## Selected Design
 
-Keep `--cwd` on every split as a first layer. After each split returns its new pane ID, the first shell command executed inside that pane must be a standalone directory change to the captured absolute project directory:
+Keep `--cwd` on every split as a first layer and add `--env OPEN_MAGI_DISABLE_STOP_BACKSTOP=1` to the split so every sage process inherits the existing Stop-hook bypass without changing the configured raw command. After each split returns its new pane ID, the first shell command executed inside that pane must be a standalone directory change to the captured absolute project directory:
 
 ```sh
 cd -- '<captured directory>'
@@ -25,7 +27,7 @@ After submitting `cd`, poll `herdr pane get <new-pane-id>` for at most five seco
 
 The required ordering for every role is therefore:
 
-1. Split with the captured directory supplied through `--cwd`.
+1. Split with the captured directory supplied through `--cwd` and the sage-only Stop-hook bypass supplied through `--env OPEN_MAGI_DISABLE_STOP_BACKSTOP=1`.
 2. Extract the new pane ID from the split response.
 3. Execute a standalone, safely quoted `cd -- <captured-directory>` as the pane's first shell command.
 4. Verify the pane reports the captured directory.
@@ -46,6 +48,7 @@ The shared Herdr runtime reference is the source contract. Its copies bundled fo
 Automated contract tests will require all of the following in the Herdr reference:
 
 - split still uses `--cwd`;
+- split injects `OPEN_MAGI_DISABLE_STOP_BACKSTOP=1` only into subordinate panes;
 - the first in-pane shell command is standalone `cd --` with safe quoting;
 - pane cwd verification occurs after `cd` and before the raw agent command;
 - failure prevents agent launch.

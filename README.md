@@ -612,6 +612,14 @@ main pane on the left and stacks Melchior, Balthasar, and Casper from top to
 bottom on the right; the right side initially occupies no more than 50% of the
 width. Later manual resizing is preserved, and a reused layout is not resized.
 
+Every subordinate split receives both the captured absolute project directory
+through `--cwd` and the sage-only `OPEN_MAGI_DISABLE_STOP_BACKSTOP=1`
+environment marker. The first shell command in each new pane is a standalone,
+safely quoted `cd -- <captured-directory>`. Magi verifies the pane-reported cwd
+before it runs the configured agent command; failure stops that role without
+launching it. This generic Herdr gate both prevents cwd drift and keeps a
+project-wide main-agent Stop hook from taking over a read-only sage.
+
 In normal operation, the three deliberator agents are persistent across passes,
 rounds, and completed Magi loops. Explicit cleanup requested by the user closes
 all three Magi-owned panes for the current project and source mapping, while

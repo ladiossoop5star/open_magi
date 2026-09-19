@@ -2216,6 +2216,13 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.ok(selectionPreflight.indexOf("exact absolute") < selectionPreflight.indexOf("herdr pane current --current"))
   assert.ok(selectionPreflight.indexOf("exact absolute") < selectionPreflight.indexOf("git rev-parse"))
   assert.match(herdr, /herdr pane run/)
+  const layoutStartup = herdr.match(/## Layout and Startup\n([\s\S]*?)(?=\n## )/)?.[1]
+  assert.ok(layoutStartup)
+  assert.match(layoutStartup, /herdr pane split[^\n]*--cwd[^\n]*--env OPEN_MAGI_DISABLE_STOP_BACKSTOP=1/i)
+  assert.match(layoutStartup, /first shell command[^\n]*standalone `cd --/i)
+  assert.match(layoutStartup, /herdr pane get[^\n]*five seconds[^\n]*`cwd`[^\n]*`foreground_cwd`/i)
+  assert.match(layoutStartup, /directory verification fails[^\n]*must not[^\n]*configured raw command/i)
+  assert.ok(layoutStartup.indexOf("standalone `cd --") < layoutStartup.indexOf("configured raw command"))
   assert.match(herdr, /magi-<sage>-<hash10>/)
   assert.match(herdr, /three concurrent invocations/i)
   assert.match(herdr, /controllerMutablePaths/)

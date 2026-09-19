@@ -761,6 +761,14 @@ deliberator 設定；Magi 不會新增 runner，而是使用 Herdr 現有的 pan
 Casper，且右側起始寬度不超過 50%。之後使用者手動調整的大小會保留，重用版面
 時不會重新調整。
 
+每個 subordinate pane split 都會同時透過 `--cwd` 帶入 captured absolute
+project directory，並注入只屬於 sage 的
+`OPEN_MAGI_DISABLE_STOP_BACKSTOP=1`。每個新 pane 的第一條 shell command 必須是
+獨立且安全引用的 `cd -- <captured-directory>`；Magi 驗證 pane 回報的 cwd 後，
+才可執行設定的 agent command。驗證失敗會停止該 role 而不啟動 agent。這個
+generic Herdr gate 同時防止 cwd drift，也避免 project-wide main-agent Stop hook
+接管 read-only sage。
+
 正常運作時，三個 deliberator agent 會跨 pass、round 與已完成的 Magi loop
 持續保留。使用者明確清理時，會關閉目前 project 與 source mapping 中由 Magi
 擁有的全部三個 pane；`.open-magi-herdr` 仍會保留，供下次使用。
