@@ -294,3 +294,143 @@ test("writeModelConfig uses a sibling temp, creates the parent, atomic renames, 
   const merged = JSON.parse(await readFile(target2, "utf8"))
   assert.deepEqual(merged, { version: 1, models: { melchior: "x/z" } })
 })
+
+import {
+  isHerdrActive, TRANSPORT_MISMATCH_ERROR, READ_ONLY_TOOLS, GUARDED_TOOLS,
+  classifyGuardTools, guardDiagnostic, enforcePhaseGuard, shellMutationTargetsProject,
+  positiveInteger, deliberatorTimeoutMsOf,
+} from "../adapters/pi/lib/controller.js"
+
+const builtinInfo = (name, source = "builtin") => ({ name, sourceInfo: { source } })
+
+test("transport gate keys off HERDR_ENV exactly", () => {
+  assert.equal(isHerdrActive({ HERDR_ENV: "1" }), true)
+  assert.equal(isHerdrActive({ HERDR_ENV: "0" }), false)
+  assert.equal(isHerdrActive({}), false)
+  assert.match(TRANSPORT_MISMATCH_ERROR, /transport mismatch/)
+})
+
+test("guard set is getActiveTools intersect builtins by provenance; SDK/extension tools are never builtins", () => {
+  const toolInfos = [
+    builtinInfo("read"), builtinInfo("bash"), builtinInfo("write"),
+    builtinInfo("my_sdk_tool", "sdk"), builtinInfo("ext_tool", "package"),
+  ]
+  const result = classifyGuardTools(toolInfos, ["read", "bash", "write", "my_sdk_tool", "ext_tool"])
+  assert.deepEqual([...result.builtinsActive].sort(), ["bash", "read", "write"])
+  assert.deepEqual([...result.readOnly].sort(), ["read"])
+  assert.deepEqual([...result.guarded].sort(), ["bash", "write"])
+  assert.equal(result.guarded.includes("my_sdk_tool"), false)
+  assert.equal(result.blocked, false)
+})
+
+test("unclassified active builtin fails closed with a diagnostic", () => {
+  const result = classifyGuardTools([builtinInfo("read"), builtinInfo("todo")], ["read", "todo"])
+  assert.equal(result.blocked, true)
+  assert.match(guardDiagnostic(result.unknown[0]), /fails closed/)
+})
+
+test("read-only builtins classify as read-only; mutation builtins classify as guarded", () => {
+  assert.deepEqual([...READ_ONLY_TOOLS].sort(), ["find", "grep", "ls", "read"])
+  assert.deepEqual([...GUARDED_TOOLS].sort(), ["bash", "edit", "powershell", "write"])
+})
+
+test("code writes denied before execution; execution requires the current verdict", () => {
+  const base = { active: true, currentRound: 2, currentPhase: "synthesis" }
+  const denied = enforcePhaseGuard({ state: base, projectRoot: "/proj", toolName: "edit", toolInput: { file_path: "/proj/src/a.js" } })
+  assert.equal(denied.block, true)
+  const executed = { ...base, currentPhase: "execution" }
+  const allowed = enforcePhaseGuard({
+    state: executed, projectRoot: "/proj", toolName: "edit", toolInput: { file_path: "/proj/src/a.js" },
+    existsImpl: (p) => p === "/proj/.open_magi/magi-log/round-002/verdict.md",
+  })
+  assert.equal(allowed.block, false)
+  const missingVerdict = enforcePhaseGuard({
+    state: executed, projectRoot: "/proj", toolName: "write", toolInput: { file_path: "/proj/src/a.js" },
+    existsImpl: () => false,
+  })
+  assert.equal(missingVerdict.block, true)
+  assert.match(missingVerdict.reason, /verdict\.md/)
+})
+
+test("decision-artifact protection matches absolute and relative targets across shell families", () => {
+  const inFlight = (existsImpl) => ({
+    state: { active: true, currentRound: 1, currentPhase: "parallel_deliberation", currentCouncilMode: "decision", currentDeliberationPass: 1, maxDeliberationPasses: 3 },
+    existsImpl,
+  })
+  // Only the melchior report exists: pass 1 is in flight, decision writes denied.
+  const inFlightState = inFlight((p) => !p.endsWith("report-melchior.md"))
+  const relativeDenial = enforcePhaseGuard({
+    ...inFlightState, projectRoot: "/proj", toolName: "bash",
+    toolInput: { command: "echo stale > .open_magi/magi-log/round-001/council-001/prompt.md" },
+  })
+  assert.equal(relativeDenial.block, true)
+  assert.match(relativeDenial.reason, /pass 1 is in flight/)
+  const absoluteDenial = enforcePhaseGuard({
+    ...inFlightState, projectRoot: "/proj", toolName: "bash",
+    toolInput: { command: "echo stale > /proj/.open_magi/magi-log/round-001/council-001/prompt.md" },
+  })
+  assert.equal(absoluteDenial.block, true)
+  const editAbsoluteDenial = enforcePhaseGuard({
+    ...inFlightState, projectRoot: "/proj", toolName: "edit",
+    toolInput: { file_path: "/proj/.open_magi/magi-log/round-001/verdict.md" },
+  })
+  assert.equal(editAbsoluteDenial.block, true)
+  const reviewDenial = enforcePhaseGuard({
+    state: { ...inFlightState.state, currentCouncilMode: "review" },
+    projectRoot: "/proj", toolName: "powershell",
+    toolInput: { command: "Set-Content -Path /proj/.open_magi/magi-log/round-001/verdict.md -Value x" },
+    existsImpl: () => true,
+  })
+  assert.equal(reviewDenial.block, true)
+  assert.match(reviewDenial.reason, /review pass is in flight/)
+  // Once every report exists, the same write no longer touches a pending council.
+  const resolved = enforcePhaseGuard({
+    state: { ...inFlightState.state, currentPhase: "research_task" },
+    projectRoot: "/proj", toolName: "bash",
+    toolInput: { command: "echo notes > .open_magi/magi-log/round-001/council-001/prompt.md" },
+    existsImpl: () => true,
+  })
+  assert.equal(resolved.block, false)
+})
+
+test("magi artifact writes remain allowed", () => {
+  const result = enforcePhaseGuard({
+    state: { active: true, currentRound: 1, currentPhase: "research_task" },
+    projectRoot: "/proj", toolName: "write",
+    toolInput: { file_path: "/proj/.open_magi/magi-log/round-001/council-001/prompt.md" },
+  })
+  assert.equal(result.block, false)
+})
+
+test("posix redirect grammar judges bash commands", () => {
+  assert.equal(shellMutationTargetsProject("/proj", "echo hi > /proj/src/a.js", "bash"), true)
+  assert.equal(shellMutationTargetsProject("/proj", "echo notes > /proj/notes.md", "bash"), false)
+  assert.equal(shellMutationTargetsProject("/proj", "sed -i 's/a/b/' /proj/src/a.js", "bash"), true)
+  assert.equal(shellMutationTargetsProject("/proj", "echo stale | tee /proj/src/a.js", "bash"), true)
+  assert.equal(shellMutationTargetsProject("/proj", "npm test", "bash"), false)
+  assert.equal(shellMutationTargetsProject("/proj", "pnpm --version > /proj/magi-build.log", "bash"), false)
+})
+
+test("powershell targets obey PowerShell syntax, never the POSIX parser by accident", () => {
+  assert.equal(shellMutationTargetsProject("/proj", "Set-Content -Path /proj/src/a.js -Value hi", "powershell"), true)
+  assert.equal(shellMutationTargetsProject("/proj", "Get-Content /proj/src/a.js | Out-File /proj/src/other.js", "powershell"), true)
+  assert.equal(shellMutationTargetsProject("/proj", "'hi' > /proj/src/a.js", "powershell"), true)
+  assert.equal(shellMutationTargetsProject("/proj", "'notes' > /proj/notes.md", "powershell"), false)
+  assert.equal(shellMutationTargetsProject("/proj", "Remove-Item /proj/notes.md", "powershell"), true)
+  assert.equal(shellMutationTargetsProject("/proj", "npm test", "powershell"), false)
+})
+
+test("deliberator timeout: any positive override is honored and clamped only above the hard max", () => {
+  assert.equal(deliberatorTimeoutMsOf({}), 30 * 60 * 1000)
+  assert.equal(deliberatorTimeoutMsOf({ deliberatorTimeoutMs: 10 }), 10)
+  assert.equal(deliberatorTimeoutMsOf({ deliberatorTimeoutMs: 10 * 60 * 1000 }), 10 * 60 * 1000)
+  assert.equal(deliberatorTimeoutMsOf({ deliberatorTimeoutMs: 90 * 60 * 1000 }), 60 * 60 * 1000)
+  assert.equal(deliberatorTimeoutMsOf({ deliberatorTimeoutMs: 0 }), 30 * 60 * 1000)
+  assert.equal(deliberatorTimeoutMsOf({ deliberatorTimeoutMs: "abc" }), 30 * 60 * 1000)
+})
+
+test("positiveInteger falls back cleanly", () => {
+  assert.equal(positiveInteger("7", 3), 7)
+  assert.equal(positiveInteger(0, 3), 3)
+  assert.equal(positiveInteger(undefined, 3), 3)
+})
