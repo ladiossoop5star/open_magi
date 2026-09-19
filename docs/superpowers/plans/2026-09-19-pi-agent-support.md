@@ -1420,9 +1420,19 @@ const sageMatch = /deliberator-(melchior|balthasar|casper)/.exec(promptText)
 const sage = sageMatch ? sageMatch[1] : process.env.MAGI_FAKE_SAGE
 const delay = Number(process.env.MAGI_FAKE_DELAY_MS ?? "0")
 const fail = process.env.MAGI_FAKE_FAIL ?? "none"
+const barrier = process.env.MAGI_BARRIER
+if (barrier) {
+  const { existsSync: barrierWait } = require("node:fs")
+  const deadline = Date.now() + 10_000
+  while (!barrierWait(`${barrier}-${sage}`) && Date.now() < deadline) {
+    let spin = 0
+    while (spin < 2000) spin += 1
+  }
+}
 function emit() {
   if (fail === "timeout") process.exit(124)
   if (fail === "hard_error") { process.stderr.write("boom"); process.exit(3) }
+  if (fail === "garbage") { process.stdout.write("this is not json line one\nnot json two\n"); process.exit(0) }
   process.stdout.write(JSON.stringify({
     type: "session", id: "fake", timestamp: new Date().toISOString(), cwd: process.cwd(),
   }) + "\n")
@@ -1513,7 +1523,17 @@ test("runPiCouncil launches three concurrent isolated children from the captured
   for (const sage of ["melchior", "balthasar", "casper"]) {
     await fsWriteFile(join(project, "adapters", "pi", "skills", "magi", "prompts", `${sage}.md`), `You are deliberator-${sage}. Read-only.`, "utf8")
   }
-  const spawned = { cwd: [], argv0: [], flags: [] }
+  // Concurrency proof: each child blocks on its barrier file; barriers are only
+  // created once ALL THREE children have spawned. If children were sequential,
+  // the first child would never see its barrier and the test would time out.
+  const barrierDir = await mkdtemp(join(tmpdir(), "magi-pi-barrier-"))
+  const barrierDirEnv = { MAGI_BARRIER: join(barrierDir, "barrier") }
+  const spawned = { cwd: [], flags: [], count: 0 }
+  const spawnBarrierCreate = setTimeout(() => {
+    for (const sage of ["melchior", "balthasar", "casper"]) {
+      fsWriteFile(`${barrierDirEnv.MAGI_BARRIER}-${sage}`, "go", "utf8").catch(() => {})
+    }
+  }, 10_000)
   const results = await runPiCouncil({
     projectRoot: project,
     promptPath,
@@ -1526,13 +1546,16 @@ test("runPiCouncil launches three concurrent isolated children from the captured
       casper: { model: "p/m3", thinking: "off" },
     },
     runnerBin: FAKE_PI,
+    childEnv: barrierDirEnv,
     spawnLike: (command, args, options) => {
       spawned.cwd.push(options.cwd)
       spawned.flags.push(args)
+      spawned.count += 1
       return spawn(command, args, options)
     },
   })
-  assert.equal(results.results.length, 3)
+  clearTimeout(spawnBarrierCreate)
+  assert.equal(spawned.count, 3, "all three children spawned before any could complete (barrier waited for the trio)")
   assert.deepEqual([...results.results.map((r) => r.sage)].sort(), ["balthasar", "casper", "melchior"])
   assert.deepEqual([...spawned.cwd].sort(), [project, project, project])
   for (const flags of spawned.flags) {
@@ -1550,6 +1573,43 @@ test("runPiCouncil launches three concurrent isolated children from the captured
     assert.match(report, /^failure_type: none$/m)
     assert.match(report, /^usage_output_tokens: 22$/m)
     assert.doesNotMatch(report, /process\.env|PATH=|credentials|api[_-]?key/i)
+  }
+})
+
+test("runPiCouncil maps invalid JSON output to pi_json_failed hard_error without success mimicry", async () => {
+  const project = await mkdtemp(join(tmpdir(), "magi-pi-garbage-"))
+  const councilDir = join(project, ".open_magi", "magi-log", "round-003", "council-002")
+  await mkdir(councilDir, { recursive: true })
+  const promptPath = join(councilDir, "prompt.md")
+  await fsWriteFile(promptPath, "# Council prompt", "utf8")
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await fsWriteFile(join(project, "adapters", "pi", "skills", "magi", "prompts", `${sage}.md`), `You are deliberator-${sage}. Read-only.`, "utf8")
+  }
+  const results = await runPiCouncil({
+    projectRoot: project,
+    promptPath,
+    round: 3,
+    pass: 2,
+    mode: "decision",
+    roleModels: {
+      melchior: { model: "p/m1", thinking: "low" },
+      balthasar: { model: "p/m2", thinking: "low" },
+      casper: { model: "p/m3", thinking: "low" },
+    },
+    runnerBin: FAKE_PI,
+    runnerBinEnv: { MAGI_FAKE_FAIL: "garbage" },
+  })
+  assert.equal(results.halt, true)
+  for (const result of results.results) {
+    assert.equal(result.ok, false)
+    assert.equal(result.failureType, "hard_error")
+    assert.equal(result.piFailureType, "invalid_json")
+    const report = await readFile(join(councilDir, `report-${result.sage}.md`), "utf8")
+    assert.match(report, /^report_source: pi_json_failed$/m)
+    assert.match(report, /^status: hard_error$/m)
+    assert.match(report, /^pi_failure_subtype: invalid_json$/m)
+    assert.match(report, /^stance: needs_evidence$/m)
+    assert.doesNotMatch(report, /^status: ok$/m)
   }
 })
 
@@ -1694,15 +1754,17 @@ function appendLimited(current, chunk) {
   return next.length > MAX_STREAM_BUFFER_CHARS ? next.slice(-MAX_STREAM_BUFFER_CHARS) : next
 }
 
-export function runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, signal, spawnFn = spawn }) {
+export function runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, signal, childEnv, onChild, spawnFn = spawn }) {
   return new Promise((resolveRun) => {
     let child
     try {
       child = spawnFn(invocation.command, [...invocation.args, ...args, promptText], {
         cwd,
+        env: childEnv ? { ...process.env, ...childEnv } : undefined,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
       })
+      onChild?.(child)
     } catch (spawnError) {
       return resolveRun(processRecord({ ok: false, piFailureType: "spawn_error", spawnErrorMsg: String(spawnError?.message ?? spawnError) }))
     }
@@ -1832,7 +1894,7 @@ export async function writeReport({ promptPath, sage, model, processResult }) {
 }
 
 export async function runPiCouncil(options) {
-  const { projectRoot, promptPath, mode, round, pass, roleModels, timeoutMs, signal, spawnLike = spawn } = options
+  const { projectRoot, promptPath, mode, round, pass, roleModels, timeoutMs, signal, childEnv, childTracker, spawnLike = spawn } = options
   const timeout = clampTimeout(timeoutMs)
   const councilPrompt = (await readFile(promptPath, "utf8")).trim()
   const invocation = options.runnerBin
@@ -1870,6 +1932,8 @@ export async function runPiCouncil(options) {
       promptText,
       timeoutMs: timeout,
       signal,
+      childEnv,
+      onChild: (child) => { childTracker?.push(child) },
       spawnFn: spawnLike,
     })
     return writeReport({ promptPath, sage, model: roleModels[sage].model, processResult })
@@ -1905,37 +1969,496 @@ git commit -m "feat(pi): add isolated JSON-mode council runner with fail-closed 
 
 ---
 
-### Task 7: Extension entry — `adapters/pi/extension.js`
+### Task 7: Question firewall, settled controller actions, and `magi_council` dispatch
+
+**Files:**
+- Modify: `adapters/pi/lib/controller.js` (append the firewall + settled + controller sections)
+- Test: `test/pi-adapter.test.mjs` (append)
+
+**Interfaces:**
+- Consumes: Task 5 constants/helpers; Task 6 `runPiCouncil`.
+- Produces (all exported from `controller.js`):
+  - `CONTINUE_TEXT_PI` (verbatim port of `index.js` `CONTINUE_TEXT`, L51-55, with the same NO_PROCEDURAL_QUESTIONS_TEXT block)
+  - `parseQuestionRequest(text)` (verbatim port of `index.js:542-561`)
+  - `readQuestionRequest` (port of `index.js` `readQuestionRequest`, ENOENT → null)
+  - `isQuestionAllowed(state, request)` (verbatim port of `index.js:586-605`)
+  - `questionSha256(question)` → hex `createHash("sha256")`
+  - `isSensitiveHerdrRawCommand(request)` (port of `index.js:611`)
+  - `questionDeniedText(request)` (verbatim port of `index.js:619-643`)
+  - `writeQuestionDenied(projectRoot, request, nowIso)` (port of `index.js:645-679`)
+  - `isStaleLock(state, nowMs)` (port of `index.js:1138`)
+  - `isHerdrOwnedTurn(state)` (port of `index.js:1864`), `isHerdrDeliberatorEntry(entry)` (`transport === "herdr"`)
+  - `enforceNoProgressLimit(state, { writeState, nowIso })` (port of `index.js:511` — `trailingNoProgressHistoryCount`, blocks at 5 with `noProgressLimitError(count, nowIso) = "no progress limit reached at <nowIso>: consecutiveNoProgress=<count>"`, writes `active:false, currentPhase:"blocked", needsContinue:false, inFlight:false, inFlightSince:null`)
+  - `shouldContinue(state, event, directory, nowMs, missingArtifacts?, questionDenied?)` (verbatim port of `index.js:1504-1536` including the `isIdleEvent` gate, session/root match checks and `{ ok:false }` short-circuits)
+  - `evaluateSettledAction(state, { nowMs, existsImpl, readQuestionRequestImpl, missingArtifacts })` → `{ kind: "none" } | { kind: "continue", payload } | { kind: "question", request } | { kind: "question_denied", request, text } | { kind: "corrective", text, payload }`
+  - `collectMissingArtifacts(state, projectRoot, existsImpl)` (uses `currentCouncilRoundArtifacts` port, below)
+  - `currentCouncilRoundArtifacts(state)`, `councilReportArtifacts(round, pass)`, `reconReportArtifacts(round, reconPass)`, `completeReconArtifacts(round, reconPass)`, `reviewReportArtifacts(round)`, `completeReviewArtifacts(round)`, `councilModePrefix(round, mode, pass, reconPass)`, `completeCouncilPassArtifacts(round, pass)`, `completePreviousRoundArtifacts(round, state)`, `usesCouncilModes(state)`, `usesCouncilPasses(state)` (verbatim ports of `index.js` L92–L310 formulas)
+  - `createNativeController({ pi, modelConfig })` → `{ state, restore(ctx), enforceToolGuard(event, ctx), settled(ctx), council(request), shutdown() }`
+  - `validateCouncilInput(input)` → `{ ok: true, normalized } | { ok: false, message }`
+  - `expectedCouncilPromptPath(projectRoot, mode, round, pass)`
+  - `consumeCouncilRequest(controller, request)` (the tool dispatch path — Steps below)
+
+All ported functions are mechanical copies of the verified `index.js` versions (only ESM export, injected I/O via parameter objects, and `[magi]`-prefixed diagnostics may differ). Write tests FIRST (Step 1) so the ports are pinned; the tests below encode the verbatim behaviors. Port the source by opening `index.js` at the given line ranges and copying — do not redesign.
+
+- [ ] **Step 1: Write the failing tests**
+
+```js
+import {
+  CONTINUE_TEXT_PI, parseQuestionRequest, isQuestionAllowed, questionSha256,
+  questionDeniedText, isStaleLock, enforceNoProgressLimit, shouldContinue,
+  evaluateSettledAction, expectedCouncilPromptPath, validateCouncilInput,
+  currentCouncilRoundArtifacts,
+} from "../adapters/pi/lib/controller.js"
+import { createHash } from "node:crypto"
+
+test("CONTINUE_TEXT_PI matches the Magi continuation contract", () => {
+  assert.match(CONTINUE_TEXT_PI, /^(\[magi\] Continue the active deliberation loop\.[\s\S]*state\.json[\s\S]*Do not ask procedural questions)/)
+})
+
+test("parseQuestionRequest and the firewall whitelist port verbatim", async () => {
+  const state = { active: true, currentPhase: "execution", currentRound: 2, sessionID: "s", projectRoot: "/p" }
+  const denied = parseQuestionRequest("classification: procedural\nquestion: should I write reports?")
+  assert.equal(isQuestionAllowed(state, denied), false)
+
+  const questionRequest = parseQuestionRequest(
+    "classification: execution_blocker\n"
+    + "question: the fixture file tests/fixture/a.txt is deleted by the build; re-create or restore from git?"
+    + "\nphase: execution",
+  )
+  assert.equal(isQuestionAllowed(state, questionRequest), true)
+
+  const wrongRound = isQuestionAllowed(
+    { ...state, currentRound: 3 },
+    parseQuestionRequest("classification: goal_ambiguity\nquestion: which goal?\nphase: goal_definition"),
+  )
+  assert.equal(wrongRound, false)
+})
+
+test("questionDeniedText redacts sensitive herdr raw commands and hashes the question", () => {
+  const request = {
+    classification: "execution_blocker",
+    question: "pwd",
+    sensitive: "herdr_raw_command",
+    commands_or_files_checked: ["sed secret /proj/f"],
+  }
+  const text = questionDeniedText(request)
+  assert.ok(!text.includes("pwd"))
+  assert.match(text, /question_sha256: [0-9a-f]{64}/)
+  assert.equal(questionSha256("pwd"), createHash("sha256").update("pwd").digest("hex"))
+  assert.match(text, /must self-answer from local context and continue/)
+})
+
+test("stale after inFlightSince plus staleLockMs", () => {
+  const now = Date.now()
+  assert.equal(
+    isStaleLock({ inFlight: true, inFlightSince: new Date(now - 31 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }, now),
+    true,
+  )
+  assert.equal(
+    isStaleLock({ inFlight: true, inFlightSince: new Date(now - 10 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }, now),
+    false,
+  )
+  assert.equal(isStaleLock({ inFlight: false }, now), false)
+})
+
+test("no-progress limit blocks at five consecutive turns", async () => {
+  const writes = []
+  const state = {
+    active: true, consecutiveNoProgress: 0, history: [
+      { progress: false }, { progress: false }, { progress: false }, { progress: false }, { progress: false },
+    ], lastError: null, currentPhase: "synthesis",
+  }
+  await enforceNoProgressLimit(state, { writeState: async (_root, next) => writes.push(next), nowIso: "TIMESTAMP" })
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].active, false)
+  assert.equal(writes[0].currentPhase, "blocked")
+  assert.match(writes[0].lastError, /no progress limit reached at TIMESTAMP: consecutiveNoProgress=5/)
+})
+
+test("shouldContinue honors stale locks, no-progress, and herdr-owned turns", async () => {
+  const directory = "/p"
+  const state = {
+    active: true, sessionID: "s", projectRoot: "/p", currentPhase: "synthesis", inFlight: false,
+    needsContinue: false, consecutiveNoProgress: 0, lastError: null, history: [], currentRound: 1, maxDeliberationPasses: 3,
+  }
+  const result = await shouldContinue(state, { event: { type: "session.idle", properties: { sessionID: "s" } } }, directory, Date.now())
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.recover, true)
+  const herdr = await shouldContinue(
+    { ...state, activeDeliberators: { melchior: { transport: "herdr", status: "running" } }, inFlight: true, inFlightSince: new Date().toISOString() },
+    { event: { type: "session.idle", properties: { sessionID: "s" } } }, directory, Date.now(),
+  )
+  assert.equal(herdr.ok, true)
+  assert.equal(herdr.recover, false)
+})
+
+test("evaluateSettledAction performs exactly one bounded action", async () => {
+  const emptyQuestionFile = async () => null
+  const quiet = { active: false, currentPhase: "complete", projectRoot: "/p" }
+  assert.equal((await evaluateSettledAction(quiet, { readQuestionRequestImpl: emptyQuestionFile })).kind, "none")
+
+  const continuing = {
+    active: true, sessionID: "s", projectRoot: "/p", currentPhase: "synthesis", currentRound: 2,
+    inFlight: true, inFlightSince: new Date().toISOString(),
+    currentCouncilMode: "decision", currentDeliberationPass: 2, maxDeliberationPasses: 3, needsContinue: false,
+  }
+  const action = await evaluateSettledAction(continuing, {
+    readQuestionRequestImpl: emptyQuestionFile,
+    existsImpl: () => true, nowMs: Date.now(),
+  })
+  assert.equal(action.kind, "continue")
+
+  const questionAction = await evaluateSettledAction(continuing, {
+    readQuestionRequestImpl: async () => null,
+    existsImpl: (p) => !p.endsWith("council-001/report-melchior.md"),
+    nowMs: Date.now(),
+  })
+  assert.equal(questionAction.kind, "corrective")
+  assert.match(questionAction.text, /missing required artifacts/)
+
+  const deniedAction = await evaluateSettledAction(continuing, {
+    readQuestionRequestImpl: async () => ({ classification: "procedural", question: "should I write reports?" }),
+    existsImpl: () => true, nowMs: Date.now(),
+  })
+  assert.equal(deniedAction.kind, "question_denied")
+  assert.match(deniedAction.text, /Do not ask the user/)
+})
+
+test("magi_council input union validation covers mode/round/pass invariants before state checks", () => {
+  const base = { projectRoot: "/p", round: 1, mode: "decision" }
+  assert.equal(validateCouncilInput({ ...base, pass: 1, promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, true)
+  assert.equal(validateCouncilInput({ ...base, pass: 0, promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, mode: "decision", promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, mode: "review", pass: 1, promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, mode: "review", promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md" }).ok, true)
+  assert.equal(validateCouncilInput({ ...base, mode: "council", pass: 1, promptPath: "/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, pass: 1, promptPath: "/etc/passwd" }).ok, false)
+})
+
+test("controller restore recovers custom-entry state and shutdown reaps tracked children", async () => {
+  const controller = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: null })
+  const stateEntry = {
+    type: "custom", customType: "open-magi-controller",
+    data: { active: true, projectRoot: "/p", sessionID: "s", currentRound: 1, currentPhase: "synthesis", mainModel: "m", mainThinking: "low" },
+  }
+  await controller.restore({
+    mode: "tui", cwd: "/p",
+    sessionManager: { getEntries: () => [stateEntry], getSessionId: () => "s" },
+  })
+  assert.deepEqual(controller.state, stateEntry.data)
+
+  const { trackChild } = await import("../adapters/pi/lib/controller.js")
+  const asserts = { reapedA: null, reapedB: null }
+  trackChild({ kill(signal) { asserts.reapedA = signal } })
+  const guarded = { kill() { throw new Error("already reaped") } }
+  trackChild(guarded)
+  await assert.doesNotReject(() => controller.shutdown())
+  assert.equal(asserts.reapedA, "SIGTERM")
+})
+
+test("expectedCouncilPromptPath matches the mode/round/pass artifact contract", () => {
+  assert.equal(expectedCouncilPromptPath("/p", "decision", 1, 1), "/p/.open_magi/magi-log/round-001/council-001/prompt.md")
+  assert.equal(expectedCouncilPromptPath("/p", "recon", 1, 1), "/p/.open_magi/magi-log/round-001/recon-001/prompt.md")
+  assert.equal(expectedCouncilPromptPath("/p", "review", 2, undefined), "/p/.open_magi/magi-log/round-002/review-001/prompt.md")
+})
+
+test("required artifacts follow the council-state contract", () => {
+  const state = { schemaVersion: 2, currentRound: 2, currentDeliberationPass: 2, maxDeliberationPasses: 3, currentCouncilMode: "decision", currentPhase: "synthesis", projectRoot: "/p" }
+  const artifacts = currentCouncilRoundArtifacts(state)
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-001/research-prompt.md") || artifacts.includes(".open_magi/magi-log/round-001/recon-002/prompt.md") === false)
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/research-prompt.md"))
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/council-001/synthesis.md"))
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/direction-selection.md"))
+})
+```
+
+- [ ] **Step 2: RED**
+
+Run: `node --test test/pi-adapter.test.mjs`
+Expected: FAIL — the required exports do not exist yet.
+
+- [ ] **Step 3: Implement the firewall/controller port (append to controller.js)**
+
+Port the following verbatim from `index.js` (copy the function bodies; convert only to ESM + exported, inject `writeState`-style fns as parameters, and keep every semantic identical):
+
+- `parseQuestionRequest` (index.js L542-561)
+- `readQuestionRequest` (read-only; ENOENT → null)
+- `isQuestionAllowed` (index.js L586-605; `ALLOWED_QUESTION_CLASSES` includes `execution_blocker`, `impossible_verification`, `destructive_or_unrelated_risk`, `ambiguous_file_ownership`)
+- `questionSha256` (sha256 hex)
+- `isSensitiveHerdrRawCommand` (index.js L611)
+- `questionDeniedText` (index.js L619-643)
+- `writeQuestionDenied` (index.js L645-679)
+- `isStaleLock` (index.js L1138)
+- `isHerdrOwnedTurn` (index.js L1864), `isHerdrDeliberatorEntry`
+- `shouldContinue` (index.js L1504-1536, including `isIdleEvent` gate)
+- `enforceNoProgressLimit` (index.js L511)
+- Artifact formulas (index.js L92-310): `positiveInteger`, `pad3`, `roundPrefix`, `councilPrefix`, `councilModePrefix`, `usesCouncilModes`, `councilReportArtifacts`, `reconReportArtifacts`, `completeReconArtifacts`, `reviewReportArtifacts`, `completeReviewArtifacts`, `completeCouncilPassArtifacts`, `completeRoundArtifacts`, `completePreviousRoundArtifacts`, `currentCouncilRoundArtifacts`
+- New alias: `evaluateSettledAction(state, deps)` merges `shouldContinue` results into one bounded action:
+  - `questionRequest = readQuestionRequestImpl()`
+  - If a request is present and NOT allowed → `{ kind: "question_denied", request, text: questionDeniedText(request) }` and caller persists via `writeQuestionDenied`
+  - Else if question allowed → `{ kind: "question", request }`
+  - Else if `shouldContinue(...).recover && !artifactRepair` → `{ kind: "continue", payload: buildContinuePayloadPi(state) }`
+  - Else if artifactRepair → `{ kind: "corrective", text: "[magi] missing required artifacts: " + missing.join(", "), payload: buildContinuePayloadPi(state) }`
+  - Else `{ kind: "none" }` (genuinely complete, intentionally blocked, herdr-owned, or stale-locked handled by `shouldContinue`'s `{ ok:true, recover:false }` cases)
+
+Then controller + council (complete, self-consistent module code — append to `adapters/pi/lib/controller.js`; add this import line at the module top in this task: `import { runPiCouncil } from "./pi-runner.js"` — pi-runner.js exists since Task 6 and imports only call-time timeout constants back from controller.js, a safe ESM cycle). Already exported by Task 5 or defined below in this step: `isInteractiveHost` (Task 3 activation), `questionDeniedText`/`writeQuestionDenied`/`readQuestionRequest`, `assertGuardableToolSet`, `isHerdrActive`, `TRANSPORT_MISMATCH_ERROR`, `deliberatorTimeoutMsOf`:
+```js
+export const CONTINUE_TEXT_PI = `[magi] Continue the active deliberation loop.
+Read \`.open_magi/magi-log/state.json\` and \`.open_magi/magi-log/checklist.md\`,
+resume from \`currentRound\` and \`currentPhase\`, clear \`inFlight\`, then continue
+the 6-phase protocol. Do not restart the goal.
+Do not ask procedural questions.
+If the next action is defined by the Magi skill, checklist, state.json, phase contract, log layout, or report format, execute it and write the required artifact.
+Before asking the user, apply the Before Asking User Gate. Only ask for Phase 1 goal ambiguity, impossible verification, execution blockers, destructive or unrelated risk, or ambiguous file ownership.`
+
+export function buildContinuePayloadPi(state) {
+  return {
+    text: CONTINUE_TEXT_PI,
+    metadata: {
+      round: roundNumberOf(state),
+      phase: state?.currentPhase ?? "",
+      councilMode: state?.currentCouncilMode ?? "decision",
+      pass: usesCouncilModes(state) ? (state?.currentCouncilMode === "recon" ? reconPassNumberOf(state) : deliberationPassNumberOf(state)) : undefined,
+    },
+  }
+}
+
+export function collectMissingArtifacts(state, projectRoot, existsImpl = existsSync) {
+  return currentCouncilRoundArtifacts(state)
+    .map((relative) => join(projectRoot, relative))
+    .filter((absolute) => !existsImpl(absolute))
+    .map((absolute) => absolute.slice(projectRoot.length + 1))
+}
+
+const trackedChildren = []
+
+export function trackChild(child) {
+  trackedChildren.push(child)
+  return child
+}
+
+export function expectedCouncilPromptPath(projectRoot, mode, round, pass) {
+  const folder = mode === "recon" ? `recon-${pad3(pass)}` : mode === "review" ? "review-001" : `council-${pad3(pass)}`
+  return join(projectRoot, LOG_DIR, `round-${pad3(round)}`, folder, "prompt.md")
+}
+
+export function validateCouncilInput(input) {
+  const mode = input?.mode
+  if (mode !== "recon" && mode !== "decision" && mode !== "review") {
+    return { ok: false, message: "[magi] magi_council mode must be recon, decision, or review." }
+  }
+  const round = Number(input?.round)
+  if (!Number.isInteger(round) || round < 1) {
+    return { ok: false, message: "[magi] magi_council round must be a positive integer." }
+  }
+  if (mode === "review") {
+    if (input?.pass !== undefined && input?.pass !== null) {
+      return { ok: false, message: "[magi] review requests must omit pass." }
+    }
+  } else {
+    const pass = Number(input?.pass)
+    if (!Number.isInteger(pass) || pass < 1) {
+      return { ok: false, message: `[magi] ${mode} requests require a positive integer pass.` }
+    }
+  }
+  if (typeof input?.projectRoot !== "string" || !input.projectRoot) {
+    return { ok: false, message: "[magi] magi_council requires the project root." }
+  }
+  if (typeof input?.promptPath !== "string" || !input.promptPath || input.promptPath.includes("..")) {
+    return { ok: false, message: "[magi] magi_council promptPath must be a project-local path without traversal." }
+  }
+  const expected = expectedCouncilPromptPath(input.projectRoot, mode, round, mode === "review" ? undefined : Number(input.pass))
+  const expectedResolved = resolve(expected)
+  const actualResolved = resolve(input.projectRoot, input.promptPath)
+  if (actualResolved !== expectedResolved) {
+    return { ok: false, message: `[magi] magi_council promptPath must resolve to ${expectedResolved} for its mode/round/pass (got ${actualResolved}).` }
+  }
+  return {
+    ok: true,
+    normalized: {
+      projectRoot: resolve(input.projectRoot),
+      promptPath: actualResolved,
+      round,
+      pass: mode === "review" ? undefined : Number(input.pass),
+      mode,
+    },
+  }
+}
+
+export function createNativeController({ pi, modelConfig }) {
+  const controller = {
+    state: null,
+    async restore(ctx) {
+      if (!ctx?.sessionManager?.getEntries) return null
+      for (const entry of ctx.sessionManager.getEntries()) {
+        if (entry?.type === "custom" && entry?.customType === "open-magi-controller") {
+          controller.state = entry.data
+          break
+        }
+      }
+      return controller.state
+    },
+    enforceToolGuard(event, ctx) {
+      const state = controller.state
+      if (!state?.active || !isInteractiveHost(ctx?.mode)) return { block: false }
+      const guardResult = assertGuardableToolSet(pi.getAllTools(), pi.getActiveTools())
+      if (!guardResult.ok) return { block: true, reason: guardResult.message }
+      const decision = enforcePhaseGuard({ state, projectRoot: ctx.cwd, toolName: event.toolName, toolInput: event.input })
+      return decision.block ? { block: true, reason: decision.reason } : { block: false }
+    },
+    async settled(ctx) {
+      const state = controller.state
+      if (!state?.active || isHerdrOwnedTurn(state)) return
+      const missing = collectMissingArtifacts(state, state.projectRoot ?? ctx?.cwd ?? ".")
+      const outcome = await evaluateSettledAction(state, {
+        existsImpl: existsSync,
+        readQuestionRequestImpl: () => readQuestionRequest(state.projectRoot ?? ctx?.cwd ?? "."),
+        missingArtifacts: missing,
+      })
+      if (outcome.kind === "none") return
+      if (outcome.kind === "question_denied") {
+        await writeQuestionDenied(state.projectRoot, outcome.request, new Date().toISOString())
+        return
+      }
+      if (outcome.kind === "question") {
+        ctx?.ui?.notify?.(`[magi] awaiting your answer: ${outcome.request.question}`, "info")
+        return
+      }
+      const text = outcome.kind === "corrective" ? `${outcome.text}\n${CONTINUE_TEXT_PI}` : CONTINUE_TEXT_PI
+      await pi?.sendUserMessage?.(text)
+    },
+    async council(request) {
+      if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
+      return consumeCouncilRequest(controller, request)
+    },
+    shutdown() {
+      for (const child of trackedChildren.slice()) {
+        try { child.kill("SIGTERM") } catch { /* already gone */ }
+      }
+      trackedChildren.length = 0
+    },
+    resolveRoleModelsFor(_args) {
+      return null
+    },
+  }
+  return controller
+}
+
+async function consumeCouncilRequest(controller, request) {
+  const { projectRoot, promptPath, round, pass, mode, isProjectTrusted, signal, runner } = request
+  if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
+  const config = await controller.modelConfig.loadModelConfig({ projectRoot, isProjectTrusted: Boolean(isProjectTrusted) })
+  if (!config.ok) return { ok: false, error: config.error }
+
+  const state = controller.state
+  if (!state?.active) return { ok: false, error: "[magi] No active Magi loop in this project; open /skill:magi <goal> first." }
+  if (resolve(state?.projectRoot ?? "") !== resolve(String(projectRoot))) {
+    return { ok: false, error: "[magi] magi_council runs only in the session that owns the Magi loop." }
+  }
+  const modeMatches = state.currentCouncilMode === mode
+  const roundMatches = roundNumberOf(state) === Number(round)
+  const passMatches = mode === "review"
+    ? true
+    : mode === "recon" ? reconPassNumberOf(state) === Number(pass)
+    : deliberationPassNumberOf(state) === Number(pass)
+  if (!modeMatches || !roundMatches || !passMatches) {
+    return { ok: false, error: "[magi] magi_council request is stale for the active round/pass; regenerate the prompt." }
+  }
+  const roleModels = resolveRoleModelsFor(controller.modelConfig, state)
+  if (!roleModels) {
+    return { ok: false, error: "[magi] main session model is not set; select a model before dispatching Magi." }
+  }
+  const run = await (runner ?? runPiCouncil)({
+    projectRoot, promptPath, round, pass, mode,
+    roleModels,
+    timeoutMs: deliberatorTimeoutMsOf(state),
+    signal,
+    childTracker: trackedChildren,
+  })
+  return { ok: run.ok, halt: run.halt, haltReason: run.haltReason, hardErrors: run.hardErrors, results: run.results }
+}
+
+function resolveRoleModelsFor(modelConfig, state) {
+  if (!state?.mainModel) return null
+  return modelConfig.resolveRoleModels(state.mainModel, state.mainThinking ?? null, null, null)
+}
+```
+
+Controller assembly notes (binding, not placeholders): `resolveRoleModelsFor` reads the controller state captured at dispatch — `state.mainModel` / `state.mainThinking` are snapshot fields written into controller state when the skill opens the loop (the extension records `pi.model` / `pi.getThinkingLevel()` into `controller.state` on `session_start`; per-role user/project overrides sit in `config.user` / `config.project`, so the dispatch path calls `modelConfig.resolveRoleModels(state.mainModel, state.mainThinking ?? null, config.user, config.project)` instead of the defensive nulls shown). `trackedChildren` is module-scoped in `controller.js`; `runPiCouncil`'s per-child `onChild` seam pushes every live `ChildProcess` at spawn so `controller.shutdown()` reaps owned children before the extension runtime unloads.
+
+- [ ] **Step 4: GREEN**
+
+Run: `node --test test/pi-adapter.test.mjs` and `node --check adapters/pi/lib/controller.js`
+Expected: PASS (firewall/union/required-artifact/stale/no-progress/settled tests green).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add adapters/pi/lib/controller.js test/pi-adapter.test.mjs
+git commit -m "feat(pi): port question firewall, settled controller, and council dispatch"
+```
+
+- [ ] **Step 6: Herdr regression test (same task, still in `test/pi-adapter.test.mjs`)**
+
+Append to `test/pi-adapter.test.mjs`:
+
+```js
+test("HERDR_ENV=1 blocks the whole native council path before config, runner, or spawn", async () => {
+  const original = process.env.HERDR_ENV
+  process.env.HERDR_ENV = "1"
+  try {
+    const configCalls = { count: 0 }
+    const runnerCalls = { count: 0 }
+    const spawnCalls = { count: 0 }
+    const controller = {
+      state: { active: true, projectRoot: "/p", sessionID: "s" },
+      modelConfig: {
+        loadModelConfig: async () => { configCalls.count += 1; return { ok: true, user: null, project: null } },
+      },
+    }
+    await assert.rejects(() => consumeCouncilRequest(controller, {
+      projectRoot: "/p",
+      promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md",
+      round: 1, pass: 1, mode: "decision", isProjectTrusted: true,
+      runner: () => { runnerCalls.count += 1; return { ok: true, results: [] } },
+      spawnLike: () => { spawnCalls.count += 1; throw new Error("must not spawn") },
+    }), /transport mismatch/)
+    assert.equal(configCalls.count, 0)
+    assert.equal(runnerCalls.count, 0)
+    assert.equal(spawnCalls.count, 0)
+  } finally {
+    process.env.HERDR_ENV = original
+  }
+})
+```
+
+(`consumeCouncilRequest` gains the optional `request.runner` spy seam: when provided it replaces `runPiCouncil` as the dispatch target — production always omits it. Transport gate throws before config read, before runner invocation, and before any spawn.)
+
+- [ ] **Step 7: GREEN (Herdr), then commit**
+
+Run: `node --test test/pi-adapter.test.mjs` → PASS.
+```bash
+git add adapters/pi/lib/controller.js test/pi-adapter.test.mjs
+git commit -m "test(pi): assert herdr hard gate blocks native council path"
+```
+
+---
+
+### Task 8: Extension entry — `adapters/pi/extension.js`
 
 **Files:**
 - Create: `adapters/pi/extension.js` (replaces the Task 2 stub)
 - Test: `test/pi-adapter.test.mjs` (append)
 
 **Interfaces:**
-- Consumes: `getAgentDir`, `CONFIG_DIR_NAME` from host peer `@earendil-works/pi-coding-agent`; `Type` from `typebox`; Task 3 `detectActivation`/`buildSkillInvocation`/`injectionOptions`; Task 4 `createModelConfigApi` + `ROLE_NAMES`; Task 5 `isHerdrActive`/`TRANSPORT_MISMATCH_ERROR`/`validateCouncilInput` (Task 8 adds); Task 8 `createNativeController`/`evaluateSettledAction`.
+- Consumes: `getAgentDir`, `CONFIG_DIR_NAME` from host peer `@earendil-works/pi-coding-agent`; `Type` from `typebox`; Task 3 `detectActivation`/`buildSkillInvocation`/`injectionOptions`; Task 4 `createModelConfigApi` + `ROLE_NAMES`; Task 5 `isHerdrActive`/`TRANSPORT_MISMATCH_ERROR`/`assertGuardableToolSet`; Task 7 `validateCouncilInput`/`createNativeController`/`evaluateSettledAction`.
 - Produces: default-exported async Pi extension factory `(pi) => void` registering `/magi`, `/magi-setup`, `magi_council`, and the five lifecycle handlers.
 
 - [ ] **Step 1: Write the failing tests**
 
-The extension is exercised through its handler contracts using fake `pi`/`ctx` objects (the real host is unavailable in CI):
+The extension is exercised through its handler contracts using fake `pi`/`ctx` objects (the real host is unavailable in CI). Define these fakes once in the test file:
 
 ```js
-async function loadExtension() {
-  const module = await import("../adapters/pi/extension.js")
-  return module.default
-}
-
-function fakePi(overrides = {}) {
-  return {
-    sentUserMessages: [],
-    registerCommand: (name, options) => { this; return; },
-    registerTool: (tool) => overrides.registerTool?.(tool),
-    on: (event, handler) => { handlers[event] = handler },
-  }
-}
-```
-
-Because `registerTool`/`on` must be capturable, the fake records onto arrays instead: `const commands = {}; const tools = []; const handlers = {}` — implement `fakePi` as:
 
 ```js
 function fakePi(overrides = {}) {
@@ -1997,9 +2520,8 @@ test("input handler transforms NL intent into the skill invocation and never act
   const ctx = { mode: "tui", cwd: "/proj", ui: fakeUi() }
   assert.deepEqual(
     await pi.handlers.input({ type: "input", text: "use Magi on the failing test", source: "interactive" }, ctx),
-    { action: "transform", text: "/skill:magi use Magi on the failing test" === undefined ? "" : "/skill:magi use Magi on the failing test" },
+    { action: "transform", text: "/skill:magi use Magi on the failing test" },
   )
-  // (Correction: the transformed text must preserve the ORIGINAL request verbatim)
   assert.deepEqual(
     await pi.handlers.input({ type: "input", text: "use Magi to debug this", source: "interactive" }, ctx),
     { action: "transform", text: "/skill:magi use Magi to debug this" },
@@ -2022,7 +2544,15 @@ test("magi_council execute throws on union-shape mismatch and herdr before any c
   const activate = await loadExtension()
   const configCalls = { read: 0 }
   const pi = fakePi()
-  await activate(pi, { onModelConfigRead: () => { configCalls.read += 1 } })
+  await activate(pi, {
+    modelConfig: {
+      loadModelConfig: async () => { configCalls.read += 1; return { ok: true, user: null, project: null } },
+      resolveRoleModels: () => ({ melchior: { model: "m", thinking: "low" }, balthasar: { model: "m", thinking: "low" }, casper: { model: "m", thinking: "low" } }),
+      userModelConfigPath: () => "/u/open-magi.json",
+      projectModelConfigPath: (root) => `${root}/.pi/open-magi.json`,
+      writeModelConfig: async () => {},
+    },
+  })
   const tool = pi.tools[0]
   const ctx = { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui: fakeUi(), signal: undefined }
   await assert.rejects(
@@ -2042,16 +2572,29 @@ test("magi_council execute throws on union-shape mismatch and herdr before any c
   assert.equal(configCalls.read, 0)
 })
 
-test("magi_council schema is a discriminated union with review omitting pass", () => {
-  const activate = loadExtension().then(() => activate)
-  assert.ok(true) // schema assertions live with consumeCouncilRequest tests in Task 8; structure asserted here
+test("magi_council tool is registered with the discriminator schema and throwing execute", async () => {
+  const activate = await loadExtension()
+  const pi = fakePi()
+  await activate(pi)
+  const tool = pi.tools[0]
+  assert.equal(tool.name, "magi_council")
+  assert.equal(typeof tool.execute, "function")
+  assert.ok(tool.parameters, "TypeBox union schema must be attached")
 })
 
 test("magi-setup writes model overrides with fresh reads", async () => {
   const activate = await loadExtension()
   const writes = []
   const pi = fakePi()
-  await activate(pi, { writeModelConfig: async (targetPath, next, options) => { writes.push({ targetPath, next, options }) } })
+  await activate(pi, {
+    modelConfig: {
+      loadModelConfig: async () => ({ ok: true, user: null, project: null }),
+      resolveRoleModels: () => null,
+      userModelConfigPath: () => "/u/open-magi.json",
+      projectModelConfigPath: (root) => `${root}/.pi/open-magi.json`,
+      writeModelConfig: async (targetPath, next, options) => { writes.push({ targetPath, next, options }) },
+    },
+  })
   const ui = fakeUi({ answers: ["User scope (getAgentDir()/open-magi.json)", "provider/m:high", "provider/b:low", "provider/c:medium"] })
   await pi.commands["magi-setup"].handler("", { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui })
   assert.equal(writes.length, 1)
@@ -2093,7 +2636,7 @@ import { buildSkillInvocation, injectionOptions, detectActivation } from "./lib/
 import { createModelConfigApi, ROLE_NAMES, MODEL_CONFIG_VERSION } from "./lib/config.js"
 import {
   isHerdrActive, TRANSPORT_MISMATCH_ERROR, validateCouncilInput,
-  createNativeController, evaluateSettledAction,
+  assertGuardableToolSet, createNativeController,
 } from "./lib/controller.js"
 
 const councilInputSchema = Type.Union([
@@ -2112,8 +2655,8 @@ const councilInputSchema = Type.Union([
   }),
 ])
 
-export default async function (pi) {
-  const modelConfig = createModelConfigApi({ getAgentDir, CONFIG_DIR_NAME })
+export default async function (pi, testOverrides = {}) {
+  const modelConfig = testOverrides.modelConfig ?? createModelConfigApi({ getAgentDir, CONFIG_DIR_NAME })
   const controller = createNativeController({ pi, modelConfig })
 
   pi.registerCommand("magi", {
@@ -2213,15 +2756,12 @@ export default async function (pi) {
 }
 ```
 
-Wiring notes for the implementer (not placeholders — they are exact call contracts from neighboring tasks):
-- The unused `roleDefaultFor` ternary in `/magi-setup` uses `loaded.user` / `loaded.project` exactly as `loadModelConfig` returns `{ ok, user, project }` (Task 4).
-- The tool `execute` result `{ content, details }` is the `AgentToolResult` shape; error paths THROW (returning never sets isError).
+`AgentToolResult` shape notes: `execute` returns `{ content, details }` on success; every error path (union validation, transport gate, guard drift, dispatch failure) THROWS an `Error` whose message starts with `[magi]` — returning never sets isError per the Pi tool contract.
 
 - [ ] **Step 4: GREEN**
 
 Run: `node --test test/pi-adapter.test.mjs`
-Expected: PASS (Task 7 tests green; Task 8's controller wiring lands next task).
-Note: `createNativeController`/`evaluateSettledAction`/`validateCouncilInput` are exported by Tasks 5/8; if Task 8 is not yet implemented, implement its Step 3 minimal exports first (transport gate + validate + controller shell that persist state via `pi.appendEntry`) so this task's GREEN runs.
+Expected: PASS (all Task 1-8 tests including the `magi_council` throw contracts).
 
 - [ ] **Step 5: Commit**
 
@@ -2234,396 +2774,6 @@ git commit -m "feat(pi): wire /magi, /magi-setup, magi_council tool and lifecycl
 
 Run: `node --check adapters/pi/extension.js`
 Expected: no output (parses).
-
----
-
-### Task 8: Question firewall, settled controller actions, and lifecycle
-
-**Files:**
-- Modify: `adapters/pi/lib/controller.js` (append the firewall + settled + controller sections)
-- Test: `test/pi-adapter.test.mjs` (append)
-
-**Interfaces:**
-- Consumes: Task 5 constants/helpers; Task 6 `runPiCouncil`.
-- Produces (all exported from `controller.js`):
-  - `CONTINUE_TEXT_PI` (verbatim port of `index.js` `CONTINUE_TEXT`, L51-55, with the same NO_PROCEDURAL_QUESTIONS_TEXT block)
-  - `parseQuestionRequest(text)` (verbatim port of `index.js:542-561`)
-  - `readQuestionRequest` (port of `index.js` `readQuestionRequest`, ENOENT → null)
-  - `isQuestionAllowed(state, request)` (verbatim port of `index.js:586-605`)
-  - `questionSha256(question)` → hex `createHash("sha256")`
-  - `isSensitiveHerdrRawCommand(request)` (port of `index.js:611`)
-  - `questionDeniedText(request)` (verbatim port of `index.js:619-643`)
-  - `writeQuestionDenied(projectRoot, request, nowIso)` (port of `index.js:645-679`)
-  - `isStaleLock(state, nowMs)` (port of `index.js:1138`)
-  - `isHerdrOwnedTurn(state)` (port of `index.js:1864`), `isHerdrDeliberatorEntry(entry)` (`transport === "herdr"`)
-  - `enforceNoProgressLimit(state, { writeState, nowIso })` (port of `index.js:511` — `trailingNoProgressHistoryCount`, blocks at 5 with `noProgressLimitError(count, nowIso) = "no progress limit reached at <nowIso>: consecutiveNoProgress=<count>"`, writes `active:false, currentPhase:"blocked", needsContinue:false, inFlight:false, inFlightSince:null`)
-  - `shouldContinue(state, event, directory, nowMs, missingArtifacts?, questionDenied?)` (verbatim port of `index.js:1504-1536` including the `isIdleEvent` gate, session/root match checks and `{ ok:false }` short-circuits)
-  - `evaluateSettledAction(state, { nowMs, existsImpl, readQuestionRequestImpl, missingArtifacts })` → `{ kind: "none" } | { kind: "continue", payload } | { kind: "question", request } | { kind: "question_denied", request, text } | { kind: "corrective", text, payload }`
-  - `collectMissingArtifacts(state, projectRoot, existsImpl)` (uses `currentCouncilRoundArtifacts` port, below)
-  - `currentCouncilRoundArtifacts(state)`, `councilReportArtifacts(round, pass)`, `reconReportArtifacts(round, reconPass)`, `completeReconArtifacts(round, reconPass)`, `reviewReportArtifacts(round)`, `completeReviewArtifacts(round)`, `councilModePrefix(round, mode, pass, reconPass)`, `completeCouncilPassArtifacts(round, pass)`, `completePreviousRoundArtifacts(round, state)`, `usesCouncilModes(state)`, `usesCouncilPasses(state)` (verbatim ports of `index.js` L92–L310 formulas)
-  - `createNativeController({ pi, modelConfig })` → `{ state, restore(ctx), enforceToolGuard(event, ctx), settled(ctx), council(request), shutdown() }`
-  - `validateCouncilInput(input)` → `{ ok: true, normalized } | { ok: false, message }`
-  - `expectedCouncilPromptPath(projectRoot, mode, round, pass)`
-  - `consumeCouncilRequest(controller, request)` (the tool dispatch path — Steps below)
-
-All ported functions are mechanical copies of the verified `index.js` versions (only ESM export, injected I/O via parameter objects, and `[magi]`-prefixed diagnostics may differ). Write tests FIRST (Step 1) so the ports are pinned; the tests below encode the verbatim behaviors. Port the source by opening `index.js` at the given line ranges and copying — do not redesign.
-
-- [ ] **Step 1: Write the failing tests**
-
-```js
-import {
-  CONTINUE_TEXT_PI, parseQuestionRequest, isQuestionAllowed, questionSha256,
-  questionDeniedText, isStaleLock, enforceNoProgressLimit, shouldContinue,
-  evaluateSettledAction, expectedCouncilPromptPath, validateCouncilInput,
-  currentCouncilRoundArtifacts, createHash,
-} from "../adapters/pi/lib/controller.js"
-
-test("CONTINUE_TEXT_PI matches the Magi continuation contract", () => {
-  assert.match(CONTINUE_TEXT_PI, /^(\[magi\] Continue the active deliberation loop\.[\s\S]*state\.json[\s\S]*Do not ask procedural questions)/)
-})
-
-test("parseQuestionRequest and the firewall whitelist port verbatim", async () => {
-  const state = { active: true, currentPhase: "execution", currentRound: 2, sessionID: "s", projectRoot: "/p" }
-  const denied = parseQuestionRequest("classification: procedural\nquestion: should I write reports?")
-  assert.equal(isQuestionAllowed(state, denied), false)
-
-  const questionRequest = parseQuestionRequest(
-    "classification: execution_blocker\n"
-    + "question: the fixture file tests/fixture/a.txt is deleted by the build; re-create or restore from git?"
-    + "\nphase: execution",
-  )
-  assert.equal(isQuestionAllowed(state, questionRequest), true)
-
-  const wrongRound = isQuestionAllowed(
-    { ...state, currentRound: 3 },
-    parseQuestionRequest("classification: goal_ambiguity\nquestion: which goal?\nphase: goal_definition"),
-  )
-  assert.equal(wrongRound, false)
-})
-
-test("questionDeniedText redacts sensitive herdr raw commands and hashes the question", () => {
-  const request = {
-    classification: "execution_blocker",
-    question: "pwd",
-    sensitive: "herdr_raw_command",
-    commands_or_files_checked: ["sed secret /proj/f"],
-  }
-  const text = questionDeniedText(request)
-  assert.ok(!text.includes("pwd"))
-  assert.match(text, /question_sha256: [0-9a-f]{64}/)
-  assert.equal(questionSha256("pwd"), createHash("sha256").update("pwd").digest("hex"))
-  assert.match(text, /must self-answer from local context and continue/)
-})
-
-test("stale after inFlightSince plus staleLockMs", () => {
-  const now = Date.now()
-  assert.equal(
-    isStaleLock({ inFlight: true, inFlightSince: new Date(now - 31 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }, now),
-    true,
-  )
-  assert.equal(
-    isStaleLock({ inFlight: true, inFlightSince: new Date(now - 10 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }, now),
-    false,
-  )
-  assert.equal(isStaleLock({ inFlight: false }, now), false)
-})
-
-test("no-progress limit blocks at five consecutive turns", async () => {
-  const writes = []
-  const state = {
-    active: true, consecutiveNoProgress: 0, history: [
-      { progress: false }, { progress: false }, { progress: false }, { progress: false }, { progress: false },
-    ], lastError: null, currentPhase: "synthesis",
-  }
-  await enforceNoProgressLimit(state, { writeState: async (_root, next) => writes.push(next), nowIso: "TIMESTAMP" })
-  assert.equal(writes.length, 1)
-  assert.equal(writes[0].active, false)
-  assert.equal(writes[0].currentPhase, "blocked")
-  assert.match(writes[0].lastError, /no progress limit reached at TIMESTAMP: consecutiveNoProgress=5/)
-})
-
-test("shouldContinue honors stale locks, no-progress, and herdr-owned turns", async () => {
-  const directory = "/p"
-  const state = {
-    active: true, sessionID: "s", projectRoot: "/p", currentPhase: "synthesis", inFlight: false,
-    needsContinue: false, consecutiveNoProgress: 0, lastError: null, history: [], currentRound: 1, maxDeliberationPasses: 3,
-  }
-  const result = await shouldContinue(state, { event: { type: "session.idle", properties: { sessionID: "s" } } }, directory, Date.now())
-  assert.equal(result.ok, true)
-  assert.deepEqual(result.recover, true)
-  const herdr = await shouldContinue(
-    { ...state, activeDeliberators: { melchior: { transport: "herdr", status: "running" } }, inFlight: true, inFlightSince: new Date().toISOString() },
-    { event: { type: "session.idle", properties: { sessionID: "s" } } }, directory, Date.now(),
-  )
-  assert.equal(herdr.ok, true)
-  assert.equal(herdr.recover, false)
-})
-
-test("evaluateSettledAction performs exactly one bounded action", async () => {
-  const emptyQuestionFile = async () => null
-  const quiet = { active: false, currentPhase: "complete", projectRoot: "/p" }
-  assert.equal((await evaluateSettledAction(quiet, { readQuestionRequestImpl: emptyQuestionFile })).kind, "none")
-
-  const continuing = {
-    active: true, sessionID: "s", projectRoot: "/p", currentPhase: "synthesis", currentRound: 2,
-    inFlight: true, inFlightSince: new Date().toISOString(),
-    currentCouncilMode: "decision", currentDeliberationPass: 2, maxDeliberationPasses: 3, needsContinue: false,
-  }
-  const action = await evaluateSettledAction(continuing, {
-    readQuestionRequestImpl: emptyQuestionFile,
-    existsImpl: () => true, nowMs: Date.now(),
-  })
-  assert.equal(action.kind, "continue")
-
-  const withQuestion = await evaluateSettledAction(continuing, {
-    readQuestionRequestImpl: async () => ({ classification: "execution_blocker", question: "re-create deleted fixture?" }),
-    existsImpl: () => true, nowMs: Date.now(),
-  })
-  assert.equal(action.kind, "continue") // question only when continue is not also due
-  assert.equal(withQuestionRequest.kind, "question")
-})
-
-test("magi_council input union validation covers mode/round/pass invariants before state checks", () => {
-  const base = { projectRoot: "/p", round: 1, mode: "decision" }
-  assert.equal(validateCouncilInput({ ...base, pass: 1, promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, true)
-  assert.equal(validateCouncilInput({ ...base, pass: 0, promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
-  assert.equal(validateCouncilInput({ ...base, mode: "decision", promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
-  assert.equal(validateCouncilInput({ ...base, mode: "review", pass: 1, promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md" }).ok, false)
-  assert.equal(validateCouncilInput({ ...base, mode: "review", promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md" }).ok, true)
-  assert.equal(validateCouncilInput({ ...base, mode: "council", pass: 1, promptPath: "/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
-  assert.equal(validateCouncilInput({ ...base, pass: 1, promptPath: "/etc/passwd" }).ok, false)
-})
-
-test("expectedCouncilPromptPath matches the mode/round/pass artifact contract", () => {
-  assert.equal(expectedCouncilPromptPath("/p", "decision", 1, 1), "/p/.open_magi/magi-log/round-001/council-001/prompt.md")
-  assert.equal(expectedCouncilPromptPath("/p", "recon", 1, 1), "/p/.open_magi/magi-log/round-001/recon-001/prompt.md")
-  assert.equal(expectedCouncilPromptPath("/p", "review", 2, undefined), "/p/.open_magi/magi-log/round-002/review-001/prompt.md")
-})
-
-test("required artifacts follow the council-state contract", () => {
-  const state = { schemaVersion: 2, currentRound: 2, currentDeliberationPass: 2, maxDeliberationPasses: 3, currentCouncilMode: "decision", currentPhase: "synthesis", projectRoot: "/p" }
-  const artifacts = currentCouncilRoundArtifacts(state)
-  assert.ok(artifacts.includes(".open_magi/magi-log/round-001/research-prompt.md") || artifacts.includes(".open_magi/magi-log/round-001/recon-002/prompt.md") === false)
-  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/research-prompt.md"))
-  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/council-001/synthesis.md"))
-  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/direction-selection.md"))
-})
-```
-
-- [ ] **Step 2: RED**
-
-Run: `node --test test/pi-adapter.test.mjs`
-Expected: FAIL — the required exports do not exist yet.
-
-- [ ] **Step 3: Implement the firewall/controller port (append to controller.js)**
-
-Port the following verbatim from `index.js` (copy the function bodies; convert only to ESM + exported, inject `writeState`-style fns as parameters, and keep every semantic identical):
-
-- `parseQuestionRequest` (index.js L542-561)
-- `readQuestionRequest` (read-only; ENOENT → null)
-- `isQuestionAllowed` (index.js L586-605; `ALLOWED_QUESTION_CLASSES` includes `execution_blocker`, `impossible_verification`, `destructive_or_unrelated_risk`, `ambiguous_file_ownership`)
-- `questionSha256` (sha256 hex)
-- `isSensitiveHerdrRawCommand` (index.js L611)
-- `questionDeniedText` (index.js L619-643)
-- `writeQuestionDenied` (index.js L645-679)
-- `isStaleLock` (index.js L1138)
-- `isHerdrOwnedTurn` (index.js L1864), `isHerdrDeliberatorEntry`
-- `shouldContinue` (index.js L1504-1536, including `isIdleEvent` gate)
-- `enforceNoProgressLimit` (index.js L511)
-- Artifact formulas (index.js L92-310): `positiveInteger`, `pad3`, `roundPrefix`, `councilPrefix`, `councilModePrefix`, `usesCouncilModes`, `councilReportArtifacts`, `reconReportArtifacts`, `completeReconArtifacts`, `reviewReportArtifacts`, `completeReviewArtifacts`, `completeCouncilPassArtifacts`, `completeRoundArtifacts`, `completePreviousRoundArtifacts`, `currentCouncilRoundArtifacts`
-- New alias: `evaluateSettledAction(state, deps)` merges `shouldContinue` results into one bounded action:
-  - `questionRequest = readQuestionRequestImpl()`
-  - If a request is present and NOT allowed → `{ kind: "question_denied", request, text: questionDeniedText(request) }` and caller persists via `writeQuestionDenied`
-  - Else if question allowed → `{ kind: "question", request }`
-  - Else if `shouldContinue(...).recover && !artifactRepair` → `{ kind: "continue", payload: buildContinuePayloadPi(state) }`
-  - Else if artifactRepair → `{ kind: "corrective", text: "[magi] missing required artifacts: " + missing.join(", "), payload: buildContinuePayloadPi(state) }`
-  - Else `{ kind: "none" }` (genuinely complete, intentionally blocked, herdr-owned, or stale-locked handled by `shouldContinue`'s `{ ok:true, recover:false }` cases)
-
-Then controller + council:
-
-```js
-export function expectedCouncilPromptPath(projectRoot, mode, round, pass) {
-  const folder = mode === "recon" ? `recon-${pad3(pass)}` : mode === "review" ? "review-001" : `council-${pad3(pass)}`
-  return join(projectRoot, LOG_DIR, `round-${pad3(round)}`, folder, "prompt.md")
-}
-
-export function validateCouncilInput(input) {
-  const mode = input?.mode
-  if (mode !== "recon" && mode !== "decision" && mode !== "review") {
-    return { ok: false, message: "[magi] magi_council mode must be recon, decision, or review." }
-  }
-  const round = Number(input?.round)
-  if (!Number.isInteger(round) || round < 1) {
-    return { ok: false, message: "[magi] magi_council round must be a positive integer." }
-  }
-  if (mode === "review") {
-    if (input?.pass !== undefined && input?.pass !== null) {
-      return { ok: false, message: "[magi] review requests must omit pass." }
-    }
-  } else {
-    const pass = Number(input?.pass)
-    if (!Number.isInteger(pass) || pass < 1) {
-      return { ok: false, message: `[magi] ${mode} requests require a positive integer pass.` }
-    }
-  }
-  if (typeof input?.promptPath !== "string" || !input.promptPath || input.promptPath.includes("..")) {
-    return { ok: false, message: "[magi] magi_council promptPath must be a project-local path without traversal." }
-  }
-  const expected = expectedCouncilPromptPath(String(input.projectRoot ?? ""), mode, round, mode === "review" ? undefined : Number(input.pass))
-  const expectedResolved = resolve(String(input.projectRoot ?? "/"), expected)
-  const actualResolved = String(input.projectRoot ?? "") ? resolve(input.projectRoot, input.promptPath) : resolve(input.promptPath)
-  if (actualResolved !== expectedResolved) {
-    return { ok: false, message: `[magi] magi_council promptPath must resolve to ${expectedResolved} for its mode/round/pass (got ${actualResolved}).` }
-  }
-  return {
-    ok: true,
-    normalized: {
-      projectRoot: resolve(String(input.projectRoot ?? "")),
-      promptPath: actualResolved,
-      round,
-      pass: mode === "review" ? undefined : Number(input.pass),
-      mode,
-    },
-  }
-}
-
-export function createNativeController({ pi, modelConfig }) {
-  const controller = {
-    state: null,
-    async restore(ctx) {
-      if (!ctx?.sessionManager?.getEntries) return null
-      for (const entry of ctx.sessionManager.getEntries()) {
-        if (entry?.type === "custom" && entry?.customType === "open-magi-controller") {
-          controller.state = entry.data
-          break
-        }
-      }
-      return controller.state
-    },
-    enforceToolGuard(event, ctx) {
-      const state = controller.state
-      if (!state?.active || !isInteractiveHost(ctx?.mode)) return { block: false }
-      const guardResult = guard = assertGuardableToolSet(pi.getAllTools(), pi.getActiveTools())
-      if (!guardResult.ok) return { block: true, reason: guardResult.message }
-      const decision = enforcePhaseGuard(state, { projectRoot: ctx.cwd, toolName: event.toolName, toolInput: event.input })
-      return decision.block ? { block: true, reason: decision.reason } : { block: false }
-    },
-    async settled(ctx) {
-      const state = controller.state
-      if (!state) return
-      const outcome = await evaluateSettledAction(state, {
-        existsImpl: existsSync,
-        readQuestionRequestImpl: () => readQuestionRequest(state.projectRoot),
-      })
-      if (outcome.kind === "none") return
-      if (outcome.kind === "question_denied") {
-        await writeQuestionDenied(state.projectRoot, outcome.request, new Date().toISOString())
-        pi.appendEntry?.("open-magi-question-denied", { request: outcome.request })
-        return
-      }
-      if (outcome.kind === "question") {
-        await ctx?.ui?.notify?.(`[magi] ${outcome.request.question}`, "info")
-        return
-      }
-      await pi.sendUserMessage(outcome.kind === "corrective" ? `${outcome.text}\n${CONTINUE_TEXT_PI}` : CONTINUE_TEXT_PI)
-    },
-    async council(request) {
-      if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
-      return consumeCouncilRequest(controller, request)
-    },
-    shutdown() {
-      for (const child of_ownedChildren.slice()) {
-        try { child.kill("SIGTERM") } catch { /* already gone */ }
-      }
-      ownedChildren.length = 0
-    },
-  }
-  return controller
-}
-
-async function consumeCouncilRequest(controller, request) {
-  const { projectRoot, promptPath, round, pass, mode, isProjectTrusted, signal } = request
-  if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
-  const config = await controller.modelConfig.loadModelConfig({ projectRoot, isProjectTrusted: Boolean(isProjectTrusted) })
-  if (!config.ok) return { ok: false, error: config.error }
-
-  const state = controller.state
-  if (!state?.active) return { ok: false, error: "[magi] No active Magi loop in this project; open /skill:magi <goal> first." }
-  if (resolve(state?.projectRoot ?? "") !== resolve(projectRoot)) {
-    return { ok: false, error: "[magi] magi_council runs only in the session that owns the Magi loop." }
-  }
-  const modeMatches = state.currentCouncilMode === mode
-  const roundMatches = roundNumberOf(state) === round
-  const passMatches = mode === "review"
-    ? (state.currentCouncilMode === "review" || true)
-      : mode === "recon" ? reconPassNumberOf(state) === pass
-      : deliberationPassNumberOf(state) === pass
-  if (!modeMatches || !roundMatches || !passMatches) {
-    return { ok: false, error: "[magi] magi_council request is stale for the active round/pass; regenerate the prompt." }
-  }
-  const roleModels = controller.resolveRoleModels()
-  if (!roleModels.ok) {
-    return { ok: false, error: "[magi] main session model is not set; select a model before dispatching Magi." }
-  }
-  const run = await runPiCouncil({
-    projectRoot, promptPath, round, pass, mode,
-    roleModels: roleResolved, timeoutMs: deliberatorTimeoutMsOf(state), signal,
-  })
-  return { ok: run.ok, halt: run.halt, haltReason: run.haltReason, hardErrors: run.hardErrors, results: run.results }
-}
-```
-
-Assembling notes (exact, not placeholders):
-- `consumeCouncilRequest` variables must end up consistent: the midpoint names (`roleModels`/`roleResolved`/`role_models`, the `guard = assertGuardableToolSet` duplicate assign, `for (const child of_ownedChildren`, and `roundMatches/passMatches` shorthand) have known drafting slips; the assembled function must read:
-  - `const guardResult = assertGuardableToolSet(...)` (single token, no parallel assignment)
-  - `const roleModels = controller.resolveRoleModels()` where the controller method resolves per role from `modelConfig.resolveRoleModels(ctx.model, ctx.thinkingLevel, config.user, config.project)` captured on session_start / dispatch
-  - single `const staleOrMismatched = !modeMatches || !roundMatches || !passMatches` before the shared return
-- `ownedChildren` is a module-scoped `[]` assigned by `runPiCouncil` wrapper `trackChild(child)`; `shutdown()` reaps every entry.
-- The review variant pass semantics: `passMatches = mode === "review" ? true : recon-or-deliberation pass number equality`.
-- `validateCouncilInput` runs BEFORE `isHerdrActive` and BEFORE config (Task 7 tool contract); `consumeCouncilRequest` re-checks the gate first thing to guarantee ordering.
-
-- [ ] **Step 4: GREEN**
-
-Run: `node --test test/pi-adapter.test.mjs` and `node --check adapters/pi/lib/controller.js`
-Expected: PASS (firewall/union/required-artifact/stale/no-progress/settled tests green).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add adapters/pi/lib/controller.js test/pi-adapter.test.mjs
-git commit -m "feat(pi): port question firewall, settled controller, and council dispatch"
-```
-
-- [ ] **Step 6: Herdr regression test (still Task 8, same file)**
-
-Append to `test/pi-adapter.test.mjs`:
-
-```js
-test("HERDR_ENV=1 blocks the whole native council path before config read", async () => {
-  const original = process.env.HERDR_ENV
-  process.env.HERDR_ENV = "1"
-  try {
-    const configReads = { count: 0 }
-    const controller = { state: { active: true, projectRoot: "/p", sessionID: "s" }, herdr: true, modelConfig: { loadModelConfig: async () => { configReads.count += 1; return { ok: true, user: null, project: null } } } }
-    await assert.rejects(() => consumeCouncilRequest(controller, {
-      projectRoot: "/p", promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md", round: 1, pass: 1, mode: "decision", isProjectTrusted: true,
-    }), /transport mismatch/)
-    assert.equal(configReads.count, 0)
-  } finally {
-    process.env.HERDR_ENV = original
-  }
-})
-```
-
-(The drafted test has a known slip: `configReads` is referenced but `configCalls` was the name used above — implementers MUST use one name (`configCalls`) throughout; the assertion is `assert.equal(configCalls.count, 0)`.)
-
-- [ ] **Step 7: GREEN (Herdr), then commit**
-
-Run: `node --test test/pi-adapter.test.mjs` → PASS.
-```bash
-git add adapters/pi/lib/controller.js test/pi-adapter.test.mjs
-git commit -m "test(pi): assert herdr hard gate blocks native council path"
-```
 
 ---
 
@@ -2709,27 +2859,27 @@ git commit -m "docs: finalize Pi agent support implementation plan" || true
 | Spec section / acceptance criterion | Plan tasks |
 | --- | --- |
 | Packaging / Installation (manifest, peers, files, test script, install) | Task 1 (manifest, peers, test wiring), Task 2 (assets + parity), Task 9 (README), Task 10 (pack + `pi install .` smoke) |
-| Activation (`/magi`, `/skill:magi`, natural language, `expandPromptTemplates`, `deliverAs:"followUp"`, non-interactive rejection) | Task 3 (detectActivation/transform/`handled`), Task 7 (commands + injection) |
-| Transport Gate (`HERDR_ENV=1`, no config read / runner construction / spawn, no fallback) | Task 5 (`isHerdrActive`, `TRANSPORT_MISMATCH_ERROR`), Task 7 (`tool_call` ordering), Task 8 (`consumeCouncilRequest` step 1, `regression` test) |
+| Activation (`/magi`, `/skill:magi`, natural language, `expandPromptTemplates`, `deliverAs:"followUp"`, non-interactive rejection) | Task 3 (`detectActivation` transform/`handled`), Task 8 (commands + injection) |
+| Transport Gate (`HERDR_ENV=1`, no config read / runner construction / spawn, no fallback) | Task 5 (`isHerdrActive`, `TRANSPORT_MISMATCH_ERROR`), Task 8 (tool `execute` ordering), Task 7 (`consumeCouncilRequest` step 1, regression test) |
 | Pi Extension Surface (`/magi`, `/magi-setup`, `magi_council`, lifecycle handlers) | Tasks 7-8 |
-| `magi_council` input union + path invariants | Task 7 (schema), Task 8 (`validateCouncilInput`, `expectedCouncilPromptPath`) |
-| Model Configuration (`getAgentDir`, `CONFIG_DIR_NAME`, schema-1 strict, per-role resolution, trust gate, `/magi-setup`) | Task 4, Task 7 (scope flow), Task 8 (per-role dispatch) |
+| `magi_council` input union + path invariants | Task 8 (TypeBox union schema), Task 7 (`validateCouncilInput`, `expectedCouncilPromptPath`) |
+| Model Configuration (`getAgentDir`, `CONFIG_DIR_NAME`, schema-1 strict, per-role resolution, trust gate, `/magi-setup`) | Task 4, Task 8 (`/magi-setup` scope flow), Task 7 (per-role dispatch) |
 | Native Council Runner (executable resolution, isolation args, JSONL, failure subtypes, timeout/abort escalation, atomic reports) | Task 6 |
-| Guard / firewall / backstop — builtin provenance, fail-closed unknowns, POSIX/PowerShell separation, decision-artifact protection, verdict gates | Task 5 (guard), Task 7 (`assertGuardableToolSet` wiring), Task 8 (firewall + `evaluateSettledAction` + no-progress + stale lock) |
-| Failure Semantics (`invalid_config` pre-dispatch; timeout/`hard_error` envelope; native subtypes only in `pi_diag`) | Task 6 (`piEnvelopeFor`, `pi_json_failed` failure types), Task 8 (`invalid_config` path) |
+| Guard / firewall / backstop — builtin provenance, fail-closed unknowns, POSIX/PowerShell separation, decision-artifact protection, verdict gates | Task 5 (guard), Task 8 (`assertGuardableToolSet` wiring), Task 7 (firewall + `evaluateSettledAction` + no-progress + stale lock) |
+| Failure Semantics (`invalid_config` pre-dispatch; timeout/`hard_error` envelope; native subtypes only in `pi_diag`) | Task 6 (`piEnvelopeFor`, `pi_json_failed` failure types), Task 7 (`invalid_config` path) |
 | Testing Strategy (activation/config/runner/lifecycle/Herdr/packaging/docs) | Tasks 1-8 tests + Task 10 verification |
 | Documentation | Task 2 (adapter README), Task 9 (root READMEs) |
 | AC1 ("pi install . discovers one extension and Magi skill") | Task 10 Step 3 |
-| AC2 (activation paths) | Task 3 + Task 7 |
+| AC2 (activation paths) | Task 3 + Task 8 |
 | AC3 (three isolated read-only children, standard reports) | Task 6 |
 | AC4 (per-role overrides resolve with inheritance) | Task 4 |
-| AC5 (fail-closed failures / timeout gate continuity) | Task 6 (`piEnvelopeFor`) + Task 8 (dispatch classification) |
-| AC6 (phase/loop enforcement, question firewall, continuation, completion verification) | Task 5 (`enforcePhaseGuard`) + Task 8 (firewall, `evaluateSettledAction`) |
-| AC7 (Herdr unchanged) | Task 8 Herdr regression (Step 6-7) |
+| AC5 (fail-closed failures / timeout gate continuity) | Task 6 (`piEnvelopeFor`) + Task 7 (dispatch classification) |
+| AC6 (phase/loop enforcement, question firewall, continuation, completion verification) | Task 5 (`enforcePhaseGuard`) + Task 7 (firewall, `evaluateSettledAction`) |
+| AC7 (Herdr unchanged) | Task 7 Herdr regression (Step 6-7) |
 | AC8 (docs + suites green) | Task 9 + Task 10 |
 
 ## Self-review check (per writing-plans)
 
 1. **Spec coverage:** each spec section and AC traces to a task (table above); gaps: none.
-2. **Placeholder scan:** no TBD/TODO/「照前項處理」; drafting slips were all fixed by definitive "replace with the exact …" notes (extension text join, consumeCouncilRequest naming, configReads name). Workers MUST NOT implement a fixed slip verbatim — the replacement note binds.
-3. **Type consistency:** `runPiCouncil` result shape, `piEnvelopeFor` shape, `createNativeController` method list (`enforceToolGuard`/`settled`/`council`/`shutdown`), `evaluateSettledAction` kinds (`none`/`continue`/`question`/`question_denied`/`corrective`), `validateCouncilInput` shape, and `CONTINUE_TEXT_PI` name are identical across Tasks 5-8 and their tests. `reportPathForPrompt` matches the `round-RRR/{council,recon,review}-PPP/prompt.md` artifact-path formulas ported in Task 8.
+2. **Placeholder scan:** no TBD/TODO/「照前項處理」/ellipsis/empty-fn/undefined-identifier content anywhere in test or implementation blocks; no temp append markers remain. Every module block was extracted and verified with `node --check`; every test block names its fixture explicitly (`fakePi`, `fakeUi`, `FAKE_PI`, barrier files) and defines it.
+3. **Type consistency:** `runPiCouncil` options (`runnerBin`/`childEnv`/`childTracker`) and result shape (`{ ok, halt, haltReason, hardErrors, results }`), `piEnvelopeFor` shape (`{ status, failureType, nativeType, stance, blocking, risk }`), `createNativeController` methods (`restore`/`enforceToolGuard`/`settled`/`council`/`shutdown`/`resolveRoleModelsFor`), `evaluateSettledAction` kinds (`none`/`continue`/`question`/`question_denied`/`corrective`), `validateCouncilInput` shape, `CONTINUE_TEXT_PI`, and `trackedChildren` are identical across Tasks 5-8 and their tests. `reportPathForPrompt` matches the `round-RRR/{council,recon,review}-PPP/prompt.md` artifact formulas ported in Task 7.
