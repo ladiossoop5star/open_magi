@@ -17,6 +17,14 @@
     ".": "./index.js",
     "./setup": "./lib/setup.js"
   },
+  "pi": {
+    "extensions": [
+      "./adapters/pi/extension.js"
+    ],
+    "skills": [
+      "./adapters/pi/skills"
+    ]
+  },
   "bin": {
     "open-magi": "bin/open-magi.js"
   },
@@ -27,14 +35,27 @@
     "skills",
     "README.md",
     "README.zh-TW.md",
-    "LICENSE"
+    "LICENSE",
+    "adapters/pi"
   ],
   "scripts": {
     "postinstall": "node bin/postinstall.js",
-    "test": "node --test test/package.test.mjs test/plugin.test.mjs test/setup.test.mjs"
+    "test": "node --test test/package.test.mjs test/plugin.test.mjs test/setup.test.mjs test/pi-adapter.test.mjs"
   },
   "engines": {
     "node": ">=20"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "keywords": [
     "opencode",
