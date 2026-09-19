@@ -390,16 +390,28 @@ tool settles.
 
 ## Guard, Question Firewall, and Completion Backstop
 
-The Pi `tool_call` guard maps Pi's built-in `write`, `edit`, and `bash` inputs to
-the existing Magi phase policy:
+The Pi `tool_call` guard maps every mutation- or execution-capable built-in
+active in the host session to the existing Magi phase policy: `write`, `edit`,
+and both shell-family tools, `bash` and Pi's built-in `powershell`:
 
 - Project code mutation is denied before the execution phase.
 - Execution-phase mutation requires the current verdict artifact.
 - Magi Markdown/text artifact writes remain allowed.
-- Build and test commands remain allowed under the existing policy.
+- Build and test commands remain allowed under the existing policy; safe
+  build/test classification is explicit per shell family, so a `powershell`
+  command is judged by PowerShell syntax rules rather than inheriting the Bash
+  classifier by accident.
 - Decision artifacts are protected while a deliberation pass is in flight.
-- Append redirects and shell target parsing retain the current guard fixes and
-  negative controls.
+- Mutation-target and redirect parsing retain the current guard fixes and
+  negative controls, and apply to both shell-family tools with
+  syntax-appropriate parsing: POSIX redirect grammar covers `bash`, while
+  `powershell` targets are parsed with PowerShell redirect and assignment
+  syntax rather than being squeezed through the POSIX parser.
+- The guard fails closed for the unknown: if Pi reports an active built-in
+  that is mutation- or execution-capable but the adapter has no explicit
+  classification for it, the guard denies the call with a clear diagnostic
+  instead of allowing it to bypass the phase policy, so a future Pi built-in
+  can never silently escape the guard.
 
 At `agent_settled`, the controller reads current state and required artifacts.
 It performs one bounded action:
@@ -507,6 +519,11 @@ contract in `shared/magi/references/deliberation.md`:
   current verdict in execution.
 - Verify Magi artifact writes, build/test exceptions, redirect parsing, and
   protected decision artifacts.
+- Verify `powershell` mutation is denied before execution and allowed only
+  after the current verdict in execution, that its build/test exceptions are
+  classified with PowerShell syntax rules rather than inherited from the Bash
+  classifier, and that an unknown active mutation- or execution-capable
+  built-in fails closed.
 - Verify `agent_settled` continuation, approved and denied questions,
   false-completion repair, completion silence, stale locks, and no-progress
   limits.
