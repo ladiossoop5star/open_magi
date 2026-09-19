@@ -2,7 +2,10 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { mkdtemp, readFile, writeFile, mkdir, chmod, stat, readdir, rename, rm } from "node:fs/promises"
+// fsWriteFile is the alias the Task 6 test blocks use for writeFile.
+const fsWriteFile = writeFile
 import { tmpdir } from "node:os"
+import { spawn } from "node:child_process"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -433,4 +436,288 @@ test("positiveInteger falls back cleanly", () => {
   assert.equal(positiveInteger("7", 3), 7)
   assert.equal(positiveInteger(0, 3), 3)
   assert.equal(positiveInteger(undefined, 3), 3)
+})
+
+import {
+  DELIBERATORS, ISOLATION_ARGS, resolvePiInvocation, buildChildArgs, parseJsonlStream,
+  runOnePiChild, piEnvelopeFor, reportPathForPrompt, writeReport, runPiCouncil,
+} from "../adapters/pi/lib/pi-runner.js"
+
+const FAKE_PI = join(repoRoot, "test", "fixtures", "fake-pi")
+
+test("runner declares the deliberator trio and exact isolation args", () => {
+  assert.deepEqual(DELIBERATORS.map((d) => d.sage), ["melchior", "balthasar", "casper"])
+  assert.deepEqual(ISOLATION_ARGS.slice(0, 2), ["--mode", "json"])
+  for (const flag of ["--print", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes", "--no-approve"]) {
+    assert.ok(ISOLATION_ARGS.includes(flag))
+  }
+  const toolsIdx = ISOLATION_ARGS.indexOf("--tools")
+  assert.equal(ISOLATION_ARGS[toolsIdx + 1], "read,grep,find,ls")
+})
+
+test("resolvePiInvocation matches the real Pi invocation shapes and falls back last", () => {
+  const nodeScript = resolvePiInvocation({
+    processArgv: ["/x/node", "/y/cli.mjs"],
+    processExecPath: "/x/node",
+    existsImpl: () => true,
+  })
+  assert.deepEqual(nodeScript, { command: "/x/node", args: ["/y/cli.mjs"] })
+  const standalone = resolvePiInvocation({
+    processArgv: ["/usr/local/bin/pi"],
+    processExecPath: "/usr/local/bin/pi",
+    existsImpl: () => true,
+  })
+  assert.deepEqual(standalone, { command: "/usr/local/bin/pi", args: [] })
+  const bun = resolvePiInvocation({
+    processArgv: ["/usr/local/bin/pi", "/$bunfs/root/pi"],
+    processExecPath: "/usr/local/bin/pi",
+    existsImpl: () => true,
+  })
+  assert.deepEqual(bun, { command: "/usr/local/bin/pi", args: [] })
+  const fallback = resolvePiInvocation({
+    processArgv: ["/x/node", "/missing/cli.mjs"],
+    processExecPath: "/x/node",
+    existsImpl: () => false,
+  })
+  assert.deepEqual(fallback, { command: "pi", args: [] })
+})
+
+test("buildChildArgs has one precise order ending with model then thinking; prompt is separate argv last", () => {
+  const args = buildChildArgs({ model: "p/m", thinking: "ultra" })
+  const toolsIdx = args.indexOf("--tools")
+  assert.deepEqual(args.slice(0, toolsIdx), ["--mode", "json", "--print", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes"])
+  assert.deepEqual(args.slice(toolsIdx, toolsIdx + 2), ["--tools", "read,grep,find,ls"])
+  assert.equal(args[toolsIdx + 2], "--no-approve")
+  assert.deepEqual(args.slice(-4), ["--model", "p/m", "--thinking", "medium"])
+  assert.deepEqual(buildChildArgs({ model: "p/m", thinking: "high" }).slice(-4), ["--model", "p/m", "--thinking", "high"])
+  assert.deepEqual(buildChildArgs({ model: "p/m", thinking: "off" }).slice(-4), ["--model", "p/m", "--thinking", "off"])
+  // The child prompt is always the last element of the FULL spawned argv (added by runOnePiChild).
+  assert.deepEqual(
+    [...resolvePiInvocation({ processArgv: [], processExecPath: "/x/node", existsImpl: () => false }).args, ...buildChildArgs({ model: "p/m", thinking: "low" }), "PROMPT TEXT"].slice(-1),
+    ["PROMPT TEXT"],
+  )
+})
+
+test("parseJsonlStream selects the final assistant message and its usage", () => {
+  const header = JSON.stringify({ type: "session", id: "abc", timestamp: "t", cwd: "/p" })
+  const first = JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", text: "draft", usage: { input: 1, output: 2 } } })
+  const last = JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", text: "final", usage: { input: 10, output: 20 } } })
+  const parsed = parseJsonlStream([header, first, last].join("\n"))
+  assert.equal(parsed.text, "final")
+  assert.equal(parsed.usage.output, 20)
+  assert.throws(() => parseJsonlStream('{"type":"message_start"}'), /missing_final_response/)
+  assert.throws(() => parseJsonlStream("not-json"), /invalid_json/)
+})
+
+test("runPiCouncil launches three concurrent isolated children from the captured cwd", async () => {
+  const project = await mkdtemp(join(tmpdir(), "magi-pi-runner-"))
+  const councilDir = join(project, ".open_magi", "magi-log", "round-001", "council-001")
+  await mkdir(councilDir, { recursive: true })
+  await mkdir(join(project, "role-prompts"), { recursive: true })
+  const promptPath = join(councilDir, "prompt.md")
+  await fsWriteFile(promptPath, "# Council prompt", "utf8")
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await fsWriteFile(join(project, "role-prompts", `${sage}.md`), `You are deliberator-${sage}. Read-only.`, "utf8")
+  }
+  // Concurrency proof: each child blocks on its barrier file; barriers are only
+  // created once ALL THREE children have spawned. If children were sequential,
+  // the first child would never see its barrier and the test would time out.
+  const barrierDir = await mkdtemp(join(tmpdir(), "magi-pi-barrier-"))
+  const barrierDirEnv = { MAGI_BARRIER: join(barrierDir, "barrier") }
+  const spawned = { cwd: [], flags: [], count: 0 }
+  const registered = { bodies: [] }
+  const results = await runPiCouncil({
+    projectRoot: project,
+    promptPath,
+    round: 1,
+    pass: 1,
+    mode: "decision",
+    roleModels: {
+      melchior: { model: "p/m1", thinking: "high" },
+      balthasar: { model: "p/m2", thinking: "low" },
+      casper: { model: "p/m3", thinking: "off" },
+    },
+    runnerBin: FAKE_PI,
+    rolePromptRoot: join(project, "role-prompts"),
+    childEnv: barrierDirEnv,
+    childTracker: { add: (child) => registered.bodies.push(child.pid ?? null) },
+    spawnLike: (command, args, options) => {
+      spawned.cwd.push(options.cwd)
+      spawned.flags.push(args)
+      spawned.count += 1
+      // Release the trio ONLY after all three have spawned: a sequential
+      // implementation would hang since no child may finish before then.
+      if (spawned.count === 3) {
+        for (const sage of ["melchior", "balthasar", "casper"]) {
+          fsWriteFile(`${barrierDirEnv.MAGI_BARRIER}-${sage}`, "go", "utf8").catch(() => {})
+        }
+      }
+      return spawn(command, args, options)
+    },
+  })
+  assert.equal(spawned.count, 3, "all three children spawned before any could complete (barrier waited for the trio)")
+  assert.deepEqual([...results.results.map((r) => r.sage)].sort(), ["balthasar", "casper", "melchior"])
+  assert.deepEqual([...spawned.cwd].sort(), [project, project, project])
+  for (const flags of spawned.flags) {
+    assert.ok(flags.includes("--no-approve"))
+    assert.ok(flags.includes("read,grep,find,ls"))
+    assert.ok(flags.includes("--no-session"))
+    assert.equal(flags.at(-1).includes("COUNCIL PROMPT"), true, "prompt is the final argv element")
+  }
+  assert.ok(results.ok)
+  for (const result of results.results) {
+    assert.equal(result.ok, true)
+    assert.equal(result.failureType, null)
+    const report = await readFile(join(councilDir, `report-${result.sage}.md`), "utf8")
+    assert.match(report, /^report_source: pi_json$/m)
+    assert.match(report, /^status: ok$/m)
+    assert.match(report, /^failure_type: none$/m)
+    assert.match(report, /^usage_output_tokens: 22$/m)
+    assert.doesNotMatch(report, /process\.env|PATH=|credentials|api[_-]?key/i)
+  }
+})
+
+test("runPiCouncil maps invalid JSON output to pi_json_failed hard_error without success mimicry", async () => {
+  const project = await mkdtemp(join(tmpdir(), "magi-pi-garbage-"))
+  const councilDir = join(project, ".open_magi", "magi-log", "round-003", "council-002")
+  await mkdir(councilDir, { recursive: true })
+  await mkdir(join(project, "role-prompts"), { recursive: true })
+  const promptPath = join(councilDir, "prompt.md")
+  await fsWriteFile(promptPath, "# Council prompt", "utf8")
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await fsWriteFile(join(project, "role-prompts", `${sage}.md`), `You are deliberator-${sage}. Read-only.`, "utf8")
+  }
+  const results = await runPiCouncil({
+    projectRoot: project,
+    rolePromptRoot: join(project, "role-prompts"),
+    promptPath,
+    round: 3,
+    pass: 2,
+    mode: "decision",
+    roleModels: {
+      melchior: { model: "p/m1", thinking: "low" },
+      balthasar: { model: "p/m2", thinking: "low" },
+      casper: { model: "p/m3", thinking: "low" },
+    },
+    runnerBin: FAKE_PI,
+    childEnv: { MAGI_FAKE_FAIL: "garbage" },
+  })
+  assert.equal(results.halt, true)
+  for (const result of results.results) {
+    assert.equal(result.ok, false)
+    assert.equal(result.failureType, "hard_error")
+    assert.equal(result.piFailureType, "invalid_json")
+    const report = await readFile(join(councilDir, `report-${result.sage}.md`), "utf8")
+    assert.match(report, /^report_source: pi_json_failed$/m)
+    assert.match(report, /^status: hard_error$/m)
+    assert.match(report, /^pi_failure_subtype: invalid_json$/m)
+    assert.match(report, /^stance: needs_evidence$/m)
+    assert.doesNotMatch(report, /^status: ok$/m)
+  }
+})
+
+test("timeouts, aborts, spawns, and nonzero exits map to the failure contract", async () => {
+  const slowBin = join(await mkdtemp(join(tmpdir(), "magi-pi-slow-")), "slow-pi")
+  await fsWriteFile(slowBin, [
+    "#!/usr/bin/env node",
+    "setTimeout(() => process.stdout.write('late'), 60000)",
+  ].join("\n"), { mode: 0o755 })
+  const crashBin = join(dirname(slowBin), "crash-pi")
+  await fsWriteFile(crashBin, [
+    "#!/usr/bin/env node",
+    "process.stderr.write('boom');process.exit(3)",
+  ].join("\n"), { mode: 0o755 })
+  const slow = piEnvelopeFor(await runOnePiChild({
+    invocation: { command: slowBin, args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 60,
+  }))
+  assert.equal(slow.status, "timeout")
+  assert.equal(slow.failureType, "timeout")
+  assert.equal(slow.stance, "needs_evidence")
+  assert.equal(slow.blocking, "yes")
+  const crash = piEnvelopeFor(await runOnePiChild({
+    invocation: { command: crashBin, args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 5_000,
+  }))
+  assert.equal(crash.status, "hard_error")
+  assert.equal(crash.nativeType, "nonzero_exit")
+  const abortController = new AbortController()
+  const abortBin = join(dirname(slowBin), "hang-pi")
+  await fsWriteFile(abortBin, [
+    "#!/usr/bin/env node",
+    "setInterval(() => {}, 1000)",
+  ].join("\n"), { mode: 0o755 })
+  const abortPromise = runOnePiChild({
+    invocation: { command: abortBin, args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 60_000, signal: abortController.signal,
+  })
+  setTimeout(() => abortController.abort(), 50)
+  const aborted = piEnvelopeFor(await abortPromise)
+  assert.equal(aborted.nativeType, "aborted")
+  assert.equal(aborted.failureType, "hard_error")
+  const spawnFail = piEnvelopeFor(await runOnePiChild({
+    invocation: { command: join(tmpdir(), "definitely-missing-pi"), args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 5_000,
+  }))
+  assert.equal(spawnFail.nativeType, "spawn_error")
+})
+
+test("runner handles sync-throw spawnFn, async error events, and pre-aborted signals", async () => {
+  const syncThrow = await runOnePiChild({
+    invocation: { command: "ignored", args: [] },
+    args: [], cwd: "/anywhere", promptText: "hi", timeoutMs: 5_000,
+    spawnFn: () => { throw new Error("cannot spawn from sync fn") },
+  })
+  assert.equal(syncThrow.ok, false)
+  assert.equal(syncThrow.piFailureType, "spawn_error")
+  assert.match(syncThrow.error, /cannot spawn from sync/)
+  assert.notEqual(syncThrow.startedAtIso, null)
+  assert.notEqual(syncThrow.endedAtIso, null)
+
+  const { EventEmitter } = await import("node:events")
+  const asyncError = await runOnePiChild({
+    invocation: { command: "ignored", args: [] },
+    args: [], cwd: "/x", promptText: "hi", timeoutMs: 5_000,
+    spawnFn: () => {
+      const fake = new EventEmitter()
+      fake.stdout = undefined
+      fake.stderr = undefined
+      const fakeChild = Object.assign(fake, { kill: () => {}, exitCode: null, killed: false })
+      setTimeout(() => fake.emit("error", new Error("cannot spawn from async")), 10)
+      return fakeChild
+    },
+  })
+  assert.equal(asyncError.ok, false)
+  assert.equal(asyncError.piFailureType, "spawn_error")
+  assert.match(asyncError.error, /cannot spawn from async/)
+
+  const preAbortBin = join(await mkdtemp(join(tmpdir(), "magi-pi-preabort-")), "hang-pi")
+  await fsWriteFile(preAbortBin, [
+    "#!/usr/bin/env node",
+    "setInterval(() => {}, 1000)",
+  ].join("\n"), { mode: 0o755 })
+  const preAborted = new AbortController()
+  preAborted.abort()
+  const preAbortedRecord = await runOnePiChild({
+    invocation: { command: preAbortBin, args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 20_000, signal: preAborted.signal,
+  })
+  assert.equal(preAbortedRecord.aborted, true)
+  assert.equal(piEnvelopeFor(preAbortedRecord).nativeType, "aborted")
+})
+
+test("model/auth/provider failures classify as model_unavailable, not nonzero_exit", async () => {
+  const authDir = await mkdtemp(join(tmpdir(), "magi-pi-auth-"))
+  const authBin = join(authDir, "authfail-pi")
+  await fsWriteFile(authBin, [
+    "#!/usr/bin/env node",
+    "process.stderr.write('Error: invalid_api_key (unauthorized 401): provider rejected the credentials');process.exit(3)",
+  ].join("\n"), { mode: 0o755 })
+  const authRecord = await runOnePiChild({
+    invocation: { command: authBin, args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 5_000,
+  })
+  const envelope = piEnvelopeFor(authRecord)
+  assert.equal(envelope.status, "hard_error")
+  assert.equal(envelope.nativeType, "model_unavailable")
 })

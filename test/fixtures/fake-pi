@@ -1,0 +1,34 @@
+#!/usr/bin/env node
+import { existsSync } from "node:fs"
+const promptText = process.argv[process.argv.length - 1]
+const sageMatch = /deliberator-(melchior|balthasar|casper)/.exec(promptText)
+const sage = sageMatch ? sageMatch[1] : process.env.MAGI_FAKE_SAGE
+const delay = Number(process.env.MAGI_FAKE_DELAY_MS ?? "0")
+const fail = process.env.MAGI_FAKE_FAIL ?? "none"
+const barrier = process.env.MAGI_BARRIER
+if (barrier) {
+  const deadline = Date.now() + Number(process.env.MAGI_BARRIER_TIMEOUT_MS ?? "15000")
+  while (!existsSync(`${barrier}-${sage}`) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+function emit() {
+  if (fail === "timeout") process.exit(124)
+  if (fail === "hard_error") { process.stderr.write("boom"); process.exit(3) }
+  if (fail === "garbage") { process.stdout.write("this is not json line one\nnot json two\n"); process.exit(0) }
+  if (fail === "model_auth") { process.stderr.write("Error: invalid_api_key (unauthorized 401): provider rejected the credentials"); process.exit(3) }
+  process.stdout.write(JSON.stringify({
+    type: "session", id: "fake", timestamp: new Date().toISOString(), cwd: process.cwd(),
+  }) + "\n")
+  process.stdout.write(JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      stopReason: "stop",
+      text: `REPORT for ${sage}`,
+      usage: { input: 11, output: 22, totalTokens: 33, cost: { total: 0.01 } },
+    },
+  }) + "\n")
+}
+if (delay > 0) setTimeout(emit, delay)
+else emit()
