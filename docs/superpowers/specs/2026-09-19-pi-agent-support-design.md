@@ -102,7 +102,10 @@ consume it without changing their public behavior and tests demonstrate parity.
 
 The root `package.json` gains a Pi manifest pointing at the Pi extension and
 skill directories. The published file list also includes `adapters/pi/`, so
-both Git and npm package layouts contain the declared resources.
+both Git and npm package layouts contain the declared resources. The root
+`npm test` script must explicitly include `test/pi-adapter.test.mjs` alongside
+the existing test files, so `npm test` and CI run the Pi tests as part of the
+full repository suite rather than relying on focused invocation.
 
 Before the feature is pushed, development installation is local:
 
@@ -114,8 +117,16 @@ pi install .
 After the feature is available remotely, the documented installation is:
 
 ```bash
-pi install git:github.com/ladiossoop5star/open_magi
+OPEN_MAGI_SKIP_POSTINSTALL=1 pi install git:github.com/ladiossoop5star/open_magi
 ```
+
+The `OPEN_MAGI_SKIP_POSTINSTALL=1` prefix is mandatory for remote (Git) installs
+because Pi runs `npm install` inside the Git checkout, which would execute the
+repository root `postinstall`. That postinstall exists to configure OpenCode,
+not Pi, so a remote Pi install must skip it to avoid writing OpenCode template
+and skill files into the user's OpenCode configuration. Local path installs
+remain as designed above; no change to the root `postinstall` is part of this
+spec.
 
 The Pi adapter uses host-provided Pi extension APIs and schema types. It must not
 bundle a second copy of the Pi runtime.
@@ -129,6 +140,13 @@ All supported entry points converge on one activation path:
 - natural language that explicitly asks to use Magi, such as `use Magi to debug
   this`, `run this with Magi`, `\u8acb\u4f7f\u7528 Magi \u8655\u7406`, or
   `\u7528 magi skill \u4f86 debug`
+
+The Chinese request examples in this section are written in ASCII `\uXXXX`
+JavaScript source notation, matching how they appear in this repository's
+JavaScript sources and tests. They are not literal document text:
+implementations and tests must decode them and match against the actual runtime
+strings. The repository hygiene rules only permit literal Han characters in
+`README.zh-TW.md`.
 
 The `input` event runs before skill expansion. Natural-language activation is
 transformed into `/skill:magi <original request>`, preserving the user's full
@@ -181,14 +199,30 @@ The `magi_council` input is restricted to:
   "promptPath": ".open_magi/magi-log/round-001/council-001/prompt.md",
   "round": 1,
   "pass": 1,
-  "mode": "recon"
+  "mode": "decision"
 }
 ```
 
-`mode` is one of `recon`, `council`, or `review`. Before dispatch, the tool
+`mode` uses the canonical Magi mode vocabulary: `recon`, `decision`, or
+`review`. There is no `council` mode; `council-PPP` is the artifact-family
+directory that `decision` mode produces. The exact path/mode invariants follow
+the existing artifact contract:
+
+- `decision` reports live at `round-RRR/council-PPP/prompt.md` and require a
+  positive `pass`.
+- `recon` reports live at `round-RRR/recon-PPP/prompt.md` and require a
+  positive `pass`.
+- `review` reports live at `round-RRR/review-001/prompt.md`; `review` has no
+  pass parameter and `pass` must be absent.
+
+The tool must reject any request whose `promptPath` does not resolve to the
+artifact location mandated by its `mode`, `round`, and `pass`.
+
+Before dispatch, the tool
 validates the active transport, controller mode, project root, current state,
 phase, round/pass, and that the prompt resolves to the expected current Magi
-artifact location. It rejects traversal and stale-pass requests.
+artifact location. It rejects traversal and stale-pass requests. The
+path/mode invariant above is part of this validation.
 
 The extension uses Pi lifecycle events as follows:
 
@@ -217,6 +251,12 @@ Project configuration:
 ```text
 .pi/open-magi.json
 ```
+
+`.pi/open-magi.json` is only the official Pi default example. The adapter must
+locate the project configuration directory by importing Pi's exported
+`CONFIG_DIR_NAME` rather than hardcoding `.pi`, so rebranded Pi distributions
+resolve the same file. The `~/.pi/agent/` user path follows the same rule via
+Pi's user configuration root.
 
 Schema version 1 is strict:
 
@@ -282,7 +322,12 @@ equivalent restrictions:
 --no-prompt-templates
 --no-themes
 --tools read,grep,find,ls
+--no-approve
 ```
+
+`--no-approve` guarantees a child can never surface trust or project-resource
+approval prompts: a headless deliberator has no interactive user to answer
+them, so any resource requiring approval must fail closed instead of hanging.
 
 The selected model and inherited thinking level are passed explicitly. A role
 override that includes a thinking suffix controls that role's thinking level.
@@ -298,7 +343,10 @@ exit status, and bounded diagnostic text. They never include environment dumps,
 credentials, API keys, or authentication material.
 
 The default per-role timeout remains consistent with the other native runners:
-30 minutes. A valid positive `state.json.deliberatorTimeoutMs` overrides it.
+30 minutes. A valid positive `state.json.deliberatorTimeoutMs` overrides it,
+clamped to the existing `HARD_MAX_DELIBERATOR_TIMEOUT_MS` of 60 minutes, so an
+override can only shorten the timeout or extend it up to the same hard maximum
+the other runners enforce.
 Timeout or caller abort sends `SIGTERM`, waits five seconds, then sends
 `SIGKILL` if the process remains alive. All owned children are reaped before the
 tool settles.
@@ -352,10 +400,29 @@ select a Pi built-in provider/model with `/magi-setup`; it never substitutes a
 different model.
 
 Every dispatched role receives either a success report or a normalized failure
-report. If any current role report is not successful, synthesis and verdict
-selection halt according to the existing Magi failure contract. Partial output
-may be retained as bounded diagnostics but never promoted to a successful
-report.
+report. Failure classification aligns with the existing deliberator failure
+contract in `shared/magi/references/deliberation.md`:
+
+- `timeout` maps to the standard report envelope with `status: timeout` and
+  `failure_type: timeout`. It never halts the loop: the timeout report stance
+  is `needs_evidence` with `blocking_objection: yes`, and the pass continues
+  through the existing Deliberator Timeout Gate and Council Pass Gate
+  (first-pass timeouts record a missing direction proposal in synthesis; a
+  second-pass timeout records a veto; two or more timeouts trigger another
+  pass).
+- Every other native runner failure type (`invalid_config`, `spawn_error`,
+  `model_unavailable`, `aborted`, `nonzero_exit`, `invalid_json`,
+  `missing_final_response`) maps to `status: hard_error` and
+  `failure_type: hard_error` in the standard envelope, and blocks according to
+  the existing hard-error contract. The detailed native subtype is preserved,
+  for observability only, in a separate bounded Pi-specific diagnostic field
+  and never changes the envelope vocabulary.
+- Partial output may be retained as bounded diagnostics but never promoted to a
+  successful report.
+
+Configuration validation happens before dispatch. Invalid configuration blocks
+the tool call up front with a clear error and never fabricates role success
+reports, empty reports, or placeholder artifacts.
 
 ## Testing Strategy
 
@@ -418,6 +485,8 @@ report.
   `/magi-setup`, configuration precedence, strict native isolation, supported
   modes, and Herdr bypass in `README.md`, `README.zh-TW.md`, and
   `adapters/pi/README.md`.
+- The `package.json` test script must explicitly list
+  `test/pi-adapter.test.mjs`; verify `npm test` executes the Pi tests.
 - Run focused Pi tests and the complete existing `npm test` suite.
 
 ## Acceptance Criteria
@@ -430,8 +499,10 @@ report.
    isolated, read-only Pi children and writes three valid standard reports.
 4. Per-role user/project model overrides resolve correctly, with absent roles
    inheriting from the active main Pi session.
-5. Invalid configuration, unavailable extension-provider models, timeouts,
-   aborts, malformed output, and process errors halt safely without fallback.
+5. Invalid configuration, unavailable extension-provider models, aborts,
+   malformed output, and process errors fail closed without fallback; timeouts
+   follow the existing Deliberator Timeout Gate and continue through the
+   Council Pass Gate.
 6. Pi lifecycle hooks enforce phase mutation rules, question firewall behavior,
    bounded continuation, and completion verification.
 7. In Herdr mode, no native Pi config or runner path executes and all existing
