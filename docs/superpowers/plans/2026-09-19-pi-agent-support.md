@@ -2477,25 +2477,30 @@ test("magi_council input union validation covers mode/round/pass invariants befo
   assert.equal(validateCouncilInput({ ...base, pass: 1, promptPath: "/etc/passwd" }).ok, false)
 })
 
-test("controller restore recovers custom-entry state and shutdown reaps tracked children", async () => {
+test("no filesystem state -> restore returns null and does NOT start a loop", async () => {
   const controller = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: null })
-  const stateEntry = {
-    type: "custom", customType: "open-magi-controller",
-    data: { active: true, projectRoot: "/p", sessionID: "s", currentRound: 1, currentPhase: "synthesis", mainModel: "m", mainThinking: "low" },
-  }
-  await controller.restore({
-    mode: "tui", cwd: "/p",
-    sessionManager: { getEntries: () => [stateEntry], getSessionId: () => "s" },
-  })
-  assert.deepEqual(controller.state, stateEntry.data)
+  const restore = await controller.restore({ mode: "tui", cwd: "/no-such-project" })
+  assert.equal(restore, null)
+  assert.equal(controller.state, null)
+  assert.equal(controller.session.projectRoot, "/no-such-project")
+})
 
-  const { trackChild } = await import("../adapters/pi/lib/controller.js")
-  const asserts = { reapedA: null, reapedB: null }
-  trackChild({ kill(signal) { asserts.reapedA = signal } })
-  const guarded = { kill() { throw new Error("already reaped") } }
-  trackChild(guarded)
-  await assert.doesNotReject(() => controller.shutdown())
-  assert.equal(asserts.reapedA, "SIGTERM")
+test("registered children are reaped through shutdown; two controllers never interfere", async () => {
+  const { EventEmitter } = await import("node:events")
+  const controller = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: {} })
+  const otherController = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: {} })
+  const child = new EventEmitter()
+  child.exitCode = null
+  child.killed = false
+  child.killedSignals = []
+  child.kill = (signal) => { child.killedSignals.push(signal); if (signal === "SIGTERM") { child.exitCode = 0; child.emit("close", 0) } }
+  controller.registerChild(child)
+  assert.equal(controller.childRegistry.size, 1)
+  assert.equal(otherController.childRegistry.size, 0)
+  await controller.shutdown()
+  assert.equal(child.killedSignals[0], "SIGTERM")
+  assert.equal(controller.childRegistry.size, 0)
+  assert.equal(otherController.childRegistry.size, 0, "shutdown of ONE controller never touches another controller's registry")
 })
 
 test("controller lifecycle reads CURRENT filesystem state, never a stale snapshot", async () => {
