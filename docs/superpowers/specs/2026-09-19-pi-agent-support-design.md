@@ -203,6 +203,16 @@ The `magi_council` input is restricted to:
 }
 ```
 
+The input is a discriminated union on `mode`, not a single object shape. The
+example above is the `decision` variant. The accepted shapes are:
+
+- `decision` requires `pass` to be a positive integer, and `promptPath` must
+  resolve to `round-RRR/council-PPP/prompt.md`.
+- `recon` requires `pass` to be a positive integer, and `promptPath` must
+  resolve to `round-RRR/recon-PPP/prompt.md`.
+- `review` must omit `pass` entirely, and `promptPath` must resolve to
+  `round-RRR/review-001/prompt.md`.
+
 `mode` uses the canonical Magi mode vocabulary: `recon`, `decision`, or
 `review`. There is no `council` mode; `council-PPP` is the artifact-family
 directory that `decision` mode produces. The exact path/mode invariants follow
@@ -214,6 +224,10 @@ the existing artifact contract:
   positive `pass`.
 - `review` reports live at `round-RRR/review-001/prompt.md`; `review` has no
   pass parameter and `pass` must be absent.
+
+A request that does not match its `mode`'s shape — for example a `review`
+request carrying `pass`, or a `decision`/`recon` request missing or
+non-positive `pass` — is rejected as malformed before any state check.
 
 The tool must reject any request whose `promptPath` does not resolve to the
 artifact location mandated by its `mode`, `round`, and `pass`.
@@ -252,11 +266,14 @@ Project configuration:
 .pi/open-magi.json
 ```
 
-`.pi/open-magi.json` is only the official Pi default example. The adapter must
-locate the project configuration directory by importing Pi's exported
-`CONFIG_DIR_NAME` rather than hardcoding `.pi`, so rebranded Pi distributions
-resolve the same file. The `~/.pi/agent/` user path follows the same rule via
-Pi's user configuration root.
+Both literal paths above are examples only. The adapter must derive the user
+configuration path with Pi's exported `getAgentDir()` (which honors
+`PI_CODING_AGENT_DIR` and rebranded runtime behavior, and defaults to
+`~/.pi/agent/`), appending `open-magi.json` to that directory. It must not
+infer the user path from a literal `~/.pi/agent` string. The project path
+follows the same rule: the adapter must locate the project configuration
+directory by importing Pi's exported `CONFIG_DIR_NAME` rather than hardcoding
+`.pi`, so rebranded Pi distributions resolve the same file.
 
 Schema version 1 is strict:
 
@@ -400,29 +417,33 @@ select a Pi built-in provider/model with `/magi-setup`; it never substitutes a
 different model.
 
 Every dispatched role receives either a success report or a normalized failure
-report. Failure classification aligns with the existing deliberator failure
+report. Failure classification distinguishes pre-dispatch validation from
+post-dispatch role failures, aligning with the existing deliberator failure
 contract in `shared/magi/references/deliberation.md`:
 
-- `timeout` maps to the standard report envelope with `status: timeout` and
-  `failure_type: timeout`. It never halts the loop: the timeout report stance
-  is `needs_evidence` with `blocking_objection: yes`, and the pass continues
-  through the existing Deliberator Timeout Gate and Council Pass Gate
-  (first-pass timeouts record a missing direction proposal in synthesis; a
-  second-pass timeout records a veto; two or more timeouts trigger another
-  pass).
-- Every other native runner failure type (`invalid_config`, `spawn_error`,
+- `invalid_config` is a pre-dispatch controller/tool hard error. Configuration
+  validation happens before any role is dispatched, so `invalid_config` blocks
+  the state and returns a clear diagnostic. It creates no role report and no
+  standard envelope — never a fabricated success report, empty report, or
+  placeholder artifact. Its details are conveyed only in the returned
+  diagnostic.
+- Only failures after a role was dispatched map to that role's standard report
+  envelope. `timeout` maps to the standard report envelope with
+  `status: timeout` and `failure_type: timeout`. It never halts the loop: the
+  timeout report stance is `needs_evidence` with `blocking_objection: yes`, and
+  the pass continues through the existing Deliberator Timeout Gate and Council
+  Pass Gate (first-pass timeouts record a missing direction proposal in
+  synthesis; a second-pass timeout records a veto; two or more timeouts trigger
+  another pass).
+- Every other post-dispatch native runner failure type (`spawn_error`,
   `model_unavailable`, `aborted`, `nonzero_exit`, `invalid_json`,
   `missing_final_response`) maps to `status: hard_error` and
-  `failure_type: hard_error` in the standard envelope, and blocks according to
-  the existing hard-error contract. The detailed native subtype is preserved,
-  for observability only, in a separate bounded Pi-specific diagnostic field
-  and never changes the envelope vocabulary.
+  `failure_type: hard_error` in that role's standard envelope, and blocks
+  according to the existing hard-error contract. The detailed native subtype is
+  preserved, for observability only, in a separate bounded Pi-specific
+  diagnostic field and never changes the envelope vocabulary.
 - Partial output may be retained as bounded diagnostics but never promoted to a
   successful report.
-
-Configuration validation happens before dispatch. Invalid configuration blocks
-the tool call up front with a clear error and never fabricates role success
-reports, empty reports, or placeholder artifacts.
 
 ## Testing Strategy
 
@@ -442,6 +463,10 @@ reports, empty reports, or placeholder artifacts.
 - Verify an untrusted project file is not read.
 - Verify malformed JSON, unknown fields/roles, unsupported versions, empty
   selectors, and invalid selector shapes fail closed.
+- Verify invalid configuration blocks dispatch up front and no role report or
+  envelope is written.
+- Verify the user path is derived with `getAgentDir()` and the project path
+  with `CONFIG_DIR_NAME`, including under an overridden `PI_CODING_AGENT_DIR`.
 - Verify `/magi-setup` creates and atomically updates each scope, preserves
   unchanged roles, clears overrides, and applies owner-only user-file modes.
 
@@ -465,6 +490,9 @@ reports, empty reports, or placeholder artifacts.
 - Verify `agent_settled` continuation, approved and denied questions,
   false-completion repair, completion silence, stale locks, and no-progress
   limits.
+- Verify `magi_council` rejects union-shape mismatches — a `review` request
+  carrying `pass`, or a `decision`/`recon` request missing or non-positive
+  `pass` — before any state check.
 
 ### Herdr Regression
 
@@ -499,10 +527,10 @@ reports, empty reports, or placeholder artifacts.
    isolated, read-only Pi children and writes three valid standard reports.
 4. Per-role user/project model overrides resolve correctly, with absent roles
    inheriting from the active main Pi session.
-5. Invalid configuration, unavailable extension-provider models, aborts,
-   malformed output, and process errors fail closed without fallback; timeouts
-   follow the existing Deliberator Timeout Gate and continue through the
-   Council Pass Gate.
+5. Invalid configuration blocks dispatch before any role report is written;
+   unavailable extension-provider models, aborts, malformed output, and
+   process errors fail closed without fallback; timeouts follow the existing
+   Deliberator Timeout Gate and continue through the Council Pass Gate.
 6. Pi lifecycle hooks enforce phase mutation rules, question firewall behavior,
    bounded continuation, and completion verification.
 7. In Herdr mode, no native Pi config or runner path executes and all existing
