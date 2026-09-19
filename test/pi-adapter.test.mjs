@@ -721,3 +721,758 @@ test("model/auth/provider failures classify as model_unavailable, not nonzero_ex
   assert.equal(envelope.status, "hard_error")
   assert.equal(envelope.nativeType, "model_unavailable")
 })
+
+import {
+  CONTINUE_TEXT_PI, parseQuestionRequest, isQuestionAllowed, questionSha256,
+  questionDeniedText, isStaleLock, enforceNoProgressLimit, shouldContinue,
+  evaluateSettledAction, expectedCouncilPromptPath, validateCouncilInput,
+  currentCouncilRoundArtifacts, readMagiState, writeMagiState,
+  createNativeController, consumeCouncilRequest,
+} from "../adapters/pi/lib/controller.js"
+import { createHash } from "node:crypto"
+import { writeFileSync, existsSync, rmSync } from "node:fs"
+import { spawn as fsSpawn } from "node:child_process"
+
+test("CONTINUE_TEXT_PI matches the Magi continuation contract", () => {
+  assert.match(CONTINUE_TEXT_PI, /^(\[magi\] Continue the active deliberation loop\.[\s\S]*state\.json[\s\S]*Do not ask procedural questions)/)
+})
+
+test("parseQuestionRequest and the firewall whitelist produce deny/allow/question decisions", async () => {
+  const state = { active: true, currentPhase: "execution", currentRound: 2, sessionID: "s", projectRoot: "/p" }
+  const denied = parseQuestionRequest("classification: procedural\nquestion: should I write reports?")
+  assert.equal(isQuestionAllowed(state, denied), false)
+
+  const questionRequest = parseQuestionRequest(
+    "classification: execution_blocker\n"
+    + "question: the fixture file tests/fixture/a.txt is deleted by the build; re-create or restore from git?"
+    + "\nphase: execution",
+  )
+  assert.equal(isQuestionAllowed(state, questionRequest), true)
+
+  const wrongRound = isQuestionAllowed(
+    { ...state, currentRound: 3 },
+    parseQuestionRequest("classification: goal_ambiguity\nquestion: which goal?\nphase: goal_definition"),
+  )
+  assert.equal(wrongRound, false)
+})
+
+test("questionDeniedText redacts sensitive herdr raw commands and hashes the question", () => {
+  const request = {
+    classification: "execution_blocker",
+    question: "pwd",
+    sensitive: "herdr_raw_command",
+    commands_or_files_checked: ["sed secret /proj/f"],
+  }
+  const text = questionDeniedText(request)
+  assert.ok(!text.includes("pwd"))
+  assert.match(text, /question_sha256: [0-9a-f]{64}/)
+  assert.equal(questionSha256("pwd"), createHash("sha256").update("pwd").digest("hex"))
+  assert.match(text, /must self-answer from local context and continue/)
+})
+
+test("stale after inFlightSince plus staleLockMs", () => {
+  const now = Date.now()
+  assert.equal(
+    isStaleLock({ inFlight: true, inFlightSince: new Date(now - 31 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }, now),
+    true,
+  )
+  assert.equal(
+    isStaleLock({ inFlight: true, inFlightSince: new Date(now - 10 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }, now),
+    false,
+  )
+  assert.equal(isStaleLock({ inFlight: false }, now), false)
+})
+
+test("no-progress limit blocks at five consecutive turns", async () => {
+  const writes = []
+  const state = {
+    active: true, consecutiveNoProgress: 0, history: [
+      { progress: false }, { progress: false }, { progress: false }, { progress: false }, { progress: false },
+    ], lastError: null, currentPhase: "synthesis",
+  }
+  await enforceNoProgressLimit(state, { writeState: async (_root, next) => writes.push(next), nowIso: "TIMESTAMP" })
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].active, false)
+  assert.equal(writes[0].currentPhase, "blocked")
+  assert.match(writes[0].lastError, /no progress limit reached at TIMESTAMP: consecutiveNoProgress=5/)
+})
+
+test("shouldContinue honors stale locks, no-progress, and herdr-owned turns", async () => {
+  const directory = "/p"
+  const state = {
+    active: true, sessionID: "s", projectRoot: "/p", currentPhase: "synthesis", inFlight: false,
+    needsContinue: false, consecutiveNoProgress: 0, lastError: null, history: [], currentRound: 1, maxDeliberationPasses: 3,
+  }
+  const result = await shouldContinue(state, { event: { type: "session.idle", properties: { sessionID: "s" } } }, directory, Date.now())
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.recover, true)
+  const herdr = await shouldContinue(
+    { ...state, activeDeliberators: { melchior: { transport: "herdr", status: "running" } }, inFlight: true, inFlightSince: new Date().toISOString() },
+    { event: { type: "session.idle", properties: { sessionID: "s" } } }, directory, Date.now(),
+  )
+  assert.equal(herdr.ok, true)
+  assert.equal(herdr.recover, false)
+})
+
+test("state file without mainModel still dispatches; session metadata carries the model capture", async () => {
+  // The shared Fatima workspace carries HERDR_ENV=1; the dispatch test below
+  // explicitly exercises the NON-Herdr transport path.
+  const herdrOriginal = process.env.HERDR_ENV
+  process.env.HERDR_ENV = "0"
+  // The state file deliberately holds NO mainModel/mainThinking. Role models
+  // must come from the session-local metadata captured in restore(ctx, {...}).
+  const calls = { runCalls: 0, seenRoleModels: null, loadedWith: null }
+  const pi = fakePi()
+  const resolveCalls = []
+  // The live state file holds NO mainModel fields at all.
+  const project = await mkdtemp(join(tmpdir(), "magi-state-less-"))
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(join(logDir, "state.json"), JSON.stringify({
+    active: true, currentRound: 1, currentPhase: "parallel_deliberation",
+    currentCouncilMode: "review", maxDeliberationPasses: 3, schemaVersion: 2,
+  }), "utf8")
+  const modelConfig = {
+    loadModelConfig: async (params) => { calls.loadedWith = params; return { ok: true, user: null, project: null } },
+    resolveRoleModels: (mainModel, mainThinking, user, project) => {
+      resolveCalls.push([mainModel, mainThinking, user, project])
+      return {
+        melchior: { model: `resolved:${mainModel}:${mainThinking}`, thinking: mainThinking ?? "low" },
+        balthasar: { model: "b/f", thinking: "low" },
+        casper: { model: "c/f", thinking: "low" },
+      }
+    },
+    userModelConfigPath: () => "/u/open-magi.json",
+    projectModelConfigPath: (root) => `${root}/.pi/open-magi.json`,
+    writeModelConfig: async () => {},
+  }
+  const controller = createNativeController({ pi, modelConfig })
+  // session_start capture (refresh pattern from Task 8 impl): the Pi API surfaces
+  // (pi.getThinkingLevel() + ctx.model) have already delivered the session values.
+  await controller.restore({ mode: "tui", cwd: project, model: { id: "provider/main" } }, { mainModel: "provider/m2", thinkingLevel: "high" })
+  assert.equal(controller.session.mainModel, "provider/m2")
+  assert.equal(controller.session.mainThinking, "high")
+  assert.equal(controller.session.projectRoot, project)
+  const promptPath = join(project, ".open_magi", "magi-log", "round-001", "review-001", "prompt.md")
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, "# review prompt", "utf8")
+  const outcome = await consumeCouncilRequest(controller, {
+    projectRoot: project,
+    promptPath,
+    round: 1, mode: "review", isProjectTrusted: true,
+    runner: (options) => {
+      calls.runCalls += 1
+      calls.seenRoleModels = options.roleModels
+      return { ok: true, halt: false, haltReason: null, hardErrors: [], results: [] }
+    },
+  })
+  assert.equal(outcome.ok, true)
+  assert.equal(calls.runCalls, 1)
+  assert.equal(resolveCalls.length, 1)
+  assert.deepEqual(resolveCalls[0], ["provider/m2", "high", null, null])
+  process.env.HERDR_ENV = herdrOriginal
+})
+
+test("two controllers keep fully isolated child registries; registerChild removes on close", async () => {
+  const { EventEmitter } = await import("node:events")
+  const makeFakeChild = () => {
+    const child = new EventEmitter()
+    child.exitCode = null
+    child.killed = false
+    child.killedSignals = []
+    child.kill = (signal) => {
+      child.killedSignals.push(signal)
+      if (signal === "SIGTERM") { child.exitCode = 0; child.emit("close", 0) }
+    }
+    return child
+  }
+  const modelConfigStub = {}
+  const a = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: modelConfigStub })
+  const b = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: modelConfigStub })
+  const childA = a.registerChild(makeFakeChild())
+  assert.equal(a.childRegistry.size, 1)
+  assert.equal(b.childRegistry.size, 0, "second controller registry never touched")
+  childA.kill("SIGTERM") // close escalation removes it from ONLY controller a's registry
+  assert.equal(a.childRegistry.size, 0, "registerChild removes the child when the close event fires")
+  assert.equal(b.childRegistry.size, 0)
+})
+
+test("shutdown kills and reaps live children; SIGKILL fallback and empty registry resolve", async () => {
+  const controller = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: {} })
+  // Empty registry: resolves immediately.
+  await assert.doesNotReject(() => controller.shutdown())
+  const closeDeferrer = {}
+  const fake = {
+    exitCode: null, killed: false, killedSignals: [],
+    kill(signal) { this.killedSignals.push(signal) },
+    once(event, fn) { if (event === "close") closeDeferrer.fire = () => { fn(0) } },
+  }
+  controller.registerChild(fake)
+  const promise = controller.shutdown({ killAfterMs: 40 })
+  let resolved = false
+  promise.then(() => { resolved = true })
+  await new Promise((r) => setTimeout(r, 10))
+  assert.deepEqual(fake.killedSignals.slice(0, 1), ["SIGTERM"])
+  assert.equal(resolved, false, "shutdown must WAIT for the reaped close")
+  closeDeferrer.fire()
+  await promise
+  assert.equal(controller.childRegistry.size, 0)
+  // SIGKILL fallback fires after killAfterMs when the child ignores SIGTERM.
+  // SIGKILL fallback fires after killAfterMs when the child ignores SIGTERM.
+  const stubborn = {
+    exitCode: null, killed: false, killedSignals: [], closeListeners: [],
+    once(event, fn) { if (event === "close") this.closeListeners.push(fn) },
+    kill(signal) { this.killedSignals.push(signal); if (signal === "SIGKILL") { this.exitCode = 137; this.closeListeners.forEach((fn) => fn(137)) } },
+  }
+  controller.registerChild(stubborn)
+  await controller.shutdown({ killAfterMs: 40 })
+  assert.ok(stubborn.killedSignals.includes("SIGKILL"), "SIGKILL fallback must fire after killAfterMs")
+  assert.equal(controller.childRegistry.size, 0, "stubborn child removed via the SIGKILL close")
+})
+
+test("no-progress limit reached: blocked state persists and NOTHING is sent", async () => {
+  const project = await mkdtemp(join(tmpdir(), "magi-no-progress-"))
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(join(logDir, "state.json"), JSON.stringify({
+    active: true, projectRoot: project, sessionID: "s", currentRound: 1, currentPhase: "synthesis",
+    consecutiveNoProgress: 0,
+    history: [{ progress: false }, { progress: false }, { progress: false }, { progress: false }, { progress: false }],
+  }), "utf8")
+  const sent = []
+  const pi = { sendUserMessage: async (content) => { sent.push(content) }, appendEntry: () => {} }
+  const controller = createNativeController({ pi, modelConfig: null })
+  await controller.settled({ mode: "tui", cwd: project, ui: fakeUi({ answers: [] }) })
+  assert.equal(sent.length, 0, "no continuation when the no-progress limit fires")
+  const blocked = readMagiState(project)
+  assert.equal(blocked.active, false)
+  assert.equal(blocked.currentPhase, "blocked")
+  assert.match(blocked.lastError, /no progress limit reached/)
+})
+
+test("approved question shows the true question, sends the answer back, and consumes the artifact", async () => {
+  const project = await mkdtemp(join(tmpdir(), "magi-question-"))
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(join(logDir, "state.json"), JSON.stringify({
+    active: true, projectRoot: project, sessionID: "s", currentRound: 2, currentPhase: "execution",
+    currentDeliberationPass: 2, maxDeliberationPasses: 3, schemaVersion: 2,
+  }), "utf8")
+  const requestText = "classification: execution_blocker\nquestion: fixture tests/fixture/a.txt was deleted; re-create it?\nphase: execution"
+  const requestPath = join(logDir, "question-request.txt")
+  await writeFile(requestPath, requestText, "utf8")
+  const sent = []
+  const uiQuestions = []
+  const pi = { sendUserMessage: async (content) => { sent.push(content) }, appendEntry: () => {} }
+  const controller = createNativeController({ pi, modelConfig: null })
+  const ctx = {
+    mode: "tui", cwd: project, ui: fakeUi({ asks: uiQuestions, answers: ["From docs: re-run fixture setup then continue"] }),
+  }
+  await controller.settled(ctx)
+  assert.equal(uiQuestions.length, 1)
+  assert.match(uiQuestions[0], /a\.txt was deleted;/)
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /question answered by the user: From docs: re-run fixture setup then continue/)
+  await assert.rejects(() => readFile(requestPath, "utf8"), /no such file|enoent/i)
+})
+test("evaluateSettledAction performs exactly one bounded action", async () => {
+  const emptyQuestionFile = async () => null
+  const quiet = { active: false, currentPhase: "complete", projectRoot: "/p" }
+  assert.equal((await evaluateSettledAction(quiet, { readQuestionRequestImpl: emptyQuestionFile })).kind, "none")
+
+  const continuing = {
+    active: true, sessionID: "s", projectRoot: "/p", currentPhase: "synthesis", currentRound: 2,
+    inFlight: true, inFlightSince: new Date().toISOString(),
+    currentCouncilMode: "decision", currentDeliberationPass: 2, maxDeliberationPasses: 3, needsContinue: false,
+  }
+  const action = await evaluateSettledAction(continuing, {
+    readQuestionRequestImpl: emptyQuestionFile,
+    existsImpl: () => true, nowMs: Date.now(),
+  })
+  assert.equal(action.kind, "continue")
+
+  const questionAction = await evaluateSettledAction(continuing, {
+    readQuestionRequestImpl: async () => null,
+    existsImpl: (p) => !p.endsWith("council-001/report-melchior.md"),
+    nowMs: Date.now(),
+  })
+  assert.equal(questionAction.kind, "corrective")
+  assert.match(questionAction.text, /missing required artifacts/)
+
+  const deniedAction = await evaluateSettledAction(continuing, {
+    readQuestionRequestImpl: async () => ({ classification: "procedural", question: "should I write reports?" }),
+    existsImpl: () => true, nowMs: Date.now(),
+  })
+  assert.equal(deniedAction.kind, "question_denied")
+  assert.match(deniedAction.text, /Do not ask the user/)
+})
+
+test("magi_council input union validation covers mode/round/pass invariants before state checks", () => {
+  const base = { projectRoot: "/p", round: 1, mode: "decision" }
+  assert.equal(validateCouncilInput({ ...base, pass: 1, promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, true)
+  assert.equal(validateCouncilInput({ ...base, pass: 0, promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, mode: "decision", promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, mode: "review", pass: 1, promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, mode: "review", promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md" }).ok, true)
+  assert.equal(validateCouncilInput({ ...base, mode: "council", pass: 1, promptPath: "/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, pass: 1, promptPath: "/etc/passwd" }).ok, false)
+})
+
+test("no filesystem state -> restore returns null and does NOT start a loop", async () => {
+  const controller = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: null })
+  const restore = await controller.restore({ mode: "tui", cwd: "/no-such-project" })
+  assert.equal(restore, null)
+  assert.equal(controller.state, null)
+  assert.equal(controller.session.projectRoot, "/no-such-project")
+})
+
+test("registered children are reaped through shutdown; two controllers never interfere", async () => {
+  const { EventEmitter } = await import("node:events")
+  const controller = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: {} })
+  const otherController = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: {} })
+  const child = new EventEmitter()
+  child.exitCode = null
+  child.killed = false
+  child.killedSignals = []
+  child.kill = (signal) => { child.killedSignals.push(signal); if (signal === "SIGTERM") { child.exitCode = 0; child.emit("close", 0) } }
+  controller.registerChild(child)
+  assert.equal(controller.childRegistry.size, 1)
+  assert.equal(otherController.childRegistry.size, 0)
+  await controller.shutdown()
+  assert.equal(child.killedSignals[0], "SIGTERM")
+  assert.equal(controller.childRegistry.size, 0)
+  assert.equal(otherController.childRegistry.size, 0, "shutdown of ONE controller never touches another controller's registry")
+})
+
+test("controller lifecycle reads CURRENT filesystem state, never a stale snapshot", async () => {
+  const project = await mkdtemp(join(tmpdir(), "magi-ctl-fs-"))
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  const writeStateFile = (state) => writeFileSync(join(logDir, "state.json"), JSON.stringify(state), "utf8")
+  const sent = []
+  const controller = createNativeController({
+    pi: { sendUserMessage: async (content) => { sent.push(content) }, appendEntry: () => {} },
+    modelConfig: null,
+  })
+  // 1) activate on an in-flight decision round: tool_call is phase-blocked.
+  writeStateFile({ active: true, projectRoot: project, sessionID: "s", currentRound: 1, currentPhase: "parallel_deliberation", currentCouncilMode: "decision", currentDeliberationPass: 1, maxDeliberationPasses: 3 })
+  const guard1 = controller.enforceToolGuard(
+    { toolName: "write", input: { file_path: join(project, "src", "a.js") } },
+    { mode: "tui", cwd: project, ui: fakeUi() },
+  )
+  assert.equal(guard1.block, true)
+  assert.match(guard1.reason, /phase=parallel_deliberation/)
+  // 2) the skill advances the loop on disk; the guard must see the new state without any custom-entry rebind.
+  writeStateFile({ active: true, projectRoot: project, sessionID: "s", currentRound: 1, currentPhase: "execution", currentCouncilMode: "decision", currentDeliberationPass: 3, maxDeliberationPasses: 3 })
+  await mkdir(join(logDir, "round-001"), { recursive: true })
+  await writeFile(join(logDir, "round-001", "verdict.md"), "verdict", "utf8")
+  const guard2 = controller.enforceToolGuard(
+    { toolName: "write", input: { file_path: join(project, "src", "a.js") } },
+    { mode: "tui", cwd: project, ui: fakeUi() },
+  )
+  assert.equal(guard2.block, false)
+
+  // agent_settled injects the CONTINUE_TEXT_PI continuation over the fresh state.
+  await controller.settled({ mode: "tui", cwd: project, ui: fakeUi({ answers: [] }) })
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /Continue the active deliberation loop/)
+
+  // 3) question flows: allowed question -> ui.input; denied -> artifact file.
+  const deniedWrites = []
+  const deniedController = createNativeController({
+    pi: { sendUserMessage: async (content) => { sent.push(content) } },
+    modelConfig: null,
+  })
+  writeStateFile({ active: true, projectRoot: project, sessionID: "s", currentRound: 2, currentPhase: "execution", currentCouncilMode: "decision", currentDeliberationPass: 1, maxDeliberationPasses: 3 })
+  await mkdir(join(logDir, "round-002", "council-001"), { recursive: true })
+  writeFileSync(join(logDir, "question-request.txt"), "classification: procedural\nquestion: should I write the reports?", "utf8")
+  await controller.settled({ mode: "tui", cwd: project, ui: { input: async (title) => { deniedWrites.push(title); return undefined }, notify: () => {} } })
+  const deniedFile = await readFile(join(logDir, "question-denied.md"), "utf8")
+  assert.match(deniedFile, /denied by Magi question firewall/)
+  // The approved question path uses ui.input (never a notify masquerade).
+  const allowed = parseQuestionRequest("classification: execution_blocker\nquestion: fixture tests/fixture/a.txt was deleted; re-create it?\nphase: execution")
+  await mkdir(join(logDir, "round-002"), { recursive: true })
+  await assert.doesNotReject(async () => {
+    const outcome = await evaluateSettledAction(readMagiState(project), {
+      readQuestionRequestImpl: () => allowed,
+      existsImpl: () => true,
+    })
+    assert.equal(outcome.kind, "question")
+  })
+})
+
+test("artifact repair and false completion produce corrective continuations over fresh state", async () => {
+  const project = await mkdtemp(join(tmpdir(), "magi-ctl-repair-"))
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(join(logDir, "round-002"), { recursive: true })
+  const state = {
+    active: true, projectRoot: project, sessionID: "s",
+    currentRound: 2, currentPhase: "parallel_deliberation", currentCouncilMode: "decision",
+    currentDeliberationPass: 1, maxDeliberationPasses: 3, schemaVersion: 2,
+  }
+  // missing council reports → artifactRepair case
+  const missingArtifacts = await evaluateSettledAction(state, {
+    directory: project, readQuestionRequestImpl: async () => null,
+    existsImpl: existsSync,
+  })
+  assert.equal(missingArtifacts.kind, "corrective")
+  assert.match(missingArtifacts.text, /missing required artifacts/)
+  // false-completion repair: state claims execution but the verdict is NOT on disk.
+  const falseDone = { ...state, currentPhase: "execution", currentDeliberationPass: 3, maxDeliberationPasses: 3 }
+  assert.equal((await evaluateSettledAction(falseDone, { directory: project, readQuestionRequestImpl: async () => null, existsImpl: existsSync })).kind, "corrective")
+  // genuine completion: terminal phase is silent.
+  const complete = { ...state, currentPhase: "complete", active: true }
+  assert.equal((await evaluateSettledAction(complete, { directory: project, readQuestionRequestImpl: async () => null, existsImpl: existsSync })).kind, "none")
+  // stale lock neither continues nor injects a continuation after settle.
+  const stale = { ...state, currentPhase: "synthesis", inFlight: true, inFlightSince: new Date(Date.now() - 31 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }
+  assert.equal((await evaluateSettledAction(stale, { directory: project, readQuestionRequestImpl: async () => null, existsImpl: existsSync, nowMs: Date.now() })).kind, "none")
+})
+
+function fakeUi(options = {}) {
+  let index = 0
+  const answers = options.answers ?? []
+  return {
+    notifies: [],
+    asks: options.asks ?? [],
+    select: async (title) => { (options.selects ?? []).push?.(title); return answers[index++] ?? undefined },
+    input: async (title, placeholder) => {
+      (options.asks ?? []).push(title)
+      // undefined == a cancelled dialog; empty string == "clear this role".
+      if (index >= answers.length) { index += 1; return undefined }
+      return answers[index] === undefined ? (index += 1, undefined) : answers[index++]
+    },
+    confirm: async () => answers[index++] === "yes",
+    notify: (message, type) => { options.notifies?.push({ message, type }) },
+  }
+}
+
+test("expectedCouncilPromptPath matches the mode/round/pass artifact contract", () => {
+  assert.equal(expectedCouncilPromptPath("/p", "decision", 1, 1), "/p/.open_magi/magi-log/round-001/council-001/prompt.md")
+  assert.equal(expectedCouncilPromptPath("/p", "recon", 1, 1), "/p/.open_magi/magi-log/round-001/recon-001/prompt.md")
+  assert.equal(expectedCouncilPromptPath("/p", "review", 2, undefined), "/p/.open_magi/magi-log/round-002/review-001/prompt.md")
+})
+
+test("required artifacts follow the council-state contract", () => {
+  const state = { schemaVersion: 2, currentRound: 2, currentDeliberationPass: 2, maxDeliberationPasses: 3, currentCouncilMode: "decision", currentPhase: "synthesis", projectRoot: "/p" }
+  const artifacts = currentCouncilRoundArtifacts(state)
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-001/research-prompt.md") || artifacts.includes(".open_magi/magi-log/round-001/recon-002/prompt.md") === false)
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/research-prompt.md"))
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/council-001/synthesis.md"))
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/direction-selection.md"))
+})
+
+
+// ---------- Task 8 extension test seams ----------
+function makeFakeType() {
+  return {
+    Object: (shape, options) => ({ kind: "object", shape, options }),
+    Union: (variants) => ({ kind: "union", variants }),
+    Literal: (value) => ({ kind: "literal", value }),
+    Integer: (options) => ({ kind: "integer", options }),
+    String: () => ({ kind: "string" }),
+  }
+}
+
+function fakeHost() {
+  return { getAgentDir: () => "/tmp/fake-agentdir", CONFIG_DIR_NAME: ".pi" }
+}
+
+async function loadExtension() {
+  const module = await import("../adapters/pi/extension.js")
+  assert.equal(typeof module.default, "function")
+  const activate = async (pi, overrides = {}) => module.default(pi, {
+    host: fakeHost(),
+    typebox: makeFakeType(),
+    ...overrides,
+  })
+  return { activate }
+}
+
+async function activateControllerForTest({ pi, controllerOverride, modelConfig }) {
+  const module = await import("../adapters/pi/extension.js")
+  await module.default(pi, {
+    host: fakeHost(),
+    typebox: makeFakeType(),
+    ...(modelConfig ? { modelConfig } : {}),
+    controllerOverride,
+  })
+  return pi.tools[0]
+}
+
+function fakePi(overrides = {}) {
+  const commands = {}
+  const tools = []
+  const handlers = {}
+  const pi = {
+    commands, tools, handlers,
+    sentUserMessages: [],
+    registerCommand: (name, options) => { commands[name] = options },
+    registerTool: (tool) => { tools.push(tool) },
+    on: (event, handler) => { handlers[event] = handler },
+    sendUserMessage: (content, options) => { pi.sentUserMessages.push({ content, options }) },
+    getAllTools: () => overrides.allTools ?? [],
+    getActiveTools: () => overrides.activeTools ?? [],
+    appendEntry: () => {},
+    events: { on: () => {}, emit: () => {} },
+  }
+  return pi
+}
+
+// Helper that builds a fake modelConfig for the /magi-setup tests.
+function magiSetupModelConfigHooks({ writes, current, project }) {
+  return {
+    loadModelConfig: async () => ({ ok: true, user: { models: current }, project: project ?? null }),
+    userModelConfigPath: () => "/u/open-magi.json",
+    projectModelConfigPath: (root) => `${root}/.pi/open-magi.json`,
+    CONFIG_DIR_NAME: ".pi",
+    writeModelConfig: async (targetPath, next, options) => { writes.push({ targetPath, next, options }) },
+  }
+}
+
+// Task 8 extension wiring tests
+
+test("extension registers /magi, /magi-setup, and magi_council", async () => {
+  const { activate } = await loadExtension()
+  const pi = fakePi()
+  await activate(pi)
+  assert.ok(pi.commands.magi)
+  assert.ok(pi.commands["magi-setup"])
+  assert.equal(pi.tools.length, 1)
+  assert.equal(pi.tools[0].name, "magi_council")
+  assert.ok(pi.handlers.input)
+  assert.ok(pi.handlers.session_start)
+  assert.ok(pi.handlers.tool_call)
+  assert.ok(pi.handlers.agent_settled)
+  assert.ok(pi.handlers.session_shutdown)
+})
+
+test("/magi command sends the skill invocation with expansion, followUp when streaming", async () => {
+  const { activate } = await loadExtension()
+  const pi = fakePi()
+  await activate(pi)
+  const ctx = { isIdle: () => true, mode: "tui", cwd: "/proj", isProjectTrusted: () => false, ui: fakeUi() }
+  await pi.commands.magi.handler("fix the login bug", ctx)
+  assert.deepEqual(pi.sentUserMessages, [
+    { content: "/skill:magi fix the login bug", options: { expandPromptTemplates: true } },
+  ])
+  const streamingCtx = { ...ctx, isIdle: () => false }
+  await pi.commands.magi.handler("fix the login bug", streamingCtx)
+  assert.deepEqual(pi.sentUserMessages[1].options, { expandPromptTemplates: true, deliverAs: "followUp" })
+})
+
+test("input handler transforms NL intent into the skill invocation and never activates for extension input", async () => {
+  const { activate } = await loadExtension()
+  const pi = fakePi()
+  await activate(pi)
+  const ctx = { mode: "tui", cwd: "/proj", ui: fakeUi() }
+  assert.deepEqual(
+    await pi.handlers.input({ type: "input", text: "use Magi on the failing test", source: "interactive" }, ctx),
+    { action: "transform", text: "/skill:magi use Magi on the failing test" },
+  )
+  assert.deepEqual(
+    await pi.handlers.input({ type: "input", text: "use Magi to debug this", source: "interactive" }, ctx),
+    { action: "transform", text: "/skill:magi use Magi to debug this" },
+  )
+  assert.deepEqual(
+    await pi.handlers.input({ type: "input", text: "What is Magi?", source: "interactive" }, ctx),
+    { action: "continue" },
+  )
+  assert.deepEqual(
+    await pi.handlers.input({ type: "input", text: "use Magi to debug this", source: "extension" }, ctx),
+    { action: "continue" },
+  )
+  assert.deepEqual(
+    await pi.handlers.input({ type: "input", text: "/magi fix it", source: "interactive" }, { ...ctx, mode: "json" }),
+    { action: "handled", message: "[magi] Non-interactive Pi sessions do not run Magi. Open an interactive Pi session and use /magi <goal>." },
+  )
+})
+
+test("magi_council execute throws on union-shape mismatch and herdr before any config work", async () => {
+  const { activate } = await loadExtension()
+  const configCalls = { read: 0 }
+  const pi = fakePi()
+  await activate(pi, {
+    modelConfig: {
+      loadModelConfig: async () => { configCalls.read += 1; return { ok: true, user: null, project: null } },
+      resolveRoleModels: () => ({ melchior: { model: "m", thinking: "low" }, balthasar: { model: "m", thinking: "low" }, casper: { model: "m", thinking: "low" } }),
+      userModelConfigPath: () => "/u/open-magi.json",
+      projectModelConfigPath: (root) => `${root}/.pi/open-magi.json`,
+      writeModelConfig: async () => {},
+    },
+  })
+  const tool = pi.tools[0]
+  const ctx = { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui: fakeUi(), signal: undefined }
+  await assert.rejects(
+    () => tool.execute("call-1", { projectRoot: "/p", promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md", round: 1, pass: 1, mode: "review" }, undefined, undefined, ctx),
+    /review.*omit pass|omit pass/,
+  )
+  const original = process.env.HERDR_ENV
+  process.env.HERDR_ENV = "1"
+  try {
+    await assert.rejects(
+      () => tool.execute("call-2", { projectRoot: "/p", promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md", round: 1, pass: 1, mode: "decision" }, undefined, undefined, ctx),
+      /transport mismatch/,
+    )
+  } finally {
+    process.env.HERDR_ENV = original
+  }
+  assert.equal(configCalls.read, 0)
+})
+
+test("post-dispatch timeout/hard_error results are RETURNED by execute (not thrown)", async () => {
+  const herdrOriginal = process.env.HERDR_ENV
+  process.env.HERDR_ENV = "0" // exercise the non-Herdr transport path
+  try {
+  const { activate } = await loadExtension()
+  const pi = fakePi()
+  // The runner results carry the standard role reports after either failure;
+  // tool must ROUTE the outcome back to gates instead of throwing.
+  const runOutcome = {
+    ok: false, halt: false, haltReason: null,
+    hardErrors: [], results: [
+      { sage: "melchior", ok: false, failureType: "timeout", piFailureType: "timeout", exitCode: null, timedOut: true, reportPath: "/p/.open_magi/magi-log/round-001/council-001/report-melchior.md", stderr: "", error: null },
+      { sage: "balthasar", ok: false, failureType: "timeout", piFailureType: "timeout", exitCode: null, timedOut: true, reportPath: "/p/report-b", stderr: "", error: null },
+      { sage: "casper", ok: false, failureType: "timeout", piFailureType: "timeout", exitCode: null, timedOut: true, reportPath: "/p/.open_magi/magi-log/round-001/council-001/report-casper.md", stderr: "", error: null },
+    ],
+  }
+  const statefulController = {
+    modelConfig: magiSetupModelConfigHooks({ writes: [], current: {} }),
+    council: async () => runOutcome,
+  }
+  const tool = await activateControllerForTest({ pi, controllerOverride: statefulController, modelConfig: statefulController.modelConfig })
+  const result = await tool.execute("call-5", {
+    projectRoot: "/p",
+    promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md",
+    round: 1, pass: 1, mode: "decision",
+  }, undefined, undefined, { mode: "tui", cwd: "/p", isProjectTrusted: () => true, ui: fakeUi() })
+  assert.ok(result.content?.[0]?.text?.length > 10, "tool returns the timeout outcome as content")
+  assert.equal(result.details.results.length, 3)
+  assert.equal(result.details.results.every((entry) => entry.failureType === "timeout"), true)
+  } finally {
+    process.env.HERDR_ENV = herdrOriginal
+  }
+})
+
+test("magi-setup pi-setup guard path keeps config use narrowed to the trusted door", async () => {
+  const { activate } = await loadExtension()
+  const loadCalls = []
+  const pi = fakePi()
+  await activate(pi, {
+    modelConfig: {
+      loadModelConfig: async (options) => { loadCalls.push(options); return { ok: true, user: null, project: null } },
+      resolveRoleModels: () => null,
+      userModelConfigPath: () => "/u/open-magi.json",
+      projectModelConfigPath: (root) => `${root}/.pi/open-magi.json`,
+      CONFIG_DIR_NAME: ".pi",
+      writeModelConfig: async () => {},
+    },
+  })
+  const ui = fakeUi({ answers: ["User scope (getAgentDir()/open-magi.json)", "a/b:low", "b2:low", "c3:low"] })
+  const ctx = { mode: "tui", cwd: "/proj", isProjectTrusted: () => false, ui }
+  await pi.commands["magi-setup"].handler("", ctx)
+  assert.equal(loadCalls.length, 1)
+  assert.equal(loadCalls[0].isProjectTrusted, false, "user scope must pass ctx.isProjectTrusted() verbatim")
+})
+
+test("magi-setup project scope empty string clears a role (no merge-back)", async () => {
+  const { activate } = await loadExtension()
+  const writes = []
+  const pi = fakePi()
+  await activate(pi, {
+    modelConfig: magiSetupModelConfigHooks({
+      writes, current: { melchior: "old/m1:low", casper: "old/c3:low" }, project: { models: { melchior: "old/m1:low", casper: "old/c3:low" } },
+    }),
+  })
+  const ui = fakeUi({ answers: ["Project scope (.pi/open-magi.json, trusted projects only)", "", "old/b2:low", "old/c3:low"] })
+  await pi.commands["magi-setup"].handler("", { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui })
+  assert.equal(writes[0].options.scope, "project")
+  // melchior answered "" -> cleared; balthasar/casper answered non-empty -> preserved; NO merge-back.
+  assert.equal(writes[0].next.models.melchior, undefined)
+  assert.equal(writes[0].next.models.casper, "old/c3:low")
+})
+
+test("magi_council tool is registered with the discriminator schema and throwing execute", async () => {
+  const { activate } = await loadExtension()
+  const pi = fakePi()
+  await activate(pi)
+  const tool = pi.tools[0]
+  assert.equal(tool.name, "magi_council")
+  assert.equal(typeof tool.execute, "function")
+  assert.ok(tool.parameters, "TypeBox union schema must be attached")
+})
+
+test("magi-setup cancel aborts the whole update without writing", async () => {
+  const { activate } = await loadExtension()
+  const writes = []
+  const notifies = []
+  const pi = fakePi()
+  await activate(pi, {
+    modelConfig: magiSetupModelConfigHooks({ writes, current: { melchior: "old/m1:low" } }),
+  })
+  // Scope selected ("User scope …"), then the melchior dialog is CANCELLED.
+  const notifications = []
+  const ui = fakeUi({ answers: ["User scope (getAgentDir()/open-magi.json)", undefined], notifies: notifications })
+  await pi.commands["magi-setup"].handler("", { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui })
+  assert.deepEqual(writes, [])
+  // The cancel note reached the UI (not silently swallowed).
+  assert.ok(notifications.some((entry) => String(entry?.message ?? entry).includes("cancelled")))
+})
+
+test("magi-setup empty string clears a role; untouched roles are preserved from fresh reads", async () => {
+  const { activate } = await loadExtension()
+  const writes = []
+  const pi = fakePi()
+  await activate(pi, {
+    modelConfig: magiSetupModelConfigHooks({
+      writes,
+      current: { melchior: "old/m1:low", balthasar: "old/b2:medium" },
+    }),
+  })
+  // melchior: "" clears it; balthasar/ casper pre-filled with the fresh stored
+  // value and confirmed unchanged (empty string would ALSO clear them).
+  const ui = fakeUi({ answers: ["User scope (getAgentDir()/open-magi.json)", "", "old/b2:low", "old/c3:high"] })
+  await pi.commands["magi-setup"].handler("", { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui })
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].options.scope, "user")
+  assert.deepEqual(writes[0].next, {
+    version: 1,
+    models: { balthasar: "old/b2:low", casper: "old/c3:high" },
+  })
+})
+
+test("magi-setup replaces one role and preserves the rest from the CURRENT config read", async () => {
+  const { activate } = await loadExtension()
+  const writes = []
+  const pi = fakePi()
+  await activate(pi, {
+    modelConfig: magiSetupModelConfigHooks({
+      writes,
+      current: { melchior: "old/m1:low" },
+    }),
+  })
+  const ui = fakeUi({ answers: ["User scope (getAgentDir()/open-magi.json)", "new/m9:high", "old/b2:low", "old/c3:high"] })
+  await pi.commands["magi-setup"].handler("", { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui })
+  // Only melchior changed; balthasar/ casper keep their untouched values.
+  assert.deepEqual(writes[0].next.models.melchior, "new/m9:high")
+  assert.deepEqual(writes[0].next.models.balthasar, "old/b2:low")
+  assert.deepEqual(writes[0].next.models.casper, "old/c3:high")
+})
+
+// Helper that builds a fake modelConfig for the /magi-setup tests.
+test("magi-setup notify path comes through the real ui object with CONFIG_DIR_NAME from the api", async () => {
+  const { activate } = await loadExtension()
+  const notifications = []
+  const pi = fakePi()
+  await activate(pi, {
+    modelConfig: magiSetupModelConfigHooks({ writes: [], current: {} }),
+  })
+  const ui = fakeUi({
+    answers: ["User scope (getAgentDir()/open-magi.json)", "a/b:low", "b:low", "c:low"],
+    notifies: notifications,
+  })
+  await pi.commands["magi-setup"].handler("", { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui })
+  assert.ok(notifications.length >= 1)
+  assert.ok(JSON.stringify(notifications).includes("open-magi.json"))
+  assert.ok(JSON.stringify(notifications).includes("CONFIG_DIR_NAME=.pi"))
+})
+

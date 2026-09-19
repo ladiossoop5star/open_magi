@@ -289,3 +289,527 @@ function mentionedProjectPaths(text, cwd) {
     .map((match) => match[0])
     .filter((target) => targetIsMutation(cwd, target))
 }
+
+// ---------- Task 7 additions ----------
+import { readFileSync, writeFileSync, rmSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { runPiCouncil } from "./pi-runner.js"
+
+// ---------- filesystem-authoritative state ----------
+// The filesystem is the single source of truth for deliberation state. The
+// custom session entry only carries session OWNERSHIP metadata (sessionID /
+// projectRoot). Every lifecycle access (council preflight, tool_call guard,
+// agent_settled) reads the CURRENT on-disk state, never a stale snapshot.
+
+export function readMagiState(projectRoot) {
+  try {
+    return JSON.parse(readFileSync(join(projectRoot, LOG_DIR, "state.json"), "utf8"))
+  } catch {
+    return null
+  }
+}
+
+export function statePath(projectRoot) {
+  return join(projectRoot, LOG_DIR, "state.json")
+}
+
+// Filesystem write used by the backstop; mirrors index.js writeState semantics.
+export function writeMagiState(projectRoot, nextState) {
+  writeFileSync(statePath(projectRoot), `${JSON.stringify(nextState, null, 2)}\n`)
+}
+
+export function expectedCouncilPromptPath(projectRoot, mode, round, pass) {
+  const folder = mode === "recon" ? `recon-${pad3(pass)}` : mode === "review" ? "review-001" : `council-${pad3(pass)}`
+  return join(projectRoot, LOG_DIR, `round-${pad3(round)}`, folder, "prompt.md")
+}
+
+export function validateCouncilInput(input) {
+  const mode = input?.mode
+  if (mode !== "recon" && mode !== "decision" && mode !== "review") {
+    return { ok: false, message: "[magi] magi_council mode must be recon, decision, or review." }
+  }
+  const round = Number(input?.round)
+  if (!Number.isInteger(round) || round < 1) {
+    return { ok: false, message: "[magi] magi_council round must be a positive integer." }
+  }
+  if (mode === "review") {
+    if (input?.pass !== undefined && input?.pass !== null) {
+      return { ok: false, message: "[magi] review requests must omit pass." }
+    }
+  } else {
+    const parsepass = Number(input?.pass)
+    if (!Number.isInteger(parsepass) || parsepass < 1) {
+      return { ok: false, message: `[magi] ${mode} requests require a positive integer pass.` }
+    }
+  }
+  if (typeof input?.projectRoot !== "string" || !input.projectRoot) {
+    return { ok: false, message: "[magi] magi_council requires the project root." }
+  }
+  if (typeof input?.promptPath !== "string" || !input.promptPath || input.promptPath.includes("..")) {
+    return { ok: false, message: "[magi] magi_council promptPath must be a project-local path without traversal." }
+  }
+  const expected = expectedCouncilPromptPath(input.projectRoot, mode, round, mode === "review" ? undefined : Number(input.pass))
+  const expectedResolved = resolve(expected)
+  const actualResolved = resolve(input.projectRoot, input.promptPath)
+  if (actualResolved !== expectedResolved) {
+    return { ok: false, message: `[magi] magi_council promptPath must resolve to ${expectedResolved} for its mode/round/pass (got ${actualResolved}).` }
+  }
+  return {
+    ok: true,
+    normalized: {
+      projectRoot: resolve(input.projectRoot),
+      promptPath: actualResolved,
+      round,
+      pass: mode === "review" ? undefined : Number(input.pass),
+      mode,
+    },
+  }
+}
+
+export function parseQuestionRequest(text) {
+  const request = {}
+  let continuationKey = null
+  for (const line of String(text ?? "").split("\n")) {
+    if (!line.trim()) continue
+    const match = /^([a-z_]+):\s*(.*)$/.exec(line)
+    if (match) {
+      const key = match[1]
+      request[key] = match[2]
+      continuationKey = key
+    } else if (continuationKey) {
+      request[continuationKey] = `${request[continuationKey]} ${line.trim()}`.trim()
+    }
+  }
+  if (request.classification) request.classification = request.classification.toLowerCase()
+  if (request.phase) request.phase = request.phase.toLowerCase()
+  return request
+}
+
+const FIREWALL_ALLOWED_CLASSES = new Set(["execution_blocker", "impossible_verification", "destructive_or_unrelated_risk", "ambiguous_file_ownership"])
+
+export function isQuestionAllowed(state, request) {
+  const classification = request?.classification
+  if (!classification) return false
+  if (!FIREWALL_ALLOWED_CLASSES.has(classification)) return false
+  if (classification === "debug_direction") {
+    return roundNumberOf(state) === 1 && (state?.currentPhase ?? "") === "status_assessment"
+  }
+  if (classification === "goal_ambiguity") {
+    return roundNumberOf(state) === 1 && ["goal_definition", "status_assessment"].includes(state?.currentPhase ?? "")
+  }
+  return true
+}
+
+export function questionSha256(question) {
+  return createHash("sha256").update(String(question ?? "")).digest("hex")
+}
+
+export function isSensitiveHerdrRawCommand(request) {
+  return String(request?.sensitive ?? "").toLowerCase() === "herdr_raw_command"
+}
+
+export function questionDeniedText(request) {
+  const sensitive = isSensitiveHerdrRawCommand(request)
+  const questionLine = sensitive ? "question: [redacted herdr raw command]" : `question: ${request.question}`
+  const contextLines = sensitive
+    ? [
+        `commands_or_files_checked: [redacted ${String(request?.commands_or_files_checked ?? []).length} entries]`,
+        `why_local_context_failed: [redacted]`,
+        `default_action_if_denied: [redacted]`,
+      ]
+    : [
+        `why_local_context_failed: ${request?.why_local_context_failed ?? "not provided"}`,
+        `commands_or_files_checked: ${JSON.stringify(request?.commands_or_files_checked ?? [])}`,
+        `default_action_if_denied: ${request?.default_action_if_denied ?? "not provided"}`,
+      ]
+  return [
+    "[magi] The question firewall denied this user question.",
+    `classification: ${request?.classification ?? "unknown"}`,
+    `question_sha256: ${questionSha256(request?.question)}`,
+    sensitive ? "sensitive: herdr_raw_command (question redacted)" : null,
+    questionLine,
+    ...contextLines,
+    "",
+    "Decision: denied by Magi question firewall. The main agent must self-answer from local context and continue.",
+    "Do not ask the user.",
+  ].filter((line) => line != null).join("\n")
+}
+
+function questionDeniedPath(projectRoot) {
+  return join(projectRoot, LOG_DIR, "question-denied.md")
+}
+
+function writeQuestionDenied(projectRoot, request, nowIso) {
+  writeFileSync(questionDeniedPath(projectRoot), [
+    `denied_at: ${nowIso}`,
+    questionDeniedText(request).replace(/^\[magi\] /, ""),
+    "",
+  ].join("\n"))
+}
+
+export function readQuestionRequest(projectRoot) {
+  try {
+    return parseQuestionRequest(readFileSync(join(projectRoot, LOG_DIR, "question-request.txt"), "utf8"))
+  } catch (error) {
+    if (error?.code === "ENOENT") return null
+    return null
+  }
+}
+
+export function isStaleLock(state, nowMs) {
+  if (!state?.inFlight || !state?.inFlightSince) return false
+  const lockMs = Number(Date.parse(state.inFlightSince))
+  if (!Number.isFinite(lockMs)) return false
+  return nowMs - lockMs > (positiveInteger(state.staleLockMs, DEFAULT_STALE_LOCK_MS))
+}
+
+export function isHerdrDeliberatorEntry(entry) {
+  return entry?.transport === "herdr"
+}
+
+export function isHerdrOwnedTurn(state) {
+  const since = state?.inFlightSince ? Number(Date.parse(state.inFlightSince)) : Number.POSITIVE_INFINITY
+  return Object.values(state?.activeDeliberators ?? {}).some((entry) => (
+    isHerdrDeliberatorEntry(entry) && (entry.status === "running" || Number(Date.parse(entry.completedAt ?? entry.timedOutAt ?? entry.hardErrorAt ?? "")) >= since)
+  ))
+}
+
+export function shouldContinue(state, event, directory, nowMs, missingArtifacts = [], questionDenied = false) {
+  const sessionId = state?.sessionID
+  if (!state?.active) return { ok: false }
+  const isIdle = event?.event?.type === "session.idle" || (event?.event?.type === "session.status" && event?.event?.properties?.status?.type === "idle")
+  if (!isIdle) return { ok: false }
+  if (event?.sessionID !== undefined && event?.sessionID !== sessionId) return { ok: false }
+  if (event?.directory !== undefined && resolve(event?.directory) !== resolve(directory)) return { ok: false }
+  // Herdr owns this turn: report it positively but never hand it back to
+  // extension injection (repo semantics: herdr-owned turns skip the main-agent
+  // continuation path entirely).
+  if (isHerdrOwnedTurn(state)) {
+    return { ok: true, stale: false, recover: false, artifactRepair: missingArtifacts.length > 0, questionDenied }
+  }
+  const artifactRepair = missingArtifacts.length > 0
+  if (state?.inFlight && isStaleLock(state, nowMs)) {
+    return { ok: true, stale: true, recover: false, artifactRepair, questionDenied }
+  }
+  if (state?.inFlight) return { ok: false }
+  const recover = !state?.needsContinue && !isTerminalPhase(state?.currentPhase)
+  return { stale: false, ok: true, recover: recover && !artifactRepair && !questionDenied, artifactRepair, questionDenied }
+}
+
+// (NO_PROGRESS_LIMIT reuses the Task 5 export above)
+
+export function noProgressLimitError(count, nowIso) {
+  return `no progress limit reached at ${nowIso}: consecutiveNoProgress=${count}`
+}
+
+export function trailingNoProgressHistoryCount(history) {
+  let count = 0
+  const entries = [...(history ?? [])].reverse()
+  for (const entry of entries) {
+    if (entry?.progress === false) count += 1
+    else break
+  }
+  return count
+}
+
+export function enforceNoProgressLimit(state, { writeState, nowIso }) {
+  if (isHerdrOwnedTurn(state)) return state
+  const count = Math.max(state?.consecutiveNoProgress ?? 0, trailingNoProgressHistoryCount(state?.history ?? []))
+  if (count < NO_PROGRESS_LIMIT) return state
+  return writeState(state, {
+    ...state,
+    active: false, currentPhase: "blocked", needsContinue: false,
+    inFlight: false, inFlightSince: null, consecutiveNoProgress: count,
+    lastError: noProgressLimitError(count, nowIso),
+  })
+}
+
+
+export function usesCouncilModes(state) {
+  return Boolean(state && (state.currentCouncilMode !== undefined || Number(state.schemaVersion) >= 2))
+}
+
+export function usesCouncilPasses(state) {
+  return Boolean(state && (state.currentDeliberationPass !== undefined || state.maxDeliberationPasses !== undefined || state.deliberationStatus !== undefined))
+}
+
+// ---------- artifact contract (schemaVersion >= 2 path) ----------
+
+export function currentCouncilRoundArtifacts(state) {
+  const round = roundNumberOf(state)
+  const phase = state?.currentPhase ?? ""
+  const pass = deliberationPassNumberOf(state)
+  const reconPass = reconPassNumberOf(state)
+  const usesModes = usesCouncilModes(state)
+  const prefix = roundPrefix(round)
+  const list = []
+  if (usesModes && phaseAtLeast(phase, "research_task")) {
+    if (round === 1) {
+      list.push(`${prefix}/recon-001/prompt.md`, `${prefix}/recon-001/report-melchior.md`, `${prefix}/recon-001/report-balthasar.md`, `${prefix}/recon-001/report-casper.md`)
+    }
+    let prior = round === 1 ? 2 : 1
+    for (; prior < reconPass; prior++) {
+      list.push(`${prefix}/recon-${pad3(prior)}/report-melchior.md`, `${prefix}/recon-${pad3(prior)}/report-balthasar.md`, `${prefix}/recon-${pad3(prior)}/report-casper.md`)
+    }
+  }
+  if (!usesModes || !usesCouncilPasses(state)) return list
+  if (phaseAtLeast(phase, "research_task")) list.push(`${prefix}/research-prompt.md`)
+  for (let previousPass = 1; previousPass < pass; previousPass++) {
+    list.push(`${prefix}/council-${pad3(previousPass)}/report-melchior.md`, `${prefix}/council-${pad3(previousPass)}/report-balthasar.md`, `${prefix}/council-${pad3(previousPass)}/report-casper.md`, `${prefix}/council-${pad3(previousPass)}/synthesis.md`)
+  }
+  if (pass > 1) list.push(`${prefix}/direction-selection.md`)
+  if (phaseAtLeast(phase, "parallel_deliberation") && state?.deliberationStatus === "ready_for_verdict") {
+    list.push(`${prefix}/council-${pad3(pass)}/report-melchior.md`, `${prefix}/council-${pad3(pass)}/report-balthasar.md`, `${prefix}/council-${pad3(pass)}/report-casper.md`)
+  }
+  if (phaseAtLeast(phase, "synthesis")) list.push(`${prefix}/council-${pad3(pass)}/synthesis.md`)
+  if (phaseAtLeast(phase, "execution") || state?.deliberationStatus === "ready_for_verdict") {
+    if (!phaseAtLeast(phase, "execution")) list.push(`${prefix}/direction-selection.md`)
+    list.push(`${prefix}/verdict.md`)
+  }
+  if (phaseAtLeast(phase, "execution")) list.push(`${prefix}/verification.md`)
+  if (usesModes && phaseAtLeast(phase, "completion_review")) list.push(`${prefix}/cleanup.md`)
+  if (usesModes && phase === "completion_review") {
+    list.push(`${prefix}/review-001/report-melchior.md`, `${prefix}/review-001/report-balthasar.md`, `${prefix}/review-001/report-casper.md`)
+  }
+  return list
+}
+
+export function verificationPathFor(state) {
+  return `${LOG_DIR}/round-${pad3(roundNumberOf(state))}/verification.md`
+}
+
+export function collectMissingArtifacts(state, projectRoot, existsImpl = existsSync) {
+  return currentCouncilRoundArtifacts(state)
+    .map((relative) => join(projectRoot, relative))
+    .filter((absolute) => !existsImpl(absolute))
+    .map((absolute) => absolute.slice(String(projectRoot).length + 1))
+}
+
+const CONTINUE_RULES_TEXT = [
+  "Do not ask procedural questions.",
+  "If the next action is defined by the Magi skill, checklist, state.json, phase contract, log layout, or report format, execute it and write the required artifact.",
+  "Before asking the user, apply the Before Asking User Gate. Only ask for Phase 1 goal ambiguity, impossible verification, execution blockers, destructive or unrelated risk, or ambiguous file ownership.",
+].join("\n")
+
+export const CONTINUE_TEXT_PI = [
+  "[magi] Continue the active deliberation loop.",
+  "Read \`.open_magi/magi-log/state.json\` and \`.open_magi/magi-log/checklist.md\`,",
+  "resume from \`currentRound\` and \`currentPhase\`, clear \`inFlight\`, then continue",
+  "the 6-phase protocol. Do not restart the goal.",
+  CONTINUE_RULES_TEXT,
+].join("\n")
+
+export function buildContinuePayloadPi(state) {
+  return {
+    text: CONTINUE_TEXT_PI,
+    metadata: {
+      round: roundNumberOf(state),
+      phase: state?.currentPhase ?? "",
+      councilMode: state?.currentCouncilMode ?? "decision",
+    },
+  }
+}
+
+export async function evaluateSettledAction(state, deps = {}) {
+  const { existsImpl = existsSync, readQuestionRequestImpl = null, directory, nowMs = Date.now(), missingArtifacts: injectedMissing = null, writeState = async (_state, next) => next } = deps
+  if (!state?.active || isTerminalPhase(state?.currentPhase)) return { kind: "none" }
+  // Question request takes priority over corrective repair: an explicit user
+  // question gets surfaced (or denied) before the missing-artifact path.
+  const questionRequest = readQuestionRequestImpl ? await readQuestionRequestImpl() : readQuestionRequest(directory ?? ".")
+  if (questionRequest && !isQuestionAllowed(state, questionRequest)) {
+    return { kind: "question_denied", request: questionRequest, text: questionDeniedText(questionRequest) }
+  }
+  if (questionRequest) return { kind: "question", request: questionRequest }
+  // A stale inFlight lock stays silent (the pass is presumed dead on the disk).
+  if (state?.inFlight && isStaleLock(state, nowMs)) return { kind: "none" }
+  const missing = injectedMissing ?? collectMissingArtifacts(state, directory ?? ".", existsImpl)
+  if (missing.length > 0) {
+    return { kind: "corrective", text: `[magi] missing required artifacts: ${missing.join(", ")}`, payload: buildContinuePayloadPi(state) }
+  }
+  // F13: false completion checks need the FINAL REPORT/REVIEW COUNCIL/review
+  // approval artifacts, not just the verdict; (the missing artifacts list above
+  // ALREADY includes review-001 reports + cleanup.md during completion_review).
+  // Add the specific adherence checks: when a verdict exists, verify at least
+  // one EXECUTION VERIFICATION trail (verification.md) and squash commit —
+  // completing the false-completion repair check.
+  if ((state?.currentPhase === "goal_check" || state?.currentPhase === "cleanup") && !existsImpl(join(directory ?? ".", verificationPathFor(state)))) {
+    return { kind: "corrective", text: "[magi] phase reached goal_check/cleanup but verification.md is missing; produce the verification trail first.", payload: buildContinuePayloadPi(state) }
+  }
+  // Pi semantics: the council runner maintains inFlight itself, so the settled
+  // injection keys off the loop's needsContinue/terminal/herdr state, not the
+  // runner-owned inFlight. A stale lock still stays silent.
+  if (state?.inFlight && isStaleLock(state, nowMs)) return { kind: "none" }
+  return { kind: "continue", payload: buildContinuePayloadPi(state) }
+}
+
+// ---------- controller ----------
+
+export function createNativeController({ pi, modelConfig }) {
+  const controller = {
+    modelConfig,
+    // Session-LOCAL metadata only (never persisted into state.json).
+    session: null,
+    // Instance-scoped child registry (Set). Two controllers never share it.
+    childRegistry: new Set(),
+    // Capture uses the correct Pi 0.85.1 API surface (pi.getThinkingLevel()
+    // when available, ctx.model.id for the model - both sourced from types.d.ts).
+    async restore(ctx, { mainModel, thinkingLevel } = {}) {
+      // Filesystem is authoritative: only session OWNERSHIP metadata lives in
+      // the custom entry; this method refreshes deliberation state from disk.
+      controller.state = readMagiState(ctx?.cwd ?? ".")
+      controller.session = {
+        mainModel: mainModel ?? ctx?.model?.id ?? null,
+        mainThinking: thinkingLevel ?? ctx?.thinkingLevel ?? null,
+        sessionID: ctx?.sessionManager?.getSessionId?.(),
+        projectRoot: ctx?.cwd ?? null,
+      }
+      if (!controller.state?.active) return null // no filesystem state: do NOT start a loop
+      pi?.appendEntry?.("open-magi-controller", {
+        sessionID: controller.session.sessionID,
+        projectRoot: controller.session.projectRoot,
+      })
+      return controller.state
+    },
+    enforceToolGuard(event, ctx) {
+      const state = readMagiState(ctx?.cwd ?? ".")
+      if (!state?.active) return { block: false }
+      if (ctx?.mode !== "tui") return { block: false }
+      const guardProbe =
+        typeof pi?.getAllTools === "function" && typeof pi?.getActiveTools === "function"
+          ? assertGuardableToolSet(pi.getAllTools(), pi.getActiveTools())
+          : { ok: true } // minimal fakes/host contexts without tool enumeration cannot drift
+      if (!guardProbe.ok) return { block: true, reason: guardProbe.message }
+      const decision = enforcePhaseGuard({ state, projectRoot: ctx.cwd, toolName: event.toolName, toolInput: event.input })
+      return decision.block ? { block: true, reason: decision.reason } : { block: false }
+    },
+    async settled(ctx) {
+      const state = readMagiState(ctx?.cwd ?? ".")
+      if (!state?.active || isHerdrOwnedTurn(state)) return undefined
+      // No-progress check runs BEFORE any continue is sent: if the limit is
+      // reached the blocked state lands in state.json via writeMagiState and
+      // NOTHING is injected into the main agent's stream.
+      const afterNoProgress = enforceNoProgressLimit(state, {
+        writeState: (stateSnapshot, next) => {
+          writeMagiState(stateSnapshot?.projectRoot ?? ctx.cwd ?? ".", next)
+          return next
+        },
+        nowIso: new Date().toISOString(),
+      })
+      if (!afterNoProgress.active) return undefined
+      const missing = collectMissingArtifacts(afterNoProgress, ctx?.cwd ?? ".")
+      const outcome = await evaluateSettledAction(afterNoProgress, {
+        existsImpl: existsSync,
+        readQuestionRequestImpl: () => readQuestionRequest(ctx?.cwd ?? "."),
+        directory: ctx?.cwd,
+        missingArtifacts: missing,
+      })
+      if (outcome.kind === "none") return
+      if (outcome.kind === "question_denied") {
+        writeQuestionDenied(ctx?.cwd ?? ".", outcome.request, new Date().toISOString())
+        pi?.appendEntry?.("open-magi-question-denied", { request: outcome.request })
+        return
+      }
+      if (outcome.kind === "question") {
+        // Display the TRUE question (request.question) through the interactive UI,
+        // send the answer back to the main agent via pi.sendUserMessage, and
+        // delete the question-request artifact so the next settled() will not
+        // re-ask. Cancel semantics: answer === undefined keeps the artifact and
+        // sends nothing.
+        const artifact = join(ctx.cwd ?? ".", LOG_DIR, "question-request.txt")
+        const answer = await ctx?.ui?.input?.(`[magi] ${outcome.request.question}`, "")
+        if (answer === undefined) return undefined // cancelled: nothing written or sent
+        try { rmSync(artifact) } catch { /* already gone */ }
+        await pi?.sendUserMessage?.(`[magi] question answered by the user: ${answer}`)
+        return
+      }
+      await pi?.sendUserMessage?.(outcome.kind === "corrective" ? `${outcome.text}\n${CONTINUE_TEXT_PI}` : CONTINUE_TEXT_PI)
+    },
+    async council(request) {
+      if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
+      return consumeCouncilRequest(controller, request)
+    },
+    shutdown({ killAfterMs = 5_000 } = {}) {
+      // SIGTERM -> wait close (killAfterMs cap) -> SIGKILL -> still no close:
+      // `reapFallback` (same cap + tiny grace) resolves the wait safely so the
+      // runtime never hangs on a child whose API cannot emit close. Note
+      // killed=true only means a signal was SENT, never that reaping happened.
+      const pending = [...controller.childRegistry]
+      if (pending.length === 0) return Promise.resolve()
+      return Promise.all(pending.map((child) => new Promise((resolve) => {
+        let killTimer = null
+        let fallbackTimer = null
+        const reaped = () => {
+          controller.childRegistry.delete(child)
+          clearTimeout(killTimer)
+          clearTimeout(fallbackTimer)
+          resolve()
+        }
+        if (child.exitCode !== null) { reaped(); return } // close already happened
+        const killTimerLocal = setTimeout(() => {
+          try { child.kill("SIGKILL") } catch { /* already gone */ }
+        }, killAfterMs)
+        if (typeof killTimerLocal.unref === "function") killTimerLocal.unref()
+        killTimer = killTimerLocal
+        // No-close fallback: resolve on the safety net only when the child API
+        // cannot emit close at all (never conflicts with a genuine close event).
+        // NOTE: the fallback timer is intentionally NOT unref-ed: the shutdown
+        // promise must be awaited even when a fake child cannot emit close.
+        const fallbackTimerLocal = setTimeout(() => { reaped() }, killAfterMs + 250)
+        fallbackTimer = fallbackTimerLocal
+        try { child.kill("SIGTERM") } catch { /* already closed */ }
+        child.once("close", reaped)
+      })))
+    },
+    // Runner seam: the per-child onChild pointer feeds registerChild; a close
+    // or error listener keeps registry membership aligned with live children.
+    registerChild(child) {
+      controller.childRegistry.add(child)
+      const drop = () => { controller.childRegistry.delete(child) }
+      child.once?.("close", drop)
+      child.once?.("error", drop)
+      return child
+    },
+  }
+  return controller
+}
+
+export async function consumeCouncilRequest(controller, request) {
+  const { projectRoot, promptPath, round, pass, mode, isProjectTrusted, signal, runner, spawnLike } = request
+  if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
+  const config = await controller.modelConfig.loadModelConfig({ projectRoot, isProjectTrusted: Boolean(isProjectTrusted) })
+  if (!config.ok) return { ok: false, error: config.error }
+  // Filesystem authority: read state fresh at dispatch time.
+  const state = readMagiState(String(projectRoot))
+  if (!state?.active) return { ok: false, error: "[magi] No active Magi loop in this project; open /skill:magi <goal> first." }
+  // A state file without an explicit projectRoot (or one absent altogether)
+  // still belongs to the CURRENT project: the residency check applies only when
+  // the on-disk state names a different root.
+  const stateRoot = state?.projectRoot ? resolve(String(state.projectRoot)) : resolve(String(projectRoot))
+  if (state?.projectRoot && stateRoot !== resolve(String(projectRoot))) {
+    return { ok: false, error: "[magi] magi_council runs only in the session that owns the Magi loop." }
+  }
+  const modeMatches = state.currentCouncilMode === mode
+  const roundMatches = roundNumberOf(state) === Number(round)
+  const passMatches = mode === "review"
+    ? true
+    : mode === "recon" ? reconPassNumberOf(state) === Number(pass)
+    : deliberationPassNumberOf(state) === Number(pass)
+  if (!modeMatches || !roundMatches || !passMatches) {
+    return { ok: false, error: "[magi] magi_council request is stale for the active round/pass; regenerate the prompt." }
+  }
+  if (!controller.session?.mainModel) {
+    return { ok: false, error: "[magi] main session model is not set; select a model before dispatching Magi." }
+  }
+  const run = await (runner ?? runPiCouncil)({
+    projectRoot, promptPath, round, pass, mode,
+    roleModels: controller.modelConfig.resolveRoleModels(controller.session.mainModel, controller.session.mainThinking ?? null, config.user, config.project),
+    timeoutMs: deliberatorTimeoutMsOf(state),
+    signal,
+    childTracker: { add: (child) => controller.registerChild(child) },
+    spawnLike,
+  })
+  // Post-dispatch failures (timeout / hard_error) already produced the three
+  // standard role reports — return them to the gates; only PRE-DISPATCH
+  // failures (config / state / path / transport / guard) may throw or reject.
+  return { ok: run.ok, halt: run.halt, haltReason: run.haltReason, hardErrors: run.hardErrors, results: run.results, failureType: run.results[0]?.failureType ?? null }
+}
