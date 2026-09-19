@@ -352,7 +352,9 @@ test("package metadata exposes OpenCode plugin, setup CLI, and injected plugin t
   assert.match(postinstall, /allowDefaultModel: true/)
   assert.doesNotMatch(setupLib, /setupCodexMagi|buildCodexAgentConfig|defaultCodex/)
   assert.equal(pkg.scripts.postinstall, "node bin/postinstall.js")
-  assert.equal(pkg.scripts.test, "node --test test/package.test.mjs test/plugin.test.mjs test/setup.test.mjs")
+  assert.equal(pkg.scripts.test, "node --test test/package.test.mjs test/plugin.test.mjs test/setup.test.mjs test/pi-adapter.test.mjs")
+  assert.equal(pkg.files.includes("adapters/pi"), true)
+  assert.deepEqual(pkg.pi, { extensions: ["./adapters/pi/extension.js"], skills: ["./adapters/pi/skills"] })
   const suitePath = new URL("./plugin-suite.mjs", import.meta.url)
   const suite = await readFile(suitePath, "utf8")
   const wrapper = await readFile(new URL("./plugin.test.mjs", import.meta.url), "utf8")
@@ -2132,6 +2134,7 @@ test("bundled magi skill assets contain the expected contract", async () => {
   const codexRuntime = await readFile(new URL("../adapters/codex/skills/magi/references/runtime.md", import.meta.url), "utf8")
   const claudeSkill = await readFile(new URL("../adapters/claude/skills/magi/SKILL.md", import.meta.url), "utf8")
   const claudeRuntime = await readFile(new URL("../adapters/claude/skills/magi/references/runtime.md", import.meta.url), "utf8")
+  const piSkill = await readFile(new URL("../adapters/pi/skills/magi/SKILL.md", import.meta.url), "utf8")
   const references = await readMagiReferences()
   const contract = [skill, ...Object.values(references)].join("\n")
   const herdr = references["herdr.md"]
@@ -2160,6 +2163,8 @@ test("bundled magi skill assets contain the expected contract", async () => {
   assert.match(codexRuntime, /run the bundled plugin-cache\s+CLI/)
   assert.match(codexRuntime, /open-magi --help \| grep -q run-council/)
   assert.match(claudeSkill, /Claude Bootstrap Gate/)
+  assert.match(piSkill, /Pi Bootstrap Gate/)
+  assert.doesNotMatch(piSkill, /OpenCode Bootstrap Gate|Codex Bootstrap Gate|Claude Bootstrap Gate/)
   assert.match(claudeSkill, /open-magi:deliberator-melchior/)
   assert.match(claudeSkill, /local Claude wrapper/)
   assert.match(claudeRuntime, /Claude Runtime Reference/)
@@ -2561,19 +2566,27 @@ test("shared Magi prompts and common references are identical across adapter ski
     const opencode = await readFile(new URL(`../skills/magi/references/${name}`, import.meta.url), "utf8")
     const codex = await readFile(new URL(`../adapters/codex/skills/magi/references/${name}`, import.meta.url), "utf8")
     const claude = await readFile(new URL(`../adapters/claude/skills/magi/references/${name}`, import.meta.url), "utf8")
+    const pi = await readFile(new URL(`../adapters/pi/skills/magi/references/${name}`, import.meta.url), "utf8")
 
     assert.equal(opencode, shared, `OpenCode ${name} should match shared source`)
     assert.equal(codex, shared, `Codex ${name} should match shared source`)
     assert.equal(claude, shared, `Claude ${name} should match shared source`)
+    assert.equal(pi, shared, `Pi ${name} should match shared source`)
   }
 
   const opencodeRuntime = await readFile(new URL("../skills/magi/references/runtime.md", import.meta.url), "utf8")
   const codexRuntime = await readFile(new URL("../adapters/codex/skills/magi/references/runtime.md", import.meta.url), "utf8")
   const claudeRuntime = await readFile(new URL("../adapters/claude/skills/magi/references/runtime.md", import.meta.url), "utf8")
+  const piRuntime = await readFile(new URL("../adapters/pi/skills/magi/references/runtime.md", import.meta.url), "utf8")
 
   assert.notEqual(opencodeRuntime, codexRuntime)
   assert.notEqual(opencodeRuntime, claudeRuntime)
   assert.notEqual(codexRuntime, claudeRuntime)
+  assert.notEqual(opencodeRuntime, piRuntime)
+  assert.notEqual(codexRuntime, piRuntime)
+  assert.notEqual(claudeRuntime, piRuntime)
+  assert.match(piRuntime, /Pi Runtime Reference/)
+  assert.doesNotMatch(piRuntime, /OpenCode Runtime Reference|Codex Runtime Reference|Claude Runtime Reference/)
   assert.match(opencodeRuntime, /OpenCode Runtime Reference/)
   assert.match(codexRuntime, /Codex Runtime Reference/)
   assert.match(claudeRuntime, /Claude Runtime Reference/)
@@ -2590,10 +2603,12 @@ test("shared Magi prompts and common references are identical across adapter ski
     const opencode = await readFile(new URL(`../skills/magi/prompts/${name}`, import.meta.url), "utf8")
     const codex = await readFile(new URL(`../adapters/codex/skills/magi/prompts/${name}`, import.meta.url), "utf8")
     const claude = await readFile(new URL(`../adapters/claude/skills/magi/prompts/${name}`, import.meta.url), "utf8")
+    const pi = await readFile(new URL(`../adapters/pi/skills/magi/prompts/${name}`, import.meta.url), "utf8")
 
     assert.equal(opencode, shared, `OpenCode ${name} should match shared source`)
     assert.equal(codex, shared, `Codex ${name} should match shared source`)
     assert.equal(claude, shared, `Claude ${name} should match shared source`)
+    assert.equal(pi, shared, `Pi ${name} should match shared source`)
   }
 })
 

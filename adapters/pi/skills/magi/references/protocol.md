@@ -1,0 +1,413 @@
+# Magi Protocol Reference
+
+Use this when starting or resuming a Magi loop.
+
+## State Contract
+
+State file path:
+
+```text
+.open_magi/magi-log/state.json
+```
+
+Create this file before the first research round:
+
+```json
+{
+  "schemaVersion": 2,
+  "goal": "final user goal",
+  "acceptanceCriteria": ["observable completion condition"],
+  "verificationCommands": ["command that proves completion"],
+  "active": true,
+  "sessionID": null,
+  "projectRoot": "/absolute/project/root",
+  "mainAgent": "build",
+  "currentRound": 1,
+  "currentPhase": "goal_definition",
+  "currentDeliberationPass": 1,
+  "maxDeliberationPasses": 3,
+  "deliberationStatus": "not_started",
+  "currentCouncilMode": "recon",
+  "currentReconPass": 1,
+  "deliberatorTimeoutMs": 1800000,
+  "activeDeliberators": {},
+  "deliberatorTimeoutCounts": {},
+  "needsContinue": false,
+  "inFlight": false,
+  "inFlightSince": null,
+  "lastPromptedRound": 0,
+  "lastPromptedAt": null,
+  "consecutiveNoProgress": 0,
+  "verdict": null,
+  "lastError": null,
+  "history": []
+}
+```
+
+`schemaVersion: 2` remains the current schema. The Herdr fields below are
+backward-compatible and optional, so a non-Herdr state file does not need to
+include them.
+
+Each entry in `activeDeliberators` may include these optional fields:
+
+```json
+{
+  "melchior": {
+    "transport": "herdr",
+    "paneID": "stable Melchior pane id",
+    "turnID": "current prompt turn id",
+    "reportPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
+    "waitResultPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-melchior-<filename-safe-turn-id>.json",
+    "controllerMutablePaths": [
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
+      "/absolute/project/root/.open_magi/magi-log/state.json",
+      "/absolute/project/root/.open_magi/magi-log/herdr-session.json",
+      "/absolute/project/root/.open_magi/magi-log/question-request.md",
+      "/absolute/project/root/.open_magi/magi-log/question-denied.md",
+      "/absolute/project/root/.open_magi/magi-log/plugin-error.log",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-melchior-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-balthasar-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-casper-<filename-safe-turn-id>.json"
+    ]
+  },
+  "balthasar": {
+    "transport": "herdr",
+    "paneID": "stable Balthasar pane id",
+    "turnID": "current prompt turn id",
+    "reportPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
+    "waitResultPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-balthasar-<filename-safe-turn-id>.json",
+    "controllerMutablePaths": [
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
+      "/absolute/project/root/.open_magi/magi-log/state.json",
+      "/absolute/project/root/.open_magi/magi-log/herdr-session.json",
+      "/absolute/project/root/.open_magi/magi-log/question-request.md",
+      "/absolute/project/root/.open_magi/magi-log/question-denied.md",
+      "/absolute/project/root/.open_magi/magi-log/plugin-error.log",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-melchior-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-balthasar-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-casper-<filename-safe-turn-id>.json"
+    ]
+  },
+  "casper": {
+    "transport": "herdr",
+    "paneID": "stable Casper pane id",
+    "turnID": "current prompt turn id",
+    "reportPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
+    "waitResultPath": "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-casper-<filename-safe-turn-id>.json",
+    "controllerMutablePaths": [
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-melchior.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-balthasar.md",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/report-casper.md",
+      "/absolute/project/root/.open_magi/magi-log/state.json",
+      "/absolute/project/root/.open_magi/magi-log/herdr-session.json",
+      "/absolute/project/root/.open_magi/magi-log/question-request.md",
+      "/absolute/project/root/.open_magi/magi-log/question-denied.md",
+      "/absolute/project/root/.open_magi/magi-log/plugin-error.log",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-melchior-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-balthasar-<filename-safe-turn-id>.json",
+      "/absolute/project/root/.open_magi/magi-log/round-NNN/<mode-dir>/wait-result-casper-<filename-safe-turn-id>.json"
+    ]
+  }
+}
+```
+
+After substituting the turn's concrete round, mode directory, and turn ID,
+`reportPath` is the sage's assigned absolute path. `waitResultPath` is the
+deterministic adjacent path
+`<absolute-turn-dir>/wait-result-<sage>-<filename-safe-turn-id>.json` for that
+role's captured CLI result. Derive `<filename-safe-turn-id>` deterministically
+from the exact `turnID` before freezing the paths. `controllerMutablePaths` is the same complete frozen per-turn
+allowlist in every Herdr `activeDeliberators` entry. Every value is a concrete
+absolute path. It contains all three assigned reports, `state.json`,
+`herdr-session.json`, both question-firewall files, `plugin-error.log`, and the
+three exact per-role `waitResultPath` values. A directory, glob, category, relative
+path, or path discovered after submission is not valid, and the list cannot
+expand while the turn is in flight.
+
+## Structured Wait Result
+
+After each Herdr invocation returns, fails, or times out, the main controller
+atomically writes that role's predeclared `waitResultPath` as one JSON object
+with exactly these fields:
+
+```json
+{
+  "schemaVersion": 1,
+  "sage": "melchior",
+  "agent": "magi-melchior-<hash10>",
+  "turnID": "filename-safe-turn-id",
+  "submittedAt": "2026-01-01T00:00:00.000Z",
+  "completedAt": "2026-01-01T00:00:01.000Z",
+  "exitCode": 0,
+  "timedOut": false,
+  "stdout": "captured standard output",
+  "stderr": "",
+  "combinedOutput": null,
+  "cliResult": {},
+  "parseError": null
+}
+```
+
+`schemaVersion` is exactly `1`. `sage` is `melchior`, `balthasar`, or
+`casper`; `agent` and `turnID` match the active entry; both timestamps are
+ISO-8601; `exitCode` is an integer or `null`; `timedOut` is boolean;
+`stdout`, `stderr`, and `combinedOutput` are strings or `null`;
+`cliResult` is a parsed object or `null`; and `parseError` is a string or
+`null`.
+
+Retain separate `stdout` and `stderr` when the runtime exposes both, or an
+explicitly labeled `combinedOutput` when it exposes only one channel.
+Unavailable streams are `null`, not omitted. The controller must not assume
+stdout-only output. Parse CLI JSON from stdout on success, from stderr on a
+nonzero result including exit 1, or from combined output when that is the only
+channel. Preserve a valid JSON error object from stderr in `cliResult` even on
+exit 1. When parsing fails, retain the captured streams and set `parseError`;
+never replace failure evidence with an empty result.
+
+Use the existing atomic controller-write primitive. If it uses a
+worktree-visible companion temporary file, predeclare that companion's exact
+absolute path before the baseline and add it to the same
+`controllerMutablePaths` list in every Herdr entry. Otherwise its internal
+temporary stays outside the monitored worktree and no companion path is
+allowed. The example above assumes no worktree-visible companion. Do not add a
+runner, capture the raw prompt or configured command, or copy report contents
+into a wait-result object.
+
+
+When an entry uses `transport: "herdr"`, the main controller, rather than a
+runtime plugin, owns updates to `inFlight`, `inFlightSince`,
+`lastPromptedRound`, `lastPromptedAt`, `activeDeliberators`, and
+`deliberatorTimeoutCounts`. This ownership transfer applies only to the Herdr
+transport; preserve the existing runtime ownership rules for non-Herdr
+sessions.
+
+`.open_magi/magi-log/herdr-session.json` is local operational log state. It
+records pane identity, each exact `waitResultPath` and result digest, and
+lifecycle details needed to recover a Herdr session;
+it is not a replacement for the portable `state.json` protocol contract.
+
+`schemaVersion: 2` enables council modes. `currentCouncilMode` is one of:
+- `recon`: parallel evidence gathering, repeatable in any round. Reports land in
+  `round-NNN/recon-MMM/`, where MMM is `currentReconPass`.
+- `decision`: the proposal-first council passes before execution. Reports land
+  in `round-NNN/council-PPP/`.
+- `review`: the adversarial completion review before `final-report.md`.
+  Reports land in `round-NNN/review-001/`.
+
+Set `currentCouncilMode` before launching deliberators so the runtime adapter
+can route timeout and hard-error reports to the correct directory. Reset it to
+`decision` when entering Phase 2 and on every round transition.
+
+`currentReconPass` numbers the recon passes within a round. It starts at 1,
+increments after each completed recon, and resets to 1 on every round
+transition. Each round allows at most 3 recon passes; after the third the main
+agent researches and decides on its own, but the decision council before any
+code change is still mandatory.
+
+If the current runtime `sessionID` is unavailable, set `sessionID` to `null`.
+Runtime adapters may bind it from later session events.
+
+The default `maxDeliberationPasses` is 3. The hard maximum is 5. Raise it above
+3 only for difficult problems with unclear root cause, high-risk changes, or
+conflicting verification evidence, and record the reason in `state.history` or
+the current synthesis.
+
+The default `deliberatorTimeoutMs` is 1800000 (30 minutes). Runtime adapters
+may enforce it by tracking and stopping timed-out child sessions. Runtimes
+without enforcement must still produce timeout reports instead of waiting
+indefinitely.
+
+Every Phase 6 history entry for an incomplete round must include
+`progress: true|false`. Use `true` only when the round produced evidence,
+diagnosis, verified code movement, or a safer narrowed plan. Use `false` when
+the round did not reduce uncertainty or move acceptance criteria closer.
+
+Optional: `baselineCommands` lists reproduction or baseline command prefixes
+declared at goal definition (for example building a baseline firmware to
+reproduce a bug, or running a traffic test to capture a trap). Runtime guards
+may allow these declared build/test commands outside the execution phase as
+evidence gathering; code edits remain execution-only.
+
+## Log Layout
+
+```text
+.open_magi/magi-log/
+├── state.json
+├── herdr-session.json  # local operational state
+├── checklist.md
+├── question-request.md
+├── question-denied.md
+├── round-001/
+│   ├── recon-001/
+│   │   ├── prompt.md
+│   │   ├── report-melchior.md
+│   │   ├── report-balthasar.md
+│   │   └── report-casper.md
+│   ├── recon-002/
+│   │   └── ...
+│   ├── evidence-base.md
+│   ├── research-prompt.md
+│   ├── council-001/
+│   │   ├── prompt.md
+│   │   ├── report-melchior.md
+│   │   ├── report-balthasar.md
+│   │   ├── report-casper.md
+│   │   └── synthesis.md
+│   ├── council-002/
+│   │   ├── prompt.md
+│   │   ├── report-melchior.md
+│   │   ├── report-balthasar.md
+│   │   ├── report-casper.md
+│   │   └── synthesis.md
+│   ├── direction-selection.md
+│   ├── verdict.md
+│   ├── verification.md
+│   ├── cleanup.md
+│   ├── review-001/
+│   │   ├── prompt.md
+│   │   ├── report-melchior.md
+│   │   ├── report-balthasar.md
+│   │   └── report-casper.md
+│   └── review-verdict.md
+└── final-report.md
+```
+
+`recon-001/` is required in round 1. Any round may run further recon passes
+(`recon-MMM/`, up to 3 per round); after a failed round, the next round starts
+with a recon pass carrying the failure evidence. `cleanup.md`, `review-001/`,
+and `review-verdict.md` exist only in the round where the main agent claims
+completion.
+
+## Phase Details
+
+### Phase 0: Goal Definition
+
+1. Extract the user's goal.
+2. Define `acceptanceCriteria`.
+3. Define `verificationCommands`.
+4. Inspect relevant context: project instructions, structure, build/test docs.
+5. Write initial `state.json`.
+
+If criteria are unclear, infer a reasonable testable default and record it.
+
+### Phase 1: Status Assessment
+
+Compare current state against `acceptanceCriteria`, latest `verification.md`,
+and current repository/filesystem state. Choose `complete`, `needs_research`,
+`needs_action`, or `blocked`.
+
+If complete, do not stop immediately. Run the completion review pass (Phase 6)
+before writing `final-report.md`.
+
+Round 1 splits Phase 1 into two stages:
+
+1. **Phase 1a (minimal scoping, main agent only).** Read the error messages,
+   failing test output, and `git status`/`git diff` summary. Do not deep-dive
+   and do not diagnose. The only goal is to write a focused
+   `round-NNN/recon-001/prompt.md` with the goal, the observed symptoms, the
+   files or areas already identified, and one precise recon question per sage
+   angle. Set `currentCouncilMode=recon` before launching deliberators.
+2. **Phase 1b (parallel recon, deliberators).** Launch all three deliberators
+   with the recon prompt. Each investigates read-only from its own angle:
+   Melchior maps implementation status and risk points, Balthasar maps
+   architecture boundaries and dependencies, Casper maps reproduction
+   conditions and unverified assumptions. Write the three
+   `round-NNN/recon-001/report-*.md` files, then synthesize them into
+   `round-NNN/evidence-base.md` with confirmed facts, open questions, key
+   files, and constraints. Reset `currentCouncilMode=decision` and continue to
+   Phase 2.
+
+Recon is repeatable within any round (see `references/deliberation.md`); after
+a failed round, the next round starts with a recon pass carrying the failure
+evidence before any new decision council. While a recon pass is in flight, the
+main agent does only bounded parallel work and never writes the decision
+council prompt or the verdict.
+
+### Phase 6: Goal Check
+
+If the main agent judges acceptance criteria satisfied, do not write
+`final-report.md` yet. First run the cleanup gate, then the adversarial
+completion review.
+
+Cleanup gate (`currentPhase=cleanup`):
+
+1. Collect the round's full diff (`git diff` against the round start or
+   checkpoint).
+2. Split the changes into two groups:
+   - fix changes: the hunks that directly repair the problem;
+   - supporting changes: protective mechanisms, defensive checks, refactors,
+     or implementation not strictly required by the problem.
+3. Audit every fix change one by one: remove redundant or ineffective fix
+   changes; every remaining fix change must be necessary for the acceptance
+   criteria. Verify each kept fix change individually: record what breaks
+   without it and the evidence (targeted test, command output, or trace)
+   that proves it is required.
+4. Do not remove supporting changes here. List them in `cleanup.md` and defer
+   their judgment to the completion review council.
+5. Re-run the verification commands after cleanup.
+6. Write `round-NNN/cleanup.md` with per-fix-change `kept | removed` entries
+   (each with a reason and its individual verification evidence), the list of
+   supporting changes deferred to the review council, and the post-cleanup
+   verification output (command, exit code, important output). If the round
+   made no code changes, record that explicitly.
+7. Only then set `currentPhase=completion_review` and continue to the review
+   pass.
+
+Completion review (`currentPhase=completion_review`,
+`currentCouncilMode=review`):
+
+1. Write `round-NNN/review-001/prompt.md` containing the acceptance criteria,
+   `verdict.md`, `verification.md`, `cleanup.md`, and the actual diff (`git
+   diff` output or the changed-file list with contents), never only a summary
+   of the diff.
+2. Launch all three deliberators for the review pass and write the three
+   `round-NNN/review-001/report-*.md` files.
+3. Write `round-NNN/review-verdict.md` with `outcome: approved | objected`,
+   `verdict_adherence_confirmed: yes | no`, each sage's stance, and any
+   blocking objections.
+4. `outcome: approved` requires all three review reports at `stance: approve`
+   with `blocking_objection: no`, plus `verdict_adherence_confirmed: yes`.
+5. If approved, squash before the final report:
+   - combine all checkpoint commits created by this loop into a single commit
+     (for example `git reset --soft <base>` plus one commit); do not leave the
+     fix scattered across several checkpoint commits;
+   - re-run the verification commands after the squash;
+   - then write `final-report.md` in the user's preferred language, including
+     a standalone `squash_commit: <hash>` line and the post-squash
+     verification output. Use `squash_commit: none` only when the loop made
+     no code commits;
+   - set `currentPhase=complete`, `active=false`, `needsContinue=false`,
+     `inFlight=false`, and `inFlightSince=null`.
+6. If objected: treat the objections as new evidence. Append a history entry,
+   increment `currentRound`, reset `currentDeliberationPass=1`, reset
+   `deliberationStatus=not_started`, reset `currentCouncilMode=decision`,
+   reset `currentReconPass=1`, set `currentPhase=status_assessment`, set
+   `needsContinue=true`, and start the next round.
+
+If incomplete with progress:
+- append a history entry with `progress: true|false` set to `true`;
+- include any failure diagnostic evidence needed by the next deliberation;
+- include any checkpoint commit hash;
+- reset `consecutiveNoProgress=0`;
+- set `needsContinue=true`;
+- increment `currentRound`;
+- reset `currentDeliberationPass=1`;
+- reset `deliberationStatus=not_started`;
+- reset `currentCouncilMode=decision`;
+- reset `currentReconPass=1`;
+- set `currentPhase=status_assessment`.
+
+If incomplete with no progress:
+- append a history entry with `progress: true|false` set to `false`;
+- increment `consecutiveNoProgress`;
+- if `< 5`, set `needsContinue=true`, increment `currentRound`, reset
+  `currentDeliberationPass=1`, reset `deliberationStatus=not_started`, reset
+  `currentCouncilMode=decision`, reset `currentReconPass=1`, set
+  `currentPhase=status_assessment`, and
+  return to Phase 1;
+- if `>= 5`, set `currentPhase=blocked`, `active=false`,
+  `needsContinue=false`, and wait for user input.

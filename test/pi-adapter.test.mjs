@@ -43,3 +43,16 @@ test("third-party subagent package is excluded", () => {
     assert.ok(!pkg[field] || !pkg[field]["pi-subagents"])
   }
 })
+
+test("Pi manifest paths exist on disk", () => {
+  for (const relative of ["adapters/pi/extension.js", "adapters/pi/skills/magi/SKILL.md", "adapters/pi/README.md"]) {
+    assert.ok(readFileSync(join(repoRoot, relative), "utf8").length > 0, `${relative} must exist`)
+  }
+})
+
+test("Pi adapter docs contain no Han characters", () => {
+  const hanPattern = /\p{Script=Han}/u
+  for (const file of ["adapters/pi/README.md", "adapters/pi/skills/magi/SKILL.md", "adapters/pi/skills/magi/references/runtime.md"]) {
+    assert.ok(!hanPattern.test(readFileSync(join(repoRoot, file), "utf8")), `${file} must not contain Han characters`)
+  }
+})
