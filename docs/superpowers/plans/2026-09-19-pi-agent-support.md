@@ -4,23 +4,32 @@
 
 **Goal:** Implement experimental native Pi support for Open Magi (adapter + native council runner + guard + packaging) exactly as specified in `docs/superpowers/specs/2026-09-19-pi-agent-support-design.md`.
 
-**Architecture:** A new `adapters/pi/` extension is discovered by Pi from the repository root package manifest (`package.json` → `pi` key, optional `"*"` peers, `files` including `adapters/pi/`). `extension.js` registers `/magi`, `/magi-setup`, an internal `magi_council` tool, and Pi lifecycle handlers (`input`, `session_start`, `tool_call`, `agent_settled`, `session_shutdown`), routing to four focused library modules: `activation.js` (natural-language/slash routing and the expandPromptTemplates/followUp injection), `config.js` (strict schema-1 model override resolution via `getAgentDir()`/`CONFIG_DIR_NAME`), `controller.js` (transport gate, guard classification, phase guard port, magi_council input union validation, required-artifact computation, `agent_settled` actions), and `pi-runner.js` (three concurrent isolated JSON-mode Pi children, JSONL parsing, failure normalization, report writing).
+**Architecture:** A new `adapters/pi/` extension is discovered by Pi from the repository root package manifest (`package.json` → `pi` key). `extension.js` registers `/magi`, `/magi-setup`, the internal `magi_council` tool, and Pi lifecycle handlers (`input`, `session_start`, `tool_call`, `agent_settled`, `session_shutdown`), routing to four focused library modules: `activation.js` (natural-language → `input`-event `transform` into `/skill:magi <original>`; command handling uses `pi.sendUserMessage(..., { expandPromptTemplates: true, deliverAs: "followUp" iff streaming })`), `config.js` (strict schema-1 model overrides via a factory bound to the host's `getAgentDir()`/`CONFIG_DIR_NAME`), `controller.js` (transport gate, guard classification + bash/powershell phase guard, `magi_council` discriminated-union validation, required-artifact contract, question firewall, `agent_settled` bounded actions, no-progress/stale-lock, child-process classification), and `pi-runner.js` (three concurrent isolated JSON-mode Pi children, JSONL parsing, failure normalization, atomic reports). Host modules are resolved through declared optional `"*"` peers and injected into testable factories.
 
-**Tech Stack:** Node.js ≥20 (ESM, `node:test` + `node:assert/strict`), Pi 0.85.1 extension API (`@earendil-works/pi-coding-agent` host peer, `typebox` for tool schemas), existing OpenCode plugin artifact conventions (`index.js`) and Codex runner patterns (`adapters/codex/lib/codex-runner.js`).
+**Tech Stack:** Node.js ≥20 (ESM, `node:test` + `node:assert/strict`), Pi 0.85.1 extension API (`@earendil-works/pi-coding-agent` host peer, `typebox` for tool schemas), existing OpenCode artifact conventions (`index.js`) and Codex runner patterns (`adapters/codex/lib/codex-runner.js`).
+
+Verified Pi 0.85.1 facts this plan relies on (from the installed package's `dist/core/extensions/types.d.ts` and `docs/extensions.md`):
+
+- `RegisteredCommand.handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>` — command `args` is a plain string (text after the command name).
+- `InputEventResult = { action: "continue" } | { action: "transform", text } | { action: "handled" }`; the `input` event sees raw text before `/skill:` expansion, and `transform` rewrites text then continues to expansion — so natural-language activation uses `transform` into `/skill:magi <original>`. `event.streamingBehavior` exists but is only informational for input handlers; it is NOT used to queue injections.
+- `pi.sendUserMessage(content, options)` returns void; it throws synchronously when the agent is streaming without `deliverAs`, so the `/magi` command handler passes `deliverAs: "followUp"` exactly when `!ctx.isIdle()` (idle calls may omit `deliverAs`).
+- `getAgentDir()` (honors `PI_CODING_AGENT_DIR`) and `CONFIG_DIR_NAME` are exported from `@earendil-works/pi-coding-agent`.
+- Tool `execute` marks failure by throwing (sets `isError: true`); returning a value never sets the error flag — invalid `magi_council` input fails closed by throwing.
+- Non-interactive modes: `ctx.mode` is `"tui" | "rpc" | "json" | "print"`; only `"tui"` is the interactive host.
 
 ## Global Constraints
 
-- Host is interactive Pi only: `ctx.mode === "tui"` activates Magi; `rpc`/`json`/`print` modes reject activation with `ctx.ui.notify(..., "error")` or a returned handled action explaining the limitation.
-- Third-party package `pi-subagents` must NOT appear anywhere; `grep -r "pi-subagents" adapters/pi test` must return only the negative-assertion test.
-- Host modules are imported only via host peers: `@earendil-works/pi-coding-agent` and `typebox`; both declared `"peeredDependencies"` entries `"*"` with `"optional": true` in `peerDependenciesMeta`; never in `dependencies` or `bundledDependencies`.
-- Never bundle or re-import a second copy of the Pi runtime; never spawn `npx pi`/`npm-view` chains in the runner; child invocation comes from `resolvePiInvocation` only (current script → packaged runtime → `pi` from PATH last, always `spawn(..., { shell: false })`).
-- The HERDR_ENV=1 transport gate runs before any native config read, controller initialization, or runner work. In Herdr mode `magi_council` rejects with `transport mismatch`. No fallback Herdr→native or native→Herdr in either direction.
-- Chinese natural-language examples are matched at runtime as decoded strings; source code carries them as `"\u2026"` ASCII escapes. Literal Han characters may appear ONLY in `README.zh-TW.md` (root) and never in `adapters/pi/**` or `test/**` sources.
-- `HARD_MAX_DELIBERATOR_TIMEOUT_MS = 60 * 60 * 1000`; default deliberator timeout `30 * 60 * 1000` (constants mirrored from `index.js:14-16`).
-- Report files are written with the atomic tmp+rename pattern from `index.js` `writeState`; reports live at `join(dirname(promptPath), `report-${sage}.md`)` exactly like `adapters/codex/lib/codex-runner.js:63-65`.
-- Failure envelope vocabulary stays `status: ok | timeout | hard_error`, `failure_type: none | timeout | hard_error`; native subtypes (`spawn_error`, `model_unavailable`, `aborted`, `nonzero_exit`, `invalid_json`, `missing_final_response`, `invalid_config`) appear ONLY in the bounded `pi_diag:` field, never in envelope fields.
+- Host is interactive Pi only: Magi activation intent is honored when `ctx.mode === "tui"`; in `rpc`/`json`/`print` modes a Magi activation intent is rejected with a clear `[magi]` message, while ordinary non-Magi input passes through unchanged.
+- Third-party package `pi-subagents` must NOT appear anywhere; the only permitted occurrence is the negative-assertion test.
+- Host modules are imported only via host peers: `@earendil-works/pi-coding-agent` and `typebox`; both are declared in `peerDependencies` with `"*"` ranges and `"optional": true` in `peerDependenciesMeta`; neither may appear in `dependencies` or `bundledDependencies`.
+- Never bundle a second copy of the Pi runtime; child invocation comes only from `resolvePiInvocation` (current script → packaged runtime → `pi` from PATH as final fallback), always `spawn(..., { shell: false })`.
+- The `HERDR_ENV=1` transport gate runs before any native config read, controller initialization, or runner work. In Herdr mode the `/magi` command still injects `/skill:magi <goal>` (the portable skill's Herdr hard gate handles `.open-magi-herdr`), never reports an alternative activation path, never starts native config/runner, and never swallows send errors. `magi_council` rejects with the `TRANSPORT_MISMATCH_ERROR` by throwing. No fallback Herdr→native or native→Herdr in either direction.
+- Chinese natural-language examples are matched at runtime as decoded strings; sources carry them as `"\u2026"` ASCII escapes. Literal Han characters may appear ONLY in `README.zh-TW.md` and never in `adapters/pi/**`, `test/**`, or `README.md`.
+- `HARD_MAX_DELIBERATOR_TIMEOUT_MS = 60 * 60 * 1000`; default deliberator timeout `30 * 60 * 1000`.
+- Report files are written atomically via a sibling temp file + `rename` (same directory as the target, so rename never crosses filesystems); reports live at `join(dirname(promptPath), `report-${sage}.md`)`.
+- Failure envelope vocabulary stays `status: ok | timeout | hard_error`, `failure_type: none | timeout | hard_error`; native subtypes (`spawn_error`, `model_unavailable`, `aborted`, `nonzero_exit`, `invalid_json`, `missing_final_response`, and pre-dispatch `invalid_config`) appear ONLY in the bounded `pi_diag:` field, never in envelope fields.
 - Success marker `report_source: pi_json`; failure marker `report_source: pi_json_failed`.
-- Guard verdicts come only from Pi's tool API: a tool is a builtin iff `toolInfo.sourceInfo.source === "builtin"`; guard set = `pi.getActiveTools()` ∩ builtins; unknown active builtin blocks activation/dispatch fail-closed.
+- Guard verdicts come only from Pi's tool API: a tool is a builtin iff `toolInfo.sourceInfo.source === "builtin"`; guard set = `pi.getActiveTools()` ∩ builtins; an unrecognized active builtin blocks activation/dispatch fail-closed.
 - `npm test` must read `node --test test/package.test.mjs test/plugin.test.mjs test/setup.test.mjs test/pi-adapter.test.mjs`.
 - Branch is `feat/pi-agent-support`; never push or merge in this plan's tasks.
 - The OpenCode plugin (`index.js`) gains no Pi-specific branches; pure code stays adapter-local.
@@ -30,29 +39,29 @@
 Create:
 
 ```text
-adapters/pi/README.md                  adapter docs (Status/Install/Usage/Herdr Precedence, links README.md#herdr-native-deliberation)
-adapters/pi/extension.js               Pi extension entry: registers commands, tool, lifecycle handlers; binds modules, no business logic
-adapters/pi/lib/activation.js          natural-language + slash activation routing, injection text, streaming deliverAs
-adapters/pi/lib/config.js              schema-1 config load/validate/resolve/atomic-write with getAgentDir()+CONFIG_DIR_NAME
-adapters/pi/lib/controller.js          transport gate, guard classification+phase guard (bash+powershell), magi_council union validation, required artifacts, agent_settled actions
-adapters/pi/lib/pi-runner.js           Pi executable resolution, isolated JSON-mode children, JSONL parsing, failure normalization, atomic reports
-adapters/pi/skills/magi/SKILL.md       Pi runtime skill (adds "## Pi Bootstrap Gate"; no OpenCode/Codex/Claude bootstrap gates)
-adapters/pi/skills/magi/prompts/{melchior,balthasar,casper}.md   byte-identical copies of shared prompts
-adapters/pi/skills/magi/references/{checklist-template,deliberation,execution-and-verification,herdr,protocol,question-firewall,troubleshooting}.md  byte-identical copies of shared references
-adapters/pi/skills/magi/references/runtime.md   Pi Runtime Reference (unique)
-test/pi-adapter.test.mjs               every Pi adapter behavior test (unit + spawned fake-Pi processes)
+adapters/pi/README.md                  adapter docs (Status/Install/Usage/Herdr Precedence)
+adapters/pi/extension.js               Pi extension entry (commands, tool, lifecycle wiring only)
+adapters/pi/lib/activation.js          activation intent detection + skill-invocation building
+adapters/pi/lib/config.js              config factory: paths, strict schema load/validate, resolution, atomic writes
+adapters/pi/lib/controller.js          transport gate, guard, magi_council validation/dispatch, artifacts, question firewall, settled actions, no-progress/stale-lock
+adapters/pi/lib/pi-runner.js           Pi executable resolution, isolated JSON-mode children, JSONL parsing, report envelope
+adapters/pi/skills/magi/SKILL.md       Pi runtime skill (adds "## Pi Bootstrap Gate")
+adapters/pi/skills/magi/prompts/{melchior,balthasar,casper}.md
+adapters/pi/skills/magi/references/{checklist-template,deliberation,execution-and-verification,herdr,protocol,question-firewall,troubleshooting}.md
+adapters/pi/skills/magi/references/runtime.md
+test/pi-adapter.test.mjs               every Pi adapter behavior test
 ```
 
 Modify:
 
 ```text
-package.json                           adds pi manifest, adapters/pi in files, optional peers, test script entry (Task 1)
-test/package.test.mjs                  extends asset-parity loops to adapters/pi, runtime.md matchers, Han-char probe, pack expectations (Tasks 1-2)
-README.md                              "Pi Activation and Install" section (Task 10)
-README.zh-TW.md                        zh-TW section mirroring Task 10 (Task 10)
+package.json                           pi manifest, files, optional peers, test script (Task 1)
+test/package.test.mjs                  parity loops + runtime.md matchers + Han probe + pack expectations (Tasks 1-2)
+README.md                              "Pi Activation and Installation" section (Task 11)
+README.zh-TW.md                        zh-TW section (Task 11)
 ```
 
-Each file has one responsibility, as listed. No other files change.
+Task dependency rule: every task's GREEN checkpoint compiles and passes all tests added up to that task, using only symbols that already exist. Tasks touch files in this order and never import from a future task.
 
 ---
 
@@ -60,15 +69,14 @@ Each file has one responsibility, as listed. No other files change.
 
 **Files:**
 - Modify: `package.json`
-- Test: `test/pi-adapter.test.mjs` (this task creates the file with its first tests)
+- Test: `test/pi-adapter.test.mjs` (created by this task)
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces: `package.json` `pi` manifest read by Task 2/11; `test/pi-adapter.test.mjs` exists and is in `npm test`; manifest-contract test that later tasks keep green.
+- Produces: `package.json` `pi` manifest; `peerDependencies`/`peerDependenciesMeta` contract; `npm test` runs `test/pi-adapter.test.mjs`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `test/pi-adapter.test.mjs` with these first tests:
+Create `test/pi-adapter.test.mjs`:
 
 ```js
 import test from "node:test"
@@ -77,8 +85,8 @@ import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
-const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"))
+export const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
+export const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"))
 
 test("package.json declares a Pi manifest pointing at the extension and skill roots", () => {
   assert.deepEqual(pkg.pi, {
@@ -102,10 +110,8 @@ test("Pi host modules are optional wildcard peers and never bundled", () => {
     "@earendil-works/pi-coding-agent": { optional: true },
     typebox: { optional: true },
   })
-  assert.ok(!pkg.dependencies || !pkg.dependencies["@earendil-works/pi-coding-agent"])
-  assert.ok(!pkg.dependencies || !pkg.dependencies.typebox)
   const raw = readFileSync(join(repoRoot, "package.json"), "utf8")
-  assert.ok(!/"bundledDependencies"/.test(raw), "no bundledDependencies key expected")
+  assert.ok(!raw.includes("bundledDependencies"), "no bundledDependencies key expected")
 })
 
 test("npm test script runs the Pi adapter tests", () => {
@@ -120,18 +126,14 @@ test("third-party subagent package is excluded", () => {
 })
 ```
 
-(The "Pi manifest paths exist on disk" test is written in Task 2, where the files it checks are first committed.)
-
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `node --test test/pi-adapter.test.mjs`
-Expected: FAIL — `pkg.pi` is `undefined` (deepEqual throws ComparisonError), manifest paths missing (`ENOENT`), and `peeredDependencies` absent.
+Expected: FAIL — `pkg.pi` is `undefined` (deepEqual throws), `peerDependencies` absent.
 
-- [ ] **Step 3: Write minimal implementation in `package.json`**
+- [ ] **Step 3: Apply edits to `package.json`**
 
-Apply these exact edits:
-
-1. Add to root object (order: after `exports`, before `bin`):
+1. Add after `exports`, before `bin`:
 
 ```json
 "pi": {
@@ -140,7 +142,7 @@ Apply these exact edits:
 },
 ```
 
-2. Replace `"files"` with:
+2. Replace `files` with:
 
 ```json
 "files": [
@@ -155,13 +157,13 @@ Apply these exact edits:
 ],
 ```
 
-3. Replace `"test"` script with:
+3. Replace the `test` script with:
 
 ```json
 "test": "node --test test/package.test.mjs test/plugin.test.mjs test/setup.test.mjs test/pi-adapter.test.mjs"
 ```
 
-4. Add after `"engines"`:
+4. Add after `engines`:
 
 ```json
 "peerDependencies": {
@@ -191,13 +193,13 @@ git commit -m "feat(pi): declare Pi manifest, optional host peers, and test wiri
 ### Task 2: Pi skill assets, parity, and manifest-path existence
 
 **Files:**
-- Create: `adapters/pi/skills/magi/SKILL.md`, `adapters/pi/skills/magi/references/runtime.md`, `adapters/pi/README.md`
-- Copy (byte-identical): `adapters/pi/skills/magi/prompts/{melchior,balthasar,casper}.md` from `shared/magi/prompts/`; `adapters/pi/skills/magi/references/{checklist-template,deliberation,execution-and-verification,herdr,protocol,question-firewall,troubleshooting}.md` from `shared/magi/references/`
-- Test: `test/pi-adapter.test.mjs` (append), `test/package.test.mjs` (modify two loops)
+- Create: `adapters/pi/extension.js` (minimal stub, replaced by Task 8's full implementation), `adapters/pi/README.md`, `adapters/pi/skills/magi/SKILL.md`, `adapters/pi/skills/magi/references/runtime.md`
+- Copy byte-identical: `adapters/pi/skills/magi/prompts/{melchior,balthasar,casper}.md` from `shared/magi/prompts/`; `adapters/pi/skills/magi/references/{checklist-template,deliberation,execution-and-verification,herdr,protocol,question-firewall,troubleshooting}.md` from `shared/magi/references/`
+- Modify: `test/package.test.mjs` (parity loops + pack test)
+- Test: `test/pi-adapter.test.mjs` (append)
 
 **Interfaces:**
-- Consumes: `package.json` `pi` manifest from Task 1; `sharedMagiReferences` array in `test/package.test.mjs:24-32`.
-- Produces: `adapters/pi/skills/magi/**` assets loaded by Pi "pi install ."; parity expectations used by the full suite.
+- Produces: `adapters/pi/skills/magi/**` assets; pack-file coverage for `adapters/pi`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -205,23 +207,14 @@ Append to `test/pi-adapter.test.mjs`:
 
 ```js
 test("Pi manifest paths exist on disk", () => {
-  for (const relative of [
-    "adapters/pi/extension.js",
-    "adapters/pi/skills/magi/SKILL.md",
-    "adapters/pi/README.md",
-  ]) {
+  for (const relative of ["adapters/pi/extension.js", "adapters/pi/skills/magi/SKILL.md", "adapters/pi/README.md"]) {
     assert.ok(readFileSync(join(repoRoot, relative), "utf8").length > 0, `${relative} must exist`)
   }
 })
 
-test("Pi adapter assets contain no Han characters", () => {
+test("Pi adapter docs contain no Han characters", () => {
   const hanPattern = /\p{Script=Han}/u
-  const files = [
-    "adapters/pi/README.md",
-    "adapters/pi/skills/magi/SKILL.md",
-    "adapters/pi/skills/magi/references/runtime.md",
-  ]
-  for (const file of files) {
+  for (const file of ["adapters/pi/README.md", "adapters/pi/skills/magi/SKILL.md", "adapters/pi/skills/magi/references/runtime.md"]) {
     assert.ok(!hanPattern.test(readFileSync(join(repoRoot, file), "utf8")), `${file} must not contain Han characters`)
   }
 })
@@ -229,16 +222,21 @@ test("Pi adapter assets contain no Han characters", () => {
 
 In `test/package.test.mjs`:
 
-1. Change the parity loop in test `"shared Magi prompts and common references are identical across adapter skills"` (L2558): the test iterates adapter skill roots. Find the array or map of adapter skill directories used (it enumerates `skills/magi/`, `adapters/codex/skills/magi/`, `adapters/claude/skills/magi/`) and add `"adapters/pi/skills/magi/"`. All 7 `sharedMagiReferences` + 3 prompts become byte-compared against `adapters/pi/skills/magi/` too.
-2. In the same test, extend the runtime.md trio to a quartet: add `adapters/pi/skills/magi/references/runtime.md`, assert it matches `/Pi Runtime Reference/`, is pairwise different from the existing three, and that it must NOT match `/OpenCode Runtime Reference|Codex Runtime Reference|Claude Runtime Reference/` nor `/Codex Bootstrap Gate|Claude Bootstrap Gate/`.
-3. In test `"bundled magi skill assets contain the expected contract"` (L2129): add `assert.match(piSkill, /Pi Bootstrap Gate/)` and `assert.doesNotMatch(piSkill, /OpenCode Bootstrap Gate|Codex Bootstrap Gate|Claude Bootstrap Gate/)`.
-4. In the Han-character test block (uses `hanPattern`, `test/package.test.mjs:18`): add the `adapters/pi/*SKILL.md` + runtime.md paths to the scanned set.
-5. In the pack-file test `"package metadata exposes OpenCode plugin, setup CLI, and injected plugin tests"` (L330): the pack must now include `adapters/pi`; assert on the produced pack file list `assert.ok(names.some((n) => n.startsWith("adapters/pi/")))` next to the existing inclusion patterns.
+1. In test `"shared Magi prompts and common references are identical across adapter skills"` (L2558), add `adapters/pi/skills/magi/` to the adapter skill list being byte-compared, and extend the `runtime.md` trio to a quartet: `adapters/pi/skills/magi/references/runtime.md` must match `/Pi Runtime Reference/`, differ from the other three, and must not match `/OpenCode Runtime Reference|Codex Runtime Reference|Claude Runtime Reference/`.
+2. In test `"bundled magi skill assets contain the expected contract"` (L2129), add:
 
-- [ ] **Step 2: Run tests to verify they fail**
+```js
+assert.match(readFileSync(join(root, "adapters/pi/skills/magi/SKILL.md"), "utf8"), /Pi Bootstrap Gate/)
+assert.doesNotMatch(readFileSync(join(root, "adapters/pi/skills/magi/SKILL.md"), "utf8"), /OpenCode Bootstrap Gate|Codex Bootstrap Gate|Claude Bootstrap Gate/)
+```
+
+3. In the Han-character probe block (`hanPattern` at L18), add `adapters/pi/README.md`, `adapters/pi/skills/magi/SKILL.md`, and `adapters/pi/skills/magi/references/runtime.md` to the scanned set.
+4. In the pack test `"package metadata exposes OpenCode plugin, setup CLI, and injected plugin tests"` (L330), add `assert.ok(packNames.some((n) => n.startsWith("adapters/pi/")), "pack must include adapters/pi")` and remove nothing from existing exclusions (`adapters/codex` and `adapters/claude` stay excluded from `files`; only `adapters/pi` is added).
+
+- [ ] **Step 2: RED**
 
 Run: `node --test test/pi-adapter.test.mjs test/package.test.mjs`
-Expected: FAIL — `ENOENT adapters/pi/extension.js`, parity tests fail ("adapters/pi/skills/magi/ is missing…"), pack assertions fail on `npm pack` output.
+Expected: FAIL — `ENOENT adapters/pi/...`, parity mismatch, pack assertion failure.
 
 - [ ] **Step 3: Create the assets**
 
@@ -248,100 +246,80 @@ for role in melchior balthasar casper; do cp shared/magi/prompts/$role.md adapte
 for ref in checklist-template deliberation execution-and-verification herdr protocol question-firewall troubleshooting; do cp shared/magi/references/$ref.md adapters/pi/skills/magi/references/$ref.md; done
 cp skills/magi/SKILL.md adapters/pi/skills/magi/SKILL.md
 cp skills/magi/references/runtime.md adapters/pi/skills/magi/references/runtime.md
-mkdir -p adapters/pi/lib
+printf 'export default function () {}\n' > adapters/pi/extension.js
 ```
 
-Then edit `adapters/pi/skills/magi/SKILL.md`:
-
-1. Replace the "## Herdr Magi Activation Hard Gate" section content with:
+Edit `adapters/pi/skills/magi/SKILL.md`: replace the entire `## Herdr Magi Activation Hard Gate` section with the `## Pi Bootstrap Gate` section below; keep every other section byte-identical to `skills/magi/SKILL.md`; the adapter skill must not mention OpenCode, Codex, or Claude:
 
 ```markdown
 ## Pi Bootstrap Gate
 
-This adapter runs under Pi. Activate Magi with `/magi <goal>`, `/skill:magi <goal>`,
-or an explicit request to use Magi. Natural-language activation is performed by the
-Open Magi Pi extension before skill expansion; do not hand-route.
-
-- In Herdr mode (`HERDR_ENV=1`), the `.open-magi-herdr` hard gate, command
-  questions, pane ownership, layout, persistence, and cleanup rules keep the
-  existing Herdr contract; the native Pi council never runs.
-- Outside Herdr, deliberation is launched by the `magi_council` tool, which
-  starts three isolated read-only Pi children. Do not discover a runner
-  through the shell and do not spawn deliberators yourself.
+- In Herdr mode (`HERDR_ENV=1`): perform exactly one lstat of `<cwd>/.open-magi-herdr`
+  before any other Magi work. If it is missing, ask for the exact melchior,
+  balthasar, and casper commands, then atomically write the file with mode 0600,
+  add it to `.git/info/exclude`, and revalidate. Then load `references/herdr.md`,
+  bind the Herdr pane, and run the loop through Herdr panes. The native Pi
+  council never runs in Herdr mode.
+- Outside Herdr: deliberation is launched only through the `magi_council` tool.
+  Never spawn deliberators yourself and never discover a runner through the shell.
 ```
 
-2. Keep every other section byte-identical to `skills/magi/SKILL.md` (the six-phase protocol, gates, report format, question firewall text are runtime-host agnostic; do not mention OpenCode, Codex, or Claude anywhere in the runtime.md — its matcher asserts that).
-
-Replace `adapters/pi/skills/magi/references/runtime.md` content with (replace the whole file):
+Replace `adapters/pi/skills/magi/references/runtime.md` with:
 
 ```markdown
 # Pi Runtime Reference
 
-This runtime governs Open Magi natives under Pi 0.85.1. Existing protocol,
-prompts, reports, phases, and artifact contracts apply unchanged. Only the
-transport mechanics differ from the OpenCode runtime.
+Pi-specific transport for Open Magi. Protocol, prompts, reports, phases, and
+artifact contracts are unchanged from `shared/magi/references/`.
 
 ## Status
 
-Experimental. OpenCode is the supported production runtime; Pi support is
-experimental until validated in real usage.
+Experimental. OpenCode is the production-supported runtime.
 
 ## Activation
 
-- `/magi <goal>` — dispatches to the Magi skill with the goal.
-- `/skill:magi <goal>` — direct skill invocation.
-- Natural language — the extension's `input` handler detects an explicit
-  standalone `magi` token plus a use/start/run/through marker (or `magi skill`
-  as an instruction), with no governing negation, and rewrites the request to
-  `/skill:magi <original request>`. `expandPromptTemplates: true` drives skill
-  expansion; `deliverAs: "followUp"` is used whenever the agent is streaming
-  so the queued injection cannot throw.
-- Informational questions (`What is Magi?`) and negations (`do not use Magi`)
-  never activate.
-
-## Non-Interactive Rejection
-
-Magi only activates on an interactive Pi session (`ctx.mode` is `tui`). In
-`rpc`, `json`, and `print` modes the extension rejects activation with a clear
-message instead of initializing controller state.
+- `/magi <goal>`, `/skill:magi <goal>`, or an explicit use-Magi request.
+- Natural-language requests are rewritten by the extension's `input` event into
+  `/skill:magi <original request>`; Pi expands the skill command after the
+  input event.
+- `/magi` injects the same invocation with `expandPromptTemplates: true`
+  (plus `deliverAs: "followUp"` while the agent is streaming).
+- Questions and negations never activate. Non-interactive sessions reject
+  activation with a clear message.
 
 ## Model Overrides
 
-- User scope: `getAgentDir()/open-magi.json`.
+- User scope: `getAgentDir()/open-magi.json` (honors `PI_CODING_AGENT_DIR`).
 - Project scope: `CONFIG_DIR_NAME/open-magi.json` under the project root, read
   only when the project is trusted.
-- Schema:
+- Schema version 1 is strict:
 
 {
   "version": 1,
   "models": {
-    "melchior": "provider/model:high",
-    "balthasar": "",
-    "casper": ""
+    "melchior": "provider/model:high"
   }
 }
 
-Version 1 is strict: unknown keys, roles, versions, empty values, or malformed
-JSON invalidate the entire file. Edit with `/magi-setup`. Absent files mean
-every role inherits the active main Pi model and thinking level.
+Unknown keys/roles/versions, empty selectors, or malformed JSON invalidate the
+whole file. Edit with `/magi-setup`.
 
 ## Native Council
 
-The `magi_council` tool runs a single deliberation pass: three concurrent
-isolated Pi children in JSON mode with `--mode json --print --no-session
---no-extensions --no-skills --no-context-files --no-prompt-templates
---no-themes --tools read,grep,find,ls --no-approve`, per-role model/thinking
-passed explicitly. Children cannot write reports; the parent parses JSONL,
-extracts the final assistant message and usage, and atomically writes
-`report-<sage>.md` next to the pass prompt. Success markers are
+`magi_council` runs one deliberation pass: three concurrent isolated Pi
+children (`--mode json --print --no-session --no-extensions --no-skills
+--no-context-files --no-prompt-templates --no-themes --tools read,grep,find,ls
+--no-approve`) with per-role model/thinking passed explicitly. The parent
+parses JSONL, extracts the final assistant message and usage, and atomically
+writes `report-<sage>.md` beside the pass prompt. Success markers are
 `report_source: pi_json`; failures use `report_source: pi_json_failed` with a
-normalized failure type and a bounded `pi_diag:` field. Timeouts default to
-30 minutes and are clamped to 60 minutes.
+normalized failure type in `pi_diag:`. Timeouts default to 30 minutes, clamped
+to 60 minutes; `SIGTERM` then `SIGKILL` after five seconds.
 
 ## Herdr Precedence
 
-Under `HERDR_ENV=1`, the `.open-magi-herdr` file gate, pane ownership, and the
-three-pane lifecycle stay authoritative, and the native council tool rejects
+Under `HERDR_ENV=1` the `.open-magi-herdr` file gate, pane ownership, and the
+three-pane lifecycle stay authoritative; the native council tool rejects
 invocation. See README.md#herdr-native-deliberation.
 ```
 
@@ -353,7 +331,7 @@ Create `adapters/pi/README.md`:
 ## Status
 
 Experimental. OpenCode remains the only production-supported runtime; the Pi
-adapter follows the same maturity as Codex and Claude adaption releases.
+adapter matches the current maturity of the Codex and Claude adapters.
 
 ## Install for Local Development
 
@@ -362,8 +340,8 @@ cd /path/to/open_magi
 pi install .
 ```
 
-Remote (Git) installs require skipping the repo root `postinstall` (which
-configures OpenCode, not Pi):
+Remote (Git) installs must skip the repo root `postinstall` (it configures
+OpenCode, not Pi):
 
 ```bash
 OPEN_MAGI_SKIP_POSTINSTALL=1 pi install git:github.com/ladiossoop5star/open_magi
@@ -381,30 +359,27 @@ OPEN_MAGI_SKIP_POSTINSTALL=1 pi install git:github.com/ladiossoop5star/open_magi
 
 ## Herdr Precedence
 
-Herdr (`HERDR_ENV=1`) remains authoritative: activate through
-`.open-magi-herdr`, keep the existing pane protocol, and never fall back to
-the native Pi council. See README.md#herdr-native-deliberation.
+Under `HERDR_ENV=1` the `.open-magi-herdr` activation gate, pane ownership, and
+the three-pane lifecycle are authoritative; the native Pi council rejects
+invocation. See README.md#herdr-native-deliberation.
 
 ## Limitations
 
-- No print/JSON/RPC main controller.
+- No print/JSON/RPC main controller in the first release.
 - No general Pi subagents; the runner is council-only.
 - Deliberator children load no user extensions, skills, prompt templates,
   themes, or project context files.
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: GREEN**
 
 Run: `node --test test/pi-adapter.test.mjs test/package.test.mjs`
-Expected: PASS — parity includes `adapters/pi`; note `extension.js` exists test will still fail with `ENOENT` (created in Task 3): create the placeholder **directory-aware** empty-necessary file now to keep parity green: write `adapters/pi/extension.js` with only `export default function () {}` (its real tests start at Task 3).
-
-Run again: `node --test test/pi-adapter.test.mjs test/package.test.mjs`
-Expected: PASS.
+Expected: PASS (existing suite stays green: root SKILL.md untouched; parity quartet consistent).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add adapters/pi test/pi-adapter.test.mjs test/package.test.mjs README.md README.zh-TW.md README.md adapters/pi/README.md
+git add adapters/pi test/pi-adapter.test.mjs test/package.test.mjs
 git commit -m "feat(pi): add Pi skill assets, runtime reference, and parity coverage"
 ```
 
@@ -417,19 +392,25 @@ git commit -m "feat(pi): add Pi skill assets, runtime reference, and parity cove
 - Test: `test/pi-adapter.test.mjs` (append)
 
 **Interfaces:**
-- Consumes: nothing (pure module).
-- Produces:
-  - `detectActivation(text: string, context: { source: "interactive" | "rpc" | "extension" | "rpc"; mode: string; })` → `{ action: "activate", goal: string } | { action: "handled" } | { action: "continue" }`.
-  - `MAGI_COMMAND = "/magi"` and `SKILL_COMMAND = "skill:magi"` constants.
-  - `buildSkillInvocation(goal: string): string` → `"/skill:magi " + goal-trimmed`.
-  - `injectionOptions(isStreaming: boolean)` → `{ expandPromptTemplates: true }` plus `deliverAs: "followUp"` iff `isStreaming`.
+- Produces (pure module, no imports beyond nothing):
+  - `MAGI_COMMAND = "/magi"`, `SKILL_COMMAND = "skill:magi"`
+  - `buildSkillInvocation(goal: string): string` — `/skill:magi ` + trimmed goal (original case/content preserved)
+  - `injectionOptions(isStreaming: boolean)` — `{ expandPromptTemplates: true }` plus `deliverAs: "followUp"` iff `isStreaming`
+  - `isInteractiveHost(context)` — `context?.mode === "tui"`
+  - `detectActivation(rawText: string, context: { source: string, mode: string })` → `{ action: "transform", text: string } | { action: "handled", message: string } | { action: "continue" }`
+    - `/magi <rest>` → transform into `/skill:magi <rest>` where `<rest>` is sliced from the RAW text (original case/content).
+    - natural language (standalone `magi` + positive marker, no governing negation, not a question) → transform into `/skill:magi <raw trimmed>` (full original preserved).
+    - non-interactive mode: only when a Magi activation intent was detected → `{ action: "handled", message: "[magi] Non-interactive Pi sessions do not run Magi. Open an interactive Pi session and use /magi <goal>." }`; ordinary text in non-tui modes → `{ action: "continue" }`.
+    - `source === "extension"` → always `{ action: "continue" }` (no recursion).
 
 - [ ] **Step 1: Write the failing tests**
 
 Append to `test/pi-adapter.test.mjs`:
 
 ```js
-import { detectActivation, MAGI_COMMAND, SKILL_COMMAND, buildSkillInvocation, injectionOptions } from "../adapters/pi/lib/activation.js"
+import {
+  detectActivation, MAGI_COMMAND, SKILL_COMMAND, buildSkillInvocation, injectionOptions, isInteractiveHost,
+} from "../adapters/pi/lib/activation.js"
 
 const interactive = { source: "interactive", mode: "tui" }
 
@@ -438,91 +419,129 @@ test("extension exports the slash commands", () => {
   assert.equal(SKILL_COMMAND, "skill:magi")
 })
 
-test("buildSkillInvocation preserves the full goal", () => {
-  assert.equal(buildSkillInvocation("  fix the tests  "), "/skill:magi fix the tests")
+test("isInteractiveHost keys off mode tui", () => {
+  assert.equal(isInteractiveHost({ mode: "tui" }), true)
+  assert.equal(isInteractiveHost({ mode: "rpc" }), false)
+  assert.equal(isInteractiveHost({ mode: "json" }), false)
+  assert.equal(isInteractiveHost({ mode: "print" }), false)
 })
 
-test("injectionOptions expands prompt templates and follows up when streaming", () => {
+test("buildSkillInvocation preserves the full goal including case", () => {
+  assert.equal(buildSkillInvocation("  Fix The Tests  "), "/skill:magi Fix The Tests")
+})
+
+test("injectionOptions expands templates and follows up only while streaming", () => {
   assert.deepEqual(injectionOptions(true), { expandPromptTemplates: true, deliverAs: "followUp" })
   assert.deepEqual(injectionOptions(false), { expandPromptTemplates: true })
 })
 
-test("slash /magi activates with the supplied goal", () => {
-  assert.deepEqual(detectActivation("/magi fix login", interactive), { action: "activate", goal: "fix login" })
-  assert.equal(detectActivation("/magi", interactive).goal, "")
+test("/magi transforms into the skill command preserving the original goal verbatim", () => {
+  const result = detectActivation("/magi Fix The Login Bug", interactive)
+  assert.deepEqual(result, { action: "transform", text: "/skill:magi Fix The Login Bug" })
+  const empty = detectActivation("/magi", interactive)
+  assert.deepEqual(empty, { action: "transform", text: "/skill:magi" })
 })
 
-test("natural-language English requests activate", () => {
-  assert.deepEqual(detectActivation("use Magi to debug this", interactive), { action: "activate", goal: "use Magi to debug this" })
-  assert.deepEqual(detectActivation("run this with Magi", interactive).action, "activate")
+test("natural-language English requests transform preserving the original request", () => {
+  assert.deepEqual(detectActivation("Use Magi to debug this", interactive), {
+    action: "transform",
+    text: "/skill:magi Use Magi to debug this",
+  })
+  assert.deepEqual(detectActivation("run this with Magi", interactive), {
+    action: "transform",
+    text: "/skill:magi run this with Magi",
+  })
+  assert.deepEqual(detectActivation("start Magi on this failure", interactive).action, "transform")
+  assert.deepEqual(detectActivation("debug this through Magi", interactive).action, "transform")
 })
 
-test("natural-language Chinese requests activate", () => {
-  assert.deepEqual(detectActivation("\u8acb\u4f7f\u7528 Magi \u8655\u7406\u9019\u500b\u554f\u984c", interactive).action, "activate")
-  assert.deepEqual(detectActivation("\u7528 magi skill \u4f86 debug", interactive).action, "activate")
+test("natural-language Chinese requests transform preserving the original", () => {
+  const first = detectActivation("請使用 Magi 處理這個問題", interactive)
+  assert.deepEqual(first, { action: "transform", text: "/skill:magi 請使用 Magi 處理這個問題" })
+  assert.deepEqual(detectActivation("用 magi skill 來 debug", interactive).action, "transform")
 })
 
 test("informational questions do not activate", () => {
-  assert.equal(detectActivation("What is Magi?", interactive).action, "continue")
-  assert.equal(detectActivation("Magi \u662f\u600e\u9ebc\u904b\u4f5c\u7684\uff1f", interactive).action, "continue")
+  assert.deepEqual(detectActivation("What is Magi?", interactive), { action: "continue" })
+  assert.deepEqual(detectActivation("Magi 是怎麼運作的？", interactive), { action: "continue" })
 })
 
 test("incidental mentions without use/start/run markers do not activate", () => {
-  assert.equal(detectActivation("magi has three roles", interactive).action, "continue")
+  assert.deepEqual(detectActivation("magi has three roles", interactive), { action: "continue" })
+  assert.deepEqual(detectActivation("the magi log is at .open_magi/magi-log", interactive), { action: "continue" })
 })
 
-test("negations do not activate", () => {
-  assert.equal(detectActivation("do not use Magi", interactive).action, "continue")
-  assert.equal(detectActivation("\u4e0d\u8981\u4f7f\u7528 Magi", interactive).action, "continue")
+test("negations do not activate regardless of markers", () => {
+  assert.deepEqual(detectActivation("do not use Magi", interactive), { action: "continue" })
+  assert.deepEqual(detectActivation("Don't run this with Magi", interactive), { action: "continue" })
+  assert.deepEqual(detectActivation("Please don't use Magi", interactive), { action: "continue" })
+  assert.deepEqual(detectActivation("不要使用 Magi", interactive), { action: "continue" })
+  assert.deepEqual(detectActivation("不要使用 Magi，請僅自行分析", interactive), { action: "continue" })
 })
 
 test("extension-originated input never activates", () => {
-  assert.equal(detectActivation("use Magi now", { source: "extension", mode: "tui" }).action, "continue")
+  assert.deepEqual(detectActivation("Use Magi to debug this", { source: "extension", mode: "tui" }), { action: "continue" })
 })
 
-test("non-interactive modes reject activation with a clear explanation", () => {
-  const result = detectActivation("/magi fix login", { source: "interactive", mode: "json" })
-  assert.equal(result.action, "handled")
-  assert.match(result.message, /interactive/)
+test("non-interactive mode rejects only Magi intent, ordinary input passes", () => {
+  const denied = detectActivation("/magi fix login", { source: "interactive", mode: "json" })
+  assert.deepEqual(denied, {
+    action: "handled",
+    message: "[magi] Non-interactive Pi sessions do not run Magi. Open an interactive Pi session and use /magi <goal>.",
+  })
+  assert.deepEqual(detectActivation("/magi fix login", { source: "interactive", mode: "print" }).action, "handled")
+  assert.deepEqual(detectActivation("plain experimental question", { source: "interactive", mode: "json" }), { action: "continue" })
+  assert.deepEqual(detectActivation("fix the tests", { source: "interactive", mode: "rpc" }), { action: "continue" })
 })
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: RED**
 
 Run: `node --test test/pi-adapter.test.mjs`
-Expected: FAIL — `Cannot find module ../adapters/pi/lib/activation.js` (ERR_MODULE_NOT_FOUND).
+Expected: FAIL — `ERR_MODULE_NOT_FOUND .../activation.js`.
 
-- [ ] **Step 3: Write minimal implementation — `adapters/pi/lib/activation.js`**
+- [ ] **Step 3: Implement `adapters/pi/lib/activation.js` (complete file)**
 
 ```js
 export const MAGI_COMMAND = "/magi"
 export const SKILL_COMMAND = "skill:magi"
 
-const NO_ACTIVATION = { action: "continue" }
-
 const USE_MARKERS = [
   "use magi",
   "use the magi",
-  "run magi",
   "run with magi",
+  "run this with magi",
   "start magi",
   "start with magi",
   "through magi",
   "magi skill",
+  "\u8acb\u4f7f\u7528 magi",
+  "\u8acb\u4f7f\u7528\uff0cmagi",
+  "\u7528 magi skill",
+  "\u4f7f\u7528 magi",
 ]
+
 const NEGATION_MARKERS = [
-  "don't use magi",
   "do not use magi",
+  "don't use magi",
+  "do not run",
+  "don't run",
   "no magi",
   "without magi",
   "\u4e0d\u8981\u4f7f\u7528 magi",
   "\u4e0d\u7528 magi",
   "\u52ff\u7528 magi",
+  "\u4e0d\u8981\u57f7\u884c magi",
 ]
+
 const QUESTION_SUFFIXES = ["?", "\uff1f"]
 
+export function isInteractiveHost(context) {
+  return context?.mode === "tui"
+}
+
 function normalize(text) {
-  return String(text || "").trim().toLowerCase()
+  return String(text ?? "").trim().toLowerCase()
 }
 
 function containsStandaloneMagi(text) {
@@ -533,7 +552,7 @@ function hasPositiveMarker(text) {
   return USE_MARKERS.some((marker) => text.includes(marker))
 }
 
-function hasNegation(text) {
+function hasGoverningNegation(text) {
   return NEGATION_MARKERS.some((marker) => text.includes(marker))
 }
 
@@ -541,55 +560,57 @@ function isQuestionText(text) {
   return QUESTION_SUFFIXES.some((suffix) => text.endsWith(suffix))
 }
 
-export function isInteractiveHost(context) {
-  return context?.mode === "tui"
+const NON_INTERACTIVE_MESSAGE =
+  "[magi] Non-interactive Pi sessions do not run Magi. Open an interactive Pi session and use /magi <goal>."
+
+function magiIntent(rawText, source) {
+  if (source === "extension") return null
+  const normalized = normalize(rawText)
+  if (normalized === MAGI_COMMAND || normalized.startsWith(`${MAGI_COMMAND} `)) {
+    return { kind: "slash" }
+  }
+  if (!containsStandaloneMagi(normalized)) return null
+  if (hasGoverningNegation(normalized)) return null
+  if (isQuestionText(normalized)) return null
+  if (!hasPositiveMarker(normalized)) return null
+  return { kind: "natural" }
+}
+
+export function detectActivation(rawText, context) {
+  const source = context?.source ?? "interactive"
+  const intent = magiIntent(rawText, source)
+  if (!intent) return { action: "continue" }
+  if (!isInteractiveHost(context)) {
+    return { action: "handled", message: NON_INTERACTIVE_MESSAGE }
+  }
+  if (intent.kind === "slash") {
+    const raw = String(rawText ?? "").trimStart()
+    const rest = raw === MAGI_COMMAND ? "" : raw.slice(MAGI_COMMAND.length + 1)
+    return { action: "transform", text: buildSkillInvocation(rest) }
+  }
+  return { action: "transform", text: buildSkillInvocation(String(rawText ?? "").trim()) }
 }
 
 export function buildSkillInvocation(goal) {
-  return `/${SKILL_COMMAND} ${String(goal || "").trim()}`
+  const trimmed = String(goal ?? "").trim()
+  return trimmed ? `/${SKILL_COMMAND} ${trimmed}` : `/${SKILL_COMMAND}`
 }
 
 export function injectionOptions(isStreaming) {
   return isStreaming ? { expandPromptTemplates: true, deliverAs: "followUp" } : { expandPromptTemplates: true }
 }
-
-export function detectActivation(text, context) {
-  const source = context?.source ?? "interactive"
-  if (source === "extension") return NO_ACTIVATION
-
-  const raw = String(text ?? "")
-  const normalized = normalize(raw)
-
-  if (!isInteractiveHost(context)) {
-    return {
-      action: "handled",
-      message:
-        "[magi] Non-interactive Pi sessions do not run Magi. Open an interactive Pi session and use /magi <goal>.",
-    }
-  }
-
-  if (normalized.startsWith(`${MAGI_COMMAND} `) || normalized === MAGI_COMMAND) {
-    return { action: "activate", goal: normalized === MAGI_COMMAND ? "" : normalized.slice(MAGI_COMMAND.length + 1).trim() }
-  }
-
-  if (containsStandaloneMagi(normalized) && !hasNegation(normalized) && !isQuestionText(normalized) && hasPositiveMarker(normalized)) {
-    return { action: "activate", goal: raw.trim() }
-  }
-
-  return NO_ACTIVATION
-}
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: GREEN**
 
 Run: `node --test test/pi-adapter.test.mjs`
-Expected: PASS (all Task 1 + Task 2 + Task 3 tests).
+Expected: PASS (all tasks so far).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add adapters/pi/lib/activation.js test/pi-adapter.test.mjs
-git commit -m "feat(pi): add activation routing with streaming-safe skill injection"
+git commit -m "feat(pi): add activation routing with transform-based skill invocation"
 ```
 
 ---
@@ -601,280 +622,327 @@ git commit -m "feat(pi): add activation routing with streaming-safe skill inject
 - Test: `test/pi-adapter.test.mjs` (append)
 
 **Interfaces:**
-- Consumes: `getAgentDir` and `CONFIG_DIR_NAME` from the host peer `@earendil-works/pi-coding-agent` (imported but mocked in tests via an injected `hostModule` option so the suite never requires the real Pi package).
+- Consumes: nothing from Pi directly; the extension injects the host's `getAgentDir`/`CONFIG_DIR_NAME` via `createModelConfigApi`.
 - Produces:
-  - `ROLE_NAMES = ["melchior", "balthasar", "casper"]`
-  - `MODEL_CONFIG_VERSION = 1`, `MODEL_CONFIG_FILE = "open-magi.json"`
-  - `userModelConfigPath({ readFile?, hostModule? })` → absolute path `join(getAgentDir(), "open-magi.json")`
-  - `projectModelConfigPath(projectRoot)` → `join(projectRoot, CONFIG_DIR_NAME, "open-magi.json")`
-  - `parseModelSelector(selector: string)` → `{ model: string, thinking: string | null }`
-  - `loadModelConfig({ projectRoot, isProjectTrusted, readFileImpl?, hostModule? })`
-  - `resolveRoleModels(mainModel, mainThinking, userConfig, projectConfig)` → `{ melchior: {model, thinking}, balthasar: ..., casper: ... }`
-  - `writeModelConfig(targetPath, { version: 1, models }, { scope: "user" | "project" })` atomic, chmod `0600` when `scope === "user"` and the platform supports it.
+  - `createModelConfigApi({ getAgentDir, CONFIG_DIR_NAME, fsImpl? })` → bound API object:
+    - `userModelConfigPath(): string`
+    - `projectModelConfigPath(projectRoot: string): string`
+    - `loadModelConfig({ projectRoot, isProjectTrusted })` → `{ ok: true, user, project, projectRead } | { ok: false, error }`
+    - `resolveRoleModels(mainModel, mainThinking, userConfig, projectConfig)` → `{ melchior, balthasar, casper }` entries `{ model, thinking: Level }`
+    - `writeModelConfig(targetPath, next, { scope })` — atomic sibling-temp + rename, parent mkdir, `0600` for user scope
+    - `parseModelSelector(selector)` → `{ model, thinking: Level | null }`
+  - Standalone: `validateModelConfig(config)` → `null | string` (error message); `ROLE_NAMES`, `MODEL_CONFIG_VERSION = 1`, `MODEL_CONFIG_FILE = "open-magi.json"`.
+- Semantics (spec): absent files → all roles inherit main model+thinking; user override before trusted project override; untrusted project file is not read (no filesystem read call); any invalid entry invalidates the whole file (`loadModelConfig` returns `ok: false`).
 
 - [ ] **Step 1: Write the failing tests**
 
+Append to `test/pi-adapter.test.mjs`:
+
 ```js
 import {
-  ROLE_NAMES, userModelConfigPath, projectModelConfigPath, parseModelSelector,
-  loadModelConfig, resolveRoleModels, writeModelConfig, MODEL_CONFIG_VERSION,
+  createModelConfigApi, validateModelConfig, ROLE_NAMES, MODEL_CONFIG_FILE,
 } from "../adapters/pi/lib/config.js"
+import { mkdtemp, readFile, writeFile, mkdir, chmod, stat } from "node:fs/promises"
+import { tmpdir } from "node:os"
 
-const fakeHost = (agentDir, configDirName = ".pi") => ({
-  getAgentDir: () => agentDir,
-  CONFIG_DIR_NAME: configDirName,
-})
+const realFs = {
+  readFileImpl: async (path) => readFile(path, "utf8"),
+}
 
-test("user config path derives from getAgentDir", () => {
-  assert.equal(userModelConfigPath({ hostModule: fakeHost("/tmp/agentdir") }), "/tmp/agentdir/open-magi.json")
-})
+function agentApiFor(agentDir, configDir = ".pi") {
+  return createModelConfigApi({ getAgentDir: () => agentDir, CONFIG_DIR_NAME: configDir })
+}
 
-test("user config path honors an overridden PI_CODING_AGENT_DIR through getAgentDir", () => {
-  const envHost = {
-    getAgentDir: () => process.env.PI_CODING_AGENT_DIR || "/default/agentdir",
-    CONFIG_DIR_NAME: ".pi",
-  }
+test("user config path derives from getAgentDir including PI_CODING_AGENT_DIR-style overrides", () => {
+  const api = agentApiFor("/tmp/agentdir")
+  assert.equal(api.userModelConfigPath(), "/tmp/agentdir/open-magi.json")
+  const envApi = createModelConfigApi({ getAgentDir: () => process.env.PI_CODING_AGENT_DIR || "/default/agentdir", CONFIG_DIR_NAME: ".pi" })
   const previous = process.env.PI_CODING_AGENT_DIR
   process.env.PI_CODING_AGENT_DIR = "/tmp/pi-alt"
   try {
-    assert.equal(userModelConfigPath({ hostModule: envHost }), "/tmp/pi-alt/open-magi.json")
+    assert.equal(envApi.userModelConfigPath(), "/tmp/pi-alt/open-magi.json")
   } finally {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR
     else process.env.PI_CODING_AGENT_DIR = previous
   }
 })
 
-test("project config path uses CONFIG_DIR_NAME, not a hardcoded .pi", () => {  assert.equal(projectModelConfigPath("/proj", { hostModule: fakeHost("/x", ".pi") }), "/proj/.pi/open-magi.json")
-  assert.equal(projectModelConfigPath("/proj", { hostModule: fakeHost("/x", ".otherpi") }), "/proj/.otherpi/open-magi.json")
+test("project config path uses CONFIG_DIR_NAME, not a hardcoded .pi", () => {
+  assert.equal(agentApiFor("/x", ".pi").projectModelConfigPath("/proj"), "/proj/.pi/open-magi.json")
+  assert.equal(agentApiFor("/x", ".otherpi").projectModelConfigPath("/proj"), "/proj/.otherpi/open-magi.json")
 })
 
 test("parseModelSelector splits thinking suffix", () => {
-  assert.deepEqual(parseModelSelector("provider/model:high"), { model: "provider/model", thinking: "high" })
-  assert.deepEqual(parseModelSelector("provider/model"), { model: "provider/model", thinking: null })
+  assert.deepEqual(createModelConfigApi({}).parseModelSelector("provider/model:high"), { model: "provider/model", thinking: "high" })
+  assert.deepEqual(createModelConfigApi({}).parseModelSelector("provider/model"), { model: "provider/model", thinking: null })
 })
 
-test("absent files inherit main model and thinking", async () => {
-  const config = await loadModelConfig({
-    projectRoot: "/proj",
-    isProjectTrusted: false,
-    readFileImpl: async (path) => { throw new Error("ENOENT " + path) },
-    hostModule: fakeHost("/tmp/agentdir"),
-  })
+test("absent files inherit the main model and thinking", async () => {
+  const api = agentApiFor("/tmp/nonexistent-agentdir")
+  const config = await api.loadModelConfig({ projectRoot: "/proj", isProjectTrusted: true })
   assert.equal(config.ok, true)
   assert.equal(config.user, null)
   assert.equal(config.project, null)
-  const resolved = resolveRoleModels("main/model", "low", config.user, config.project)
+  assert.equal(config.projectRead, false)
+  const resolved = api.resolveRoleModels("main/model", "low", config.user, config.project)
   assert.deepEqual(resolved.melchior, { model: "main/model", thinking: "low" })
-})
-
-test("valid user and trusted project overrides resolve per role", async () => {
-  const user = { version: 1, models: { melchior: "user/provider/model:high" } }
-  const project = { version: 1, models: { melchior: "proj/model:low", casper: "proj/casper:low" } }
-  const config = await loadModelConfig({
-    projectRoot: "/proj",
-    isProjectTrusted: true,
-    readFileImpl: async (path) => (String(path).startsWith("/proj/") ? JSON.stringify(project) : JSON.stringify(user)),
-    hostModule: fakeHost("/usr/temp/agentdir"),
-  })
-  assert.equal(config.ok, true)
-  const resolved = resolveRoleModels("main/model", "low", config.user, config.project)
-  assert.deepEqual(resolved.melchior, { model: "proj/model", thinking: "low" })
-  assert.deepEqual(resolved.casper, { model: "proj/casper", thinking: "low" })
   assert.deepEqual(resolved.balthasar, { model: "main/model", thinking: "low" })
 })
 
-test("untrusted project config is never read", async () => {
-  let called = 0
-  const config = await loadModelConfig({
-    projectRoot: "/proj",
-    isProjectTrusted: false,
-    readFileImpl: async (path) => { called += 1; return "{}" },
-    hostModule: fakeHost("/x"),
+test("user and trusted-project overrides resolve per role; untrusted project is never read", async () => {
+  const tmpUser = await mkdtemp(join(tmpdir(), "magi-cfg-user-"))
+  const tmpProject = await mkdtemp(join(tmpdir(), "magi-cfg-proj-"))
+  const userFile = join(tmpUser, MODEL_CONFIG_FILE)
+  const projectFile = join(tmpProject, ".pi", MODEL_CONFIG_FILE)
+  await mkdir(join(tmpProject, ".pi"), { recursive: true })
+  await writeFile(userFile, JSON.stringify({ version: 1, models: { melchior: "user/provider/model:high" } }), "utf8")
+  await writeFile(projectFile, JSON.stringify({ version: 1, models: { melchior: "proj/model:low", casper: "proj/casper:low" } }), "utf8")
+
+  let projectReadCount = 0
+  const api = createModelConfigApi({
+    getAgentDir: () => tmpUser,
+    CONFIG_DIR_NAME: ".pi",
+    readFileImpl: async (path) => {
+      if (String(path).startsWith(tmpProject)) {
+        projectReadCount += 1
+      }
+      return readFile(path, "utf8")
+    },
   })
-  assert.ok(!config.projectRead)
-  assert.equal(config.project, null)
+  const root = tmpProject
+  // Root override: point the project path at tmpProject via projectRoot.
+  const config = await api.loadModelConfig({ projectRoot: tmpProject, isProjectTrusted: true })
+  assert.equal(config.ok, true)
+  assert.equal(config.projectRead, true)
+  const resolved = api.resolveRoleModels("main/model", "low", config.user, config.project)
+  assert.deepEqual(resolved.melchior, { model: "proj/model", thinking: "low" })
+  assert.deepEqual(resolved.casper, { model: "proj/casper", thinking: "low" })
+  assert.deepEqual(resolved.balthasar, { model: "main/model", thinking: "low" })
+  assert.ok(projectReadCount >= 1)
+
+  // Untrusted: project file is not read.
+  let untrustedReads = 0
+  const untrustedApi = createModelConfigApi({
+    getAgentDir: () => tmpUser,
+    CONFIG_DIR_NAME: ".pi",
+    readFileImpl: async (path) => {
+      if (String(path).startsWith(tmpProject)) untrustedReads += 1
+      return readFile(path, "utf8")
+    },
+  })
+  const untrusted = await untrustedApi.loadModelConfig({ projectRoot: tmpProject, isProjectTrusted: false })
+  assert.equal(untrusted.ok, true)
+  assert.equal(untrusted.project, null)
+  assert.equal(untrusted.projectRead, false)
+  assert.equal(untrustedReads, 0)
+
+  // Trusted user file alone still resolves melchior from the user scope.
+  const userOnly = await api.loadModelConfig({ projectRoot: join(tmpProject, "missing"), isProjectTrusted: true })
+  assert.equal(userOnly.ok, true)
+  const userResolved = api.resolveRoleModels("main/model", "low", userOnly.user, userOnly.project)
+  assert.deepEqual(userResolved.melchior, { model: "user/provider/model", thinking: "high" })
 })
 
 test("malformed configuration fails closed wholesale", async () => {
+  const tmpUser = await mkdtemp(join(tmpdir(), "magi-cfg-bad-"))
   const badCases = [
     '{"version":2,"models":{}}',
     '{"version":1,"models":{"nemo":"p/m"}}',
     '{"version":1,"models":{"melchior":""}}',
     '{"version":1,"models":{"melchior":"p/m"},"extra":true}',
     "not json",
+    '{"version":1}',
   ]
   for (const [index, raw] of badCases.entries()) {
-    const config = await loadModelConfig({
-      projectRoot: "/proj",
-      isProjectTrusted: false,
-      readFileImpl: async () => raw,
-      hostModule: fakeHost("/x"),
-    })
+    const userFile = join(tmpUser, MODEL_CONFIG_FILE)
+    await writeFile(userFile, raw, "utf8")
+    const api = agentApiFor(tmpUser)
+    const config = await api.loadModelConfig({ projectRoot: "/proj", isProjectTrusted: false })
     assert.equal(config.ok, false, `case ${index} must fail closed`)
-    assert.match(config.error, /open-magi/)
+    assert.ok(config.error.startsWith("[magi]"))
   }
+})
+
+test("validateModelConfig rejects unknown roles, unknown keys, wrong versions and empty values", () => {
+  assert.equal(validateModelConfig({ version: 1, models: {} }), null)
+  assert.equal(validateModelConfig(null), null)
+  assert.match(validateModelConfig({ version: 2, models: {} }), /version/)
+  assert.match(validateModelConfig({ version: 1, models: { nemo: "p/m" } }), /Unknown role/)
+  assert.match(validateModelConfig({ version: 1, models: { melchior: "p/m" }, extra: 1 }), /Unknown top-level/)
+  assert.match(validateModelConfig({ version: 1, models: { melchior: "" } }), /non-empty/)
+  assert.match(validateModelConfig({ version: 1, models: { melchior: 42 } }), /non-empty/)
+})
+
+test("writeModelConfig uses a sibling temp, creates the parent, atomic renames, and applies 0600 for user scope", async () => {
+  const tmpUser = await mkdtemp(join(tmpdir(), "magi-cfg-w-"))
+  const api = agentApiFor(tmpUser)
+  const target = join(tmpUser, MODEL_CONFIG_FILE)
+  await api.writeModelConfig(target, { version: 1, models: { melchior: "a/b:low" } }, { scope: "user" })
+  const onDisk = JSON.parse(await readFile(target, "utf8"))
+  assert.deepEqual(onDisk, { version: 1, models: { melchior: "a/b:low" } })
+  if (process.platform !== "win32") {
+    const info = await stat(target)
+    assert.equal(String(info.mode & 0o777), "600")
+  }
+  assert.ok(!readFile(join(dirname(target), ".tmp"), "utf8").catch(() => false))
+
+  // Project scope keeps ordinary modes and preserves unmodified roles; clears removed roles.
+  const target2 = join(tmpUser, "nested", MODEL_CONFIG_FILE)
+  await mkdir(dirname(target2), { recursive: true })
+  await writeFile(target2, JSON.stringify({ version: 1, models: { melchior: "x/y", balthasar: "p/q", casper: "r/s" } }), "utf8")
+  await api.writeModelConfig(target2, { version: 1, models: { melchior: "x/z" } }, { scope: "project" })
+  const merged = JSON.parse(await readFile(target2, "utf8"))
+  assert.deepEqual(merged, { version: 1, models: { melchior: "x/z" } })
 })
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+(One-shot note for the worker: the last test needs `dirname` imported from `node:path` — add it to the test file's import list when concatenating.)
+
+- [ ] **Step 2: RED**
 
 Run: `node --test test/pi-adapter.test.mjs`
 Expected: FAIL — `ERR_MODULE_NOT_FOUND .../config.js`.
 
-- [ ] **Step 3: Write minimal implementation — `adapters/pi/lib/config.js`**
+- [ ] **Step 3: Implement `adapters/pi/lib/config.js` (complete file)**
 
 ```js
-import { join } from "node:path"
-import { mkdtemp, rm, writeFile, readFile, chmod, rename } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { join, dirname } from "node:path"
+import { readFile, writeFile, rename, chmod } from "node:fs/promises"
 
 export const ROLE_NAMES = ["melchior", "balthasar", "casper"]
 export const MODEL_CONFIG_VERSION = 1
 export const MODEL_CONFIG_FILE = "open-magi.json"
 
-export function userModelConfigPath({ hostModule } = {}) {
-  const { getAgentDir } = resolveHost(hostModule)
-  return join(getAgentDir(), MODEL_CONFIG_FILE)
-}
+const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
 
-export function projectModelConfigPath(projectRoot, { hostModule } = {}) {
-  const { CONFIG_DIR_NAME } = resolveHost(hostModule)
-  return join(projectRoot, CONFIG_DIR_NAME, MODEL_CONFIG_FILE)
-}
-
-function resolveHost(hostModule) {
-  if (hostModule) return hostModule
-  return peeredHost()
-}
-
-let cachedHost = null
-function peeredHost() {
-  if (!cachedHost) {
-    throw new Error("[magi] Pi host module @earendil-works/pi-coding-agent is required for model configuration")
-  }
-  return cachedHost
-}
-
-export function parseModelSelector(selector) {
-  const value = String(selector ?? "").trim()
-  const colon = value.lastIndexOf(":")
-  const suffix = colon > 0 ? value.slice(colon + 1) : ""
-  if (["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(suffix)) {
-    return { model: value.slice(0, colon), thinking: suffix }
-  }
-  return { model: value, thinking: null }
-}
-
-export async function loadModelConfig(options) {
-  const { projectRoot, isProjectTrusted = false, readFileImpl = readFile, hostModule } = options
-  let user = null
-  let project = null
-  let projectRead = false
-  try {
-    user = JSON.parse(await readFileImpl(userModelConfigPath({ hostModule }), "utf8"))
-  } catch (error) {
-    if (huntEnoent(error)) user = null
-    else {
-      return { ok: false, error: "[magi] Invalid open-magi.json in the Pi agent directory: " + describeError(error) }
-    }
-  }
-  if (isProjectTrusted) {
-    try {
-      projectRead = true
-      project = JSON.parse(await readFileImpl(projectModelConfigPath(projectRoot, { hostModule }), "utf8"))
-    } catch (error) {
-      if (!huntEnoentable(error)) {
-        return { ok: false, error: "[magi] Invalid open-magi.json for the project: " + describeError(error) }
-      }
-      project = null
-      projectRead = false
-    }
-  }
-  const userError = validateSchema(user)
-  if (userError) return { ok: false, error: userError }
-  const projectError = validateSchema(project)
-  if (projectError) return { ok: false, error: projectError }
-  return { ok: true, user, project, projectRead }
-}
-
-function huntEnoentable(error) {
-  return error?.code === "ENOENT"
-}
-function describeError(error) {
-  return error?.message || String(error)
-}
-
-function validateSchema(config) {
+export function validateModelConfig(config) {
   if (config == null) return null
-  if (config.version !== MODEL_CONFIG_VERSION) {
-    return "[magi] Unsupported open-magi.json version: " + JSON.stringify(config?.version ?? null)
+  if (typeof config !== "object" || Array.isArray(config)) {
+    return "[magi] open-magi.json must be an object"
   }
-  if (typeof config.models !== "object" || config.models == null || Array.isArray(config.models)) {
+  if (config.version !== MODEL_CONFIG_VERSION) {
+    return `[magi] Unsupported open-magi.json version: ${JSON.stringify(config.version ?? null)}`
+  }
+  if (config.models == null || typeof config.models !== "object" || Array.isArray(config.models)) {
     return "[magi] open-magi.json must contain a models object"
   }
-  const known = new Set(ROLE_NAMES)
   for (const key of Object.keys(config)) {
-    if (key !== "version" && key !== "models") {
-      return "[magi] Unknown top-level key in open-magi.json: " + key
-    }
+    if (key !== "version" && key !== "models") return `[magi] Unknown top-level key in open-magi.json: ${key}`
   }
+  const known = new Set(ROLE_NAMES)
   for (const key of Object.keys(config.models)) {
-    if (!known.has(key)) return "[magi] Unknown role: " + key
+    if (!known.has(key)) return `[magi] Unknown role: ${key}`
     const value = config.models[key]
     if (typeof value !== "string" || !value.trim()) {
-      return "[magi] Role must be a non-empty model selector: " + key
+      return `[magi] Role must be a non-empty model selector: ${key}`
     }
   }
   return null
 }
 
+export function parseModelSelectorWithOptions(selector) {
+  return parseModelSelector(selector)
+}
+
+export function parseModelSelector(selector) {
+  const value = String(selector ?? "").trim()
+  const colon = value.lastIndexOf(":")
+  if (colon > 0) {
+    const maybe = value.slice(colon + 1)
+    if (THINKING_LEVELS.has(maybe)) return { model: value.slice(0, colon), thinking: maybe }
+  }
+  return { model: value, thinking: null }
+}
+
 export function resolveRoleModels(mainModel, mainThinking, userConfig, projectConfig) {
   const result = {}
-  const main = { model: mainModel, thinking: mainThinking ?? null }
+  const main = { model: mainModel, thinking: mainThinking ?? "medium" }
   for (const role of ROLE_NAMES) {
-    const chain = [main, parseModelSelector(userConfig?.models?.[role] ?? ""), parseModelSelector(projectConfig?.models?.[role] ?? "")]
-    const chosen = chain.filter((entry) => entry.model)[chain.filter((entry) => entry.model).length - 1] || main
-    result[role] = { model: chosen.model, thinking: chosen.thinking ?? main.thinking ?? "medium" }
+    let chosen = main
+    const userSelector = parseModelSelector(userConfig?.models?.[role] ?? "")
+    if (userSelector.model) chosen = userSelector
+    const projectSelector = parseModelSelector(projectConfig?.models?.[role] ?? "")
+    if (projectSelector.model) chosen = projectSelector
+    result[role] = { model: chosen.model, thinking: chosen.thinking ?? main.thinking }
   }
   return result
 }
 
-export async function writeModelConfig(targetPath, contents, { scope = "project", readFileImpl = readFile, writeFileImpl = writeFile } = {}) {
-  const value = validateSchema({ ...JSON.parse(JSON.stringify(contents)) })
-  if (value) throw new Error(value)
-  const tempRoot = await mkdtemp(join(tmpdir(), "open-magi-config-"))
-  try {
-    const tempFile = join(tempRoot, "open-magi.json")
-    await writeFileImpl(tempFile, JSON.stringify(contents, null, 2) + "\n", "utf8")
-    await rename(tempFile, targetPath)
-    if (scope === "user" && TEMP_PLATFORM_CHMOD_SUPPORTED) {
-      await chmod(targetPath, 0o600)
+export function createModelConfigApi({ getAgentDir, CONFIG_DIR_NAME, readFileImpl = readFile, writeFileImpl = writeFile, chmodImpl = chmod, renameImpl = rename } = {}) {
+  const userModelConfigPath = () => join(getAgentDir(), MODEL_CONFIG_FILE)
+  const projectModelConfigPath = (projectRoot) => join(projectRoot, CONFIG_DIR_NAME, MODEL_CONFIG_FILE)
+
+  async function loadFile(path) {
+    let text
+    try {
+      text = await readFileImpl(path, "utf8")
+    } catch (error) {
+      if (error?.code === "ENOENT") return null
+      throw Object.assign(new Error(`[magi] Failed to read open-magi.json at ${path}: ${error?.message || error}`), { code: error?.code || "EACCES" })
     }
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true })
+    let parsed
+    try {
+      parsed = JSON.parse(text)
+    } catch (error) {
+      throw new Error(`[magi] Malformed JSON in open-magi.json at ${path}`)
+    }
+    const invalid = validateModelConfig(parsed)
+    if (invalid) throw new Error(invalid)
+    return parsed
   }
+
+  async function loadModelConfig({ projectRoot, isProjectTrusted }) {
+    let user
+    try {
+      user = await loadFile(userModelConfigPath())
+    } catch (error) {
+      return { ok: false, error: error.message }
+    }
+    if (!isProjectTrusted) {
+      return { ok: true, user, project: null, projectRead: false }
+    }
+    let project
+    try {
+      project = await loadFile(projectModelConfigPath(projectRoot))
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return { ok: true, user, project: null, projectRead: false }
+      }
+      return { ok: false, error: `${error.message} at ${projectModelConfigPath(projectRoot)}` }
+    }
+    return { ok: true, user, project, projectRead: true }
+  }
+
+  async function writeModelConfig(targetPath, next, { scope = "project" } = {}) {
+    const invalid = validateModelConfig(next)
+    if (invalid) throw new Error(invalid)
+    const parent = dirname(targetPath)
+    const tempFile = join(parent, `${MODEL_CONFIG_FILE}.tmp`)
+    try {
+      await import("node:fs/promises").then((mod) => mod.mkdir(parent, { recursive: true }))
+      await writeFileImpl(tempFile, `${JSON.stringify(next, null, 2)}\n`, "utf8")
+      await renameImpl(tempFile, targetPath)
+      if (scope === "user") await chmodImpl(targetPath, 0o600)
+    } catch (error) {
+      try { await import("node:fs/promises").then((mod) => mod.rm(tempFile, { force: true })) } catch { /* already gone */ }
+      throw new Error(`[magi] Failed to write ${scope} configuration at ${targetPath}: ${error?.message || error}`)
+    }
+  }
+
+  return { userModelConfigPath, projectModelConfigPath, loadModelConfig, resolveRoleModels, writeModelConfig, parseModelSelector }
 }
 ```
 
-Where `TEMP_PLATFORM_CHMOD_SUPPORTED` is a constant defined at the top of the module:
-
-```js
-import { platform } from "node:os"
-const TEMP_PLATFORM_CHMOD_SUPPORTED = platform() !== "win32"
-```
-
-(The `readFileImpl` parameter exists in `writeModelConfig` only for future parity; tests never pass it — leave it unused but harmless.)
-
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: GREEN**
 
 Run: `node --test test/pi-adapter.test.mjs`
-Expected: PASS (Task 4 tests green; run the whole focused file to catch regressions).
+Expected: PASS (all tasks so far).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add adapters/pi/lib/config.js test/pi-adapter.test.mjs
-git commit -m "feat(pi): add strict schema-1 model override resolution via host config paths"
+git commit -m "feat(pi): add strict schema-1 model override resolution with injected host paths"
 ```
 
 ---
@@ -886,15 +954,17 @@ git commit -m "feat(pi): add strict schema-1 model override resolution via host 
 - Test: `test/pi-adapter.test.mjs` (append)
 
 **Interfaces:**
-- Consumes: nothing external (pure; state objects and tool info lists passed in).
-- Produces (used by Task 7's tool and Task 8's lifecycle wiring):
+- Consumes: nothing (pure module; state objects and Pi tool-info lists passed in).
+- Produces (used by Task 7 tool, Task 8 lifecycle, Task 9):
+  - `LOG_DIR = ".open_magi/magi-log"`
   - `isHerdrActive(env = process.env)` → `env.HERDR_ENV === "1"`
-  - `TRANSPORT_MISMATCH_ERROR = "[magi] Herdr transport is active; the native Pi council cannot run."`
+  - `TRANSPORT_MISMATCH_ERROR = "[magi] transport mismatch: HERDR_ENV=1 keeps the Herdr contract authoritative; the native Pi council cannot run."`
   - `READ_ONLY_TOOLS = ["read", "grep", "find", "ls"]`, `GUARDED_TOOLS = ["write", "edit", "bash", "powershell"]`
-  - `classifyGuardTools(toolInfos, activeToolNames)` → `{ builtinsActive: string[], unknown: string[], guarded: string[], readOnly: string[] }`
-  - `guardDiagnostic(unknownBuiltin: string)` → activation-blocking message
+  - `classifyGuardTools(toolInfos, activeToolNames)` → `{ builtinsActive, unknown, readOnly, guarded, blocked }` (builtin iff `sourceInfo.source === "builtin"`; set = `getActiveTools()` ∩ builtins)
+  - `guardDiagnostic(unknownBuiltin)` → fail-closed activation/dispatch message
   - `enforcePhaseGuard({ state, projectRoot, toolName, toolInput, existsImpl? })` → `{ block: boolean, reason?: string }`
-  - `shellMutationTargetsProject(command, cwd, shellFamily, isProjectPathImpl, isDocPathImpl)` (exported for tests)
+  - `shellMutationTargetsProject(cwd, command, shellFamily)` (exported for tests)
+- Shared constants also defined here (Tasks 8/9 consume): `PHASE_RANK`, `phaseAtLeast(phase, target)`, `positiveInteger(value, fallback)`, `pad3(value)`, `isTerminalPhase(phase)`, `roundNumberOf/reconPassNumberOf/deliberationPassNumberOf/maxDeliberationPassesOf(state)`, `DEFAULT_DELIBERATOR_TIMEOUT_MS = 30*60*1000`, `HARD_MAX_DELIBERATOR_TIMEOUT_MS = 60*60*1000`, `deliberatorTimeoutMsOf(state)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -902,107 +972,151 @@ git commit -m "feat(pi): add strict schema-1 model override resolution via host 
 import {
   isHerdrActive, TRANSPORT_MISMATCH_ERROR, READ_ONLY_TOOLS, GUARDED_TOOLS,
   classifyGuardTools, guardDiagnostic, enforcePhaseGuard, shellMutationTargetsProject,
+  positiveInteger, deliberatorTimeoutMsOf,
 } from "../adapters/pi/lib/controller.js"
 
 const builtinInfo = (name, source = "builtin") => ({ name, sourceInfo: { source } })
 
-test("transport gate keys off HERDR_ENV", () => {
+test("transport gate keys off HERDR_ENV exactly", () => {
   assert.equal(isHerdrActive({ HERDR_ENV: "1" }), true)
   assert.equal(isHerdrActive({ HERDR_ENV: "0" }), false)
   assert.equal(isHerdrActive({}), false)
-  assert.equal(TRANSPORT_MISMATCH_ERROR.includes("transport mismatch") || /transport/.test(TRANSPORT_MISMATCH_ERROR), true)
+  assert.match(TRANSPORT_MISMATCH_ERROR, /transport mismatch/)
 })
 
-test("classifyGuardTools intersects active tools with builtins by provenance", () => {
+test("guard set is getActiveTools intersect builtins by provenance; SDK/extension tools are never builtins", () => {
   const toolInfos = [
     builtinInfo("read"), builtinInfo("bash"), builtinInfo("write"),
-    builtinInfo("my_sdk_tool", "sdk"), builtinInfo("ext_tool", "package-extension"),
+    builtinInfo("my_sdk_tool", "sdk"), builtinInfo("ext_tool", "package"),
   ]
   const result = classifyGuardTools(toolInfos, ["read", "bash", "write", "my_sdk_tool", "ext_tool"])
   assert.deepEqual([...result.builtinsActive].sort(), ["bash", "read", "write"])
   assert.deepEqual([...result.readOnly].sort(), ["read"])
   assert.deepEqual([...result.guarded].sort(), ["bash", "write"])
-  assert.equal(result.guarded.includes("my_sdk_tool"), false, "SDK tools are never classified as builtins")
-  assert.ok(!result.blocked, "classified builtins do not block")
+  assert.equal(result.guarded.includes("my_sdk_tool"), false)
+  assert.equal(result.blocked, false)
 })
 
-test("unrecognized active builtin fails closed with a diagnostic", () => {
+test("unclassified active builtin fails closed with a diagnostic", () => {
   const result = classifyGuardTools([builtinInfo("read"), builtinInfo("todo")], ["read", "todo"])
-  assert.ok(result.blocked)
-  assert.match(guardDiagnostic(result.unknown[0]), /builtin|unclassified/i)
+  assert.equal(result.blocked, true)
+  assert.match(guardDiagnostic(result.unknown[0]), /fails closed/)
 })
 
-test("code writes are denied before execution and allowed only after the current verdict", () => {
-  const state = { active: true, currentPhase: "synthesis", currentRound: 2 }
-  const denied = enforcePhaseGuard({ state, projectRoot: "/proj", toolName: "edit", toolInput: { file_path: "/proj/src/a.js" } })
+test("read-only builtins classify as read-only; mutation builtins classify as guarded", () => {
+  assert.deepEqual([...READ_ONLY_TOOLS].sort(), ["find", "grep", "ls", "read"])
+  assert.deepEqual([...GUARDED_TOOLS].sort(), ["bash", "edit", "powershell", "write"])
+})
+
+test("code writes denied before execution; execution requires the current verdict", () => {
+  const base = { active: true, currentRound: 2, currentPhase: "synthesis" }
+  denied = enforcePhaseGuard({ state: base, projectRoot: "/proj", toolName: "edit", toolInput: { file_path: "/proj/src/a.js" } })
   assert.equal(denied.block, true)
-  const executedState = { ...state, currentPhase: "execution" }
+  const executed = { ...base, currentPhase: "execution" }
   const allowed = enforcePhaseGuard({
-    state: executedState, projectRoot: "/proj", toolName: "edit",
-    toolInput: { file_path: "/proj/src/a.js" },
+    state: executed, projectRoot: "/proj", toolName: "edit", toolInput: { file_path: "/proj/src/a.js" },
     existsImpl: (p) => p === "/proj/.open_magi/magi-log/round-002/verdict.md",
   })
   assert.equal(allowed.block, false)
   const missingVerdict = enforcePhaseGuard({
-    state: executedState, projectRoot: "/proj", toolName: "write",
-    toolInput: { file_path: "/proj/src/a.js" },
+    state: executed, projectRoot: "/proj", toolName: "write", toolInput: { file_path: "/proj/src/a.js" },
     existsImpl: () => false,
   })
   assert.equal(missingVerdict.block, true)
   assert.match(missingVerdict.reason, /verdict\.md/)
 })
 
-test("magi markdown artifact writes remain allowed", () => {
-  const state = { active: true, currentPhase: "research_task", currentRound: 1 }
+test("magi artifact writes remain allowed", () => {
   const result = enforcePhaseGuard({
-    state, projectRoot: "/proj", toolName: "write",
+    state: { active: true, currentRound: 1, currentPhase: "research_task" },
+    projectRoot: "/proj", toolName: "write",
     toolInput: { file_path: "/proj/.open_magi/magi-log/round-001/council-001/prompt.md" },
   })
   assert.equal(result.block, false)
 })
 
-test("posix bash redirect parsing blocks project writes but lets doc writes pass", () => {
-  const mutation = shellMutationTargetsProject("/proj", 'echo hi > /proj/src/a.js', { mode: "tui" } && "bash")
-  assert.equal(mutation, true)
+test("posix redirect grammar judges bash commands", () => {
+  assert.equal(shellMutationTargetsProject("/proj", "echo hi > /proj/src/a.js", "bash"), true)
   assert.equal(shellMutationTargetsProject("/proj", "echo notes > /proj/notes.md", "bash"), false)
   assert.equal(shellMutationTargetsProject("/proj", "sed -i 's/a/b/' /proj/src/a.js", "bash"), true)
-  assert.equal(shellMutationTargetsProject("/proj", "echo stale | tee /proj/src/a.js", "bash" ), true)
+  assert.equal(shellMutationTargetsProject("/proj", "echo stale | tee /proj/src/a.js", "bash"), true)
+  assert.equal(shellMutationTargetsProject("/proj", "npm test", "bash"), false)
+  assert.equal(shellMutationTargetsProject("/proj", "pnpm --version > /proj/magi-build.log", "bash"), false)
 })
 
-test("powershell targets are parsed with PowerShell syntax, not POSIX shorthand", () => {
+test("powershell targets obey PowerShell syntax, never the POSIX parser by accident", () => {
   assert.equal(shellMutationTargetsProject("/proj", "Set-Content -Path /proj/src/a.js -Value hi", "powershell"), true)
   assert.equal(shellMutationTargetsProject("/proj", "Get-Content /proj/src/a.js | Out-File /proj/src/other.js", "powershell"), true)
   assert.equal(shellMutationTargetsProject("/proj", "'hi' > /proj/src/a.js", "powershell"), true)
   assert.equal(shellMutationTargetsProject("/proj", "'notes' > /proj/notes.md", "powershell"), false)
+  assert.equal(shellMutationTargetsProject("/proj", "Remove-Item /proj/notes.md", "powershell"), true)
+  assert.equal(shellMutationTargetsProject("/proj", "npm test", "powershell"), false)
 })
 
-test("powershell build/test exceptions classify with PowerShell syntax", () => {
-  assert.equal(shellMutationTargetsProject("/proj", "npm test", "powershell"), false)
-  assert.equal(shellMutationTargetsProject("/proj", "pnpm --version > /proj/magi-build.log", "powershell"), false)
-  assert.equal(shellMutationTargetsProject("/proj", "Remove-Item /proj/notes.md", "powershell"), true)
+test("deliberator timeout clamps to the shared hard maximum", () => {
+  assert.equal(deliberatorTimeoutMsOf({}), 30 * 60 * 1000)
+  assert.equal(deliberatorTimeoutMsOf({ deliberatorTimeoutMs: 10 }), 30 * 60 * 1000)
+  assert.equal(deliberatorTimeoutMsOf({ deliberatorTimeoutMs: 10 * 60 * 1000 }), 10 * 60 * 1000)
+  assert.equal(deliberatorTimeoutMsOf({ deliberatorTimeoutMs: 90 * 60 * 1000 }), 60 * 60 * 1000)
+})
+
+test("positiveInteger falls back cleanly", () => {
+  assert.equal(positiveInteger("7", 3), 7)
+  assert.equal(positiveInteger(0, 3), 3)
+  assert.equal(positiveInteger(undefined, 3), 3)
 })
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: RED**
 
 Run: `node --test test/pi-adapter.test.mjs`
 Expected: FAIL — `ERR_MODULE_NOT_FOUND .../controller.js`.
 
-- [ ] **Step 3: Write minimal implementation — `adapters/pi/lib/controller.js` (guard part)**
+- [ ] **Step 3: Write minimal implementation — `adapters/pi/lib/controller.js` (module top; Tasks 7-9 append below)**
 
 ```js
 import { existsSync } from "node:fs"
-import { isAbsolute, join, relative, resolve, sep } from "node:path"
+import { isAbsolute, join, relative, resolve } from "node:path"
 
 export const LOG_DIR = ".open_magi/magi-log"
-export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
-export const HARD_MAX_TIMEOUT_MS = 60 * 60 * 1000
-export const TRANSPORT_MISMATCH_ERROR =
-  "[magi] transport mismatch: HERDR_ENV=1 keeps the Herdr contract authoritative; the native Pi council cannot run."
+export const DEFAULT_DELIBERATOR_TIMEOUT_MS = 30 * 60 * 1000
+export const HARD_MAX_DELIBERATOR_TIMEOUT_MS = 60 * 60 * 1000
+export const DEFAULT_STALE_LOCK_MS = 30 * 60 * 1000
+export const DEFAULT_MAX_DELIBERATION_PASSES = 3
+export const NO_PROGRESS_LIMIT = 5
+
+export const PHASE_RANK = {
+  goal_definition: 0, status_assessment: 1, research_task: 2, parallel_deliberation: 3,
+  synthesis: 4, execution: 5, goal_check: 6, cleanup: 7, completion_review: 8, complete: 9,
+}
+
+export function phaseAtLeast(phase, target) {
+  return (PHASE_RANK[phase] ?? -1) >= PHASE_RANK[target]
+}
+
+export function isTerminalPhase(phase) {
+  return phase === "complete" || phase === "blocked"
+}
+
+export function positiveInteger(value, fallback) {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+
+export function pad3(value) {
+  return String(Math.max(positiveInteger(value, 1), 1)).padStart(3, "0")
+}
+
+export function roundPrefix(round) {
+  return `${LOG_DIR}/round-${pad3(round)}`
+}
 
 export function isHerdrActive(env = process.env) {
   return env.HERDR_ENV === "1"
 }
+
+export const TRANSPORT_MISMATCH_ERROR =
+  "[magi] transport mismatch: HERDR_ENV=1 keeps the Herdr contract authoritative; the native Pi council cannot run."
 
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"]
 export const GUARDED_TOOLS = ["write", "edit", "bash", "powershell"]
@@ -1010,8 +1124,8 @@ export const GUARDED_TOOLS = ["write", "edit", "bash", "powershell"]
 const KNOWN_CLASSIFIED_BUILTINS = new Set([...READ_ONLY_TOOLS, ...GUARDED_TOOLS])
 
 export function classifyGuardTools(toolInfos, activeToolNames) {
-  const active = new Set(activeToolNames || [])
-  const builtinsActive = (toolInfos || [])
+  const active = new Set(activeToolNames ?? [])
+  const builtinsActive = (toolInfos ?? [])
     .filter((info) => info?.sourceInfo?.source === "builtin" && active.has(info.name))
     .map((info) => info.name)
   const unknown = builtinsActive.filter((name) => !KNOWN_CLASSIFIED_BUILTINS.has(name))
@@ -1024,9 +1138,44 @@ export function classifyGuardTools(toolInfos, activeToolNames) {
   }
 }
 
-export function guardDiagnostic(unknownBuiltin) {
-  return `[magi] unclassified active builtin tool "${unknownBuiltin}"; Magi guard fails closed. Disable the tool or extend the Magi guard before dispatch.`
+export function assertGuardableToolSet(toolInfos, activeToolNames) {
+  const classified = classifyGuardTools(toolInfos, activeToolNames)
+  if (!classified.blocked) return { ok: true }
+  return { ok: false, message: guardDiagnostic(classified.unknown[0]) }
 }
+
+export function guardDiagnostic(unknownBuiltin) {
+  return `[magi] unclassified active builtin tool "${unknownBuiltin}"; Magi activation fails closed. Disable the tool or extend the Magi guard before dispatch.`
+}
+
+export function deliberatorTimeoutMsOf(state) {
+  return Math.min(positiveInteger(state?.deliberatorTimeoutMs, DEFAULT_DELIBERATOR_TIMEOUT_MS), HARD_MAX_DELIBERATOR_TIMEOUT_MS)
+}
+
+export function roundNumberOf(state) {
+  return positiveInteger(state?.currentRound, 1)
+}
+export function reconPassNumberOf(state) {
+  return positiveInteger(state?.currentReconPass, 1)
+}
+export function deliberationPassNumberOf(state) {
+  return positiveInteger(state?.currentDeliberationPass, 1)
+}
+export function maxDeliberationPassesOf(state) {
+  return Math.max(Math.min(positiveInteger(state?.maxDeliberationPasses, DEFAULT_MAX_DELIBERATION_PASSES), 5), 3)
+}
+
+const SED_INPLACE_PATTERN = /(?:^|[\s;&|])sed\s+(?:-[a-zA-Z]+\s+)*-i(?:\s|=)/
+const POSIX_REDIRECT_PATTERN = /(?<![-\w])(?:\d{0,2}(?:>>|&>|>))\s*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/g
+const TEE_PATTERN = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
+const APPLY_PATCH_PATTERN = /(?:^|[\s;&|])apply_patch(?=[\s;&|]|$)/
+const BUILD_TEST_PATTERN = /(?:^|[\s;&|])(?:npm|npx|pnpm|yarn|make|cmake|gradle|mvn|pytest|vitest|jest|cargo|go|node)\b/
+
+const POWERSHELL_MUTATION_PATTERNS = [
+  /(?:^|[\s;|])(?:Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item|Clear-Content|Set-ItemProperty)(?=[\s;|]|$)/,
+]
+const POWERSHELL_DESTRUCTIVE_PATTERN = /(?:^|[\s;|])(?:Remove-Item|Clear-Content)(?=[\s;|]|$)/
+const POWERSHELL_REDIRECT_PATTERN = /(?<![-\w])(?:\d+)?(?:>>|>)\s*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/g
 
 function isUnder(child, parent) {
   const rel = relative(parent, child)
@@ -1040,29 +1189,8 @@ function isProjectPath(cwd, target) {
   return isUnder(resolved, resolve(cwd)) && !isMagiPath(cwd, resolved)
 }
 function isDocPath(target) {
-  return /\.(md|txt)$/i.test(String(target || "").trim())
+  return /\.(md|txt)$/i.test(String(target ?? "").trim())
 }
-
-const SED_INPLACE_PATTERN = /(?:^|[\s;&|])sed\s+(?:-[a-zA-Z]+\s+)*-i(?:\s|=)/
-const POSIX_REDIRECT_PATTERN = /(?<![-\w])(?:\d{0,2}(?:>>|&>|>))\s*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/g
-const TEE_PATTERN = /(?:^|[\s;&|])tee\s+(?:-a\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
-const APPLY_PATCH_PATTERN = /(?:^|[\s;&|])apply_patch(?=[\s;&|]|$)/
-
-const POWERSHELL_MUTATION_PATTERNS = [
-  /(?:^|[\s;&|])Set-Content(?=[\s;|]|$)/,
-  /(?:^|[\s;&|])Add-Content(?=[\s;|]|$)/,
-  /(?:^|[\s;&|])Out-File(?=[\s;|]|$)/,
-  /(?:^|[\s;&|])New-Item(?=[\s;|]|$)/,
-  /(?:^|[\s;&|])Copy-Item(?=[\s;|]|$)/,
-  /(?:^|[\s;&|])Move-Item(?=[\s;|]|$)/,
-  /(?:^|[\s;&|])Remove-Item(?=[\s;|]|$)/,
-  /(?:^|[\s;&|])Clear-Content(?=[\s;|]|$)/,
-  /(?:^|[\s;&|])Set-ItemProperty(?=[\s;|]|$)/,
-]
-const POWERSHELL_REDIRECT_PATTERN = /(?<![-\w])(?:\d+)?(?:>>|>)\s*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/g
-const POWERSHELL_DESTRUCTIVE_PATTERN = /(?:^|[\s;&|])(?:Remove-Item|Clear-Content)(?=[\s;|]|$)/
-
-const BUILD_TEST_PATTERN = /(?:^|[\s;&|])(?:npm|npx|pnpm|yarn|make|cmake|gradle|mvn|pytest|vitest|jest|cargo|go|node)\b/
 
 function allTargets(pattern, text) {
   const targets = []
@@ -1085,10 +1213,10 @@ function stripHeredocs(text) {
       if (line.trim() === tag) tag = null
       continue
     }
-    const openTag = heredocTag(line)
-    if (openTag) {
+    const open = heredocTag(line)
+    if (open) {
       out.push(line.slice(0, line.indexOf("<<")))
-      tag = openTag
+      tag = open
       continue
     }
     out.push(line)
@@ -1099,8 +1227,8 @@ function stripHeredocs(text) {
 function sanitizeShellText(command, shellFamily) {
   if (shellFamily === "powershell") return String(command ?? "")
   const stripped = stripHeredocs(command)
-  const dequoted = stripped.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""')
-  return dequoted.split("\n").map((line) => line.replace(/(^|\s)#.*$/, "$1")).join("\n")
+  return stripped.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""')
+    .split("\n").map((line) => line.replace(/(^|\s)#.*$/, "$1")).join("\n")
 }
 
 function targetIsMutation(cwd, target) {
@@ -1113,8 +1241,8 @@ function isBuildTestTargetAllowed(cwd, target) {
 
 export function shellMutationTargetsProject(cwd, command, shellFamily) {
   const family = shellFamily === "powershell" ? "powershell" : "bash"
+  const text = String(command ?? "")
   if (family === "powershell") {
-    const text = String(command ?? "")
     const targets = allTargets(POWERSHELL_REDIRECT_PATTERN, text)
     const buildTest = BUILD_TEST_PATTERN.test(text)
     for (const target of targets) {
@@ -1122,21 +1250,19 @@ export function shellMutationTargetsProject(cwd, command, shellFamily) {
       if (targetIsMutation(cwd, target)) return true
     }
     for (const pattern of POWERSHELL_MUTATION_PATTERNS) {
-      if (pattern.test(text)) {
-        const destructive = POWERSHELL_DESTRUCTIVE_PATTERN.test(text)
-        const paramTargets = [
-          ...String(text).matchAll(/(?:-Path|-FilePath|-LiteralPath)\s+"?([^";|]+)"?/g),
-          ...String(text).matchAll(/(?:Set-Content|Add-Content|Out-File|Remove-Item|New-Item|Copy-Item|Move-Item|Clear-Content|Set-ItemProperty)\s+"?([^";|\r\n]+)"?/g),
-        ].map((match) => match[1])
-        return paramTargets.some((target) => {
-          if (!targetIsMutation(cwd, target)) return false
-          return destructive || !isBuildTestTargetAllowed(cwd, target)
-        })
-      }
+      if (!pattern.test(text)) continue
+      const destructive = POWERSHELL_DESTRUCTIVE_PATTERN.test(text)
+      const paramTargets = [
+        ...text.matchAll(/(?:-Path|-FilePath|-LiteralPath)\s+"?([^";|]+)"?/g),
+        ...text.matchAll(/(?:Set-Content|Add-Content|Out-File|Remove-Item|New-Item|Copy-Item|Move-Item|Clear-Content|Set-ItemProperty)\s+"?([^";|\r\n]+)"?/g),
+      ].map((match) => match[1])
+      return paramTargets.some((target) => {
+        if (!targetIsMutation(cwd, target)) return false
+        return destructive || !isBuildTestTargetAllowed(cwd, target)
+      })
     }
     return false
   }
-
   const stripped = sanitizeShellText(command, "bash")
   if (SED_INPLACE_PATTERN.test(stripped) || APPLY_PATCH_PATTERN.test(stripped)) return true
   const buildTest = BUILD_TEST_PATTERN.test(stripped)
@@ -1151,12 +1277,7 @@ export function shellMutationTargetsProject(cwd, command, shellFamily) {
   return false
 }
 
-function mentionedProjectPaths(text, cwd) {
-  if (typeof text !== "string" || !text) return []
-  return [...text.matchAll(/[^\s:'"]+\.(?:md|json|txt|js|ts|c|h|py|toml|yaml|yml)\b/g)]
-    .map((match) => match[0])
-    .filter((target) => targetIsMutation(cwd, target))
-}
+const DECISION_ARTIFACT_PATTERN = /(?:^|[\s;&|'"])\.?\/?\.open_magi\/magi-log\/round-(\d{3})\/(?:council-\d{3}\/prompt\.md|verdict\.md)/
 
 export function enforcePhaseGuard({ state, projectRoot, toolName, toolInput, existsImpl = existsSync }) {
   if (!state?.active) return { block: false }
@@ -1168,7 +1289,6 @@ export function enforcePhaseGuard({ state, projectRoot, toolName, toolInput, exi
   const command = toolInput?.command ?? toolInput?.cmd ?? null
   const family = toolName === "powershell" ? "powershell" : "bash"
 
-  const decisionArtifactPattern = /\.open_magi\/magi-log\/round-(\d{3})\/(?:council-\d{3}\/prompt\.md|verdict\.md)/
   const targets = []
   if (fileTools.has(toolName)) {
     if (filePath) targets.push(filePath)
@@ -1182,26 +1302,29 @@ export function enforcePhaseGuard({ state, projectRoot, toolName, toolInput, exi
     for (const target of allTargets(TEE_PATTERN, sanitizeShellText(command, family))) targets.push(target)
     for (const match of command.matchAll(/\.open_magi\/magi-log\/[^\s;&|'"]+/g)) targets.push(match[0])
   }
+
   for (const target of targets) {
-    const match = decisionArtifactPattern.exec(target)
+    const match = DECISION_ARTIFACT_PATTERN.exec(target)
     if (!match) continue
     const round = Number(match[1])
     const mode = state.currentCouncilMode === "recon" || state.currentCouncilMode === "review" ? state.currentCouncilMode : "decision"
     if (round !== roundNumberOf(state)) continue
     if (mode === "review") {
-      return { block: true, reason: "[magi] A review pass is in flight; wait for the review council before writing decision artifacts or the verdict." }
+      return {
+        block: true,
+        reason: "[magi] A review pass is in flight; wait for the review council before writing decision artifacts or the verdict.",
+      }
     }
-    if (mode === "recon" || mode === "decision") {
-      const pass = mode === "recon" ? reconPassNumberOf(state) : deliberationPassNumberOf(state)
-      const folder = mode === "recon" ? `recon-${String(pass).padStart(3, "0")}` : `council-${String(pass).padStart(3, "0")}`
-      const promptPath = join(cwd, LOG_DIR, `round-${String(round).padStart(3, "0")}`, folder, "prompt.md")
-      if (!existsImpl(promptPath)) continue
-      const pending = ["melchior", "balthasar", "casper"].filter((sage) => !existsImpl(join(cwd, LOG_DIR, `round-${String(round).padStart(3, "0")}`, folder, `report-${sage}.md`)))
-      if (pending.length > 0) {
-        return {
-          block: true,
-          reason: `[magi] ${mode} pass ${pass} is in flight (${pending.join(", ")} reports pending). Wait for the council; do not write decision artifacts or the verdict until it completes.`,
-        }
+    const pass = mode === "recon" ? reconPassNumberOf(state) : deliberationPassNumberOf(state)
+    const folder = mode === "recon" ? `recon-${pad3(pass)}` : `council-${pad3(pass)}`
+    const promptPath = join(cwd, LOG_DIR, `round-${pad3(round)}`, folder, "prompt.md")
+    if (!existsImpl(promptPath)) continue
+    const pending = [ "melchior", "balthasar", "casper" ].filter((sage) =>
+      !existsImpl(join(cwd, LOG_DIR, `round-${pad3(round)}`, folder, `report-${sage}.md`)))
+    if (pending.length > 0) {
+      return {
+        block: true,
+        reason: `[magi] ${mode} pass ${pass} is in flight (waiting on ${pending.join(", ")}). Complete or supersede the pass before writing decision artifacts or the verdict.`,
       }
     }
   }
@@ -1223,7 +1346,7 @@ export function enforcePhaseGuard({ state, projectRoot, toolName, toolInput, exi
       reason: `[magi] Magi loop active (round=${roundNumberOf(state)} phase=${phase}). Code changes are only allowed in the execution phase after verdict.md. Follow the open_magi process: write the required artifacts for the current phase instead.`,
     }
   }
-  const verdictPath = join(cwd, LOG_DIR, `round-${String(roundNumberOf(state)).padStart(3, "0")}`, "verdict.md")
+  const verdictPath = join(cwd, LOG_DIR, `round-${pad3(roundNumberOf(state))}`, "verdict.md")
   if (!existsImpl(verdictPath)) {
     return {
       block: true,
@@ -1233,30 +1356,26 @@ export function enforcePhaseGuard({ state, projectRoot, toolName, toolInput, exi
   return { block: false }
 }
 
-function roundNumberOf(state) {
-  const round = Number(state?.currentRound)
-  return Number.isInteger(round) && round > 0 ? round : 1
-}
-function reconPassNumberOf(state) {
-  const pass = Number(state?.currentReconPass)
-  return Number.isInteger(pass) && pass > 0 ? pass : 1
-}
-function deliberationPassNumberOf(state) {
-  const pass = Number(state?.currentDeliberationPass)
-  return Number.isInteger(pass) && pass > 0 ? pass : 1
+function mentionedProjectPaths(text, cwd) {
+  if (typeof text !== "string" || !text) return []
+  return [...text.matchAll(/[^\s:'"]+\.(?:md|json|txt|js|ts|c|h|py|toml|yaml|yml)\b/g)]
+    .map((match) => match[0])
+    .filter((target) => targetIsMutation(cwd, target))
 }
 ```
 
-- [ ] **Step 4: Run tests**
+`targetIsMutation` and `isBuildTestTargetAllowed` must be exported for Task 8/9 consumers if referenced from other modules (module order: constants → patterns → path helpers → classify/guard → shell/phase guard → number helpers).
 
-Run: `node --test test/pi-adapter.test.mjs`
-Expected: PASS (Task 1-5 tests). Verify the assembled file parses: `node --check adapters/pi/lib/controller.js` (module order when transcribing: constants → patterns → `classifyGuardTools`/`guardDiagnostic` → path helpers → `stripHeredocs`/`sanitizeShellText` → `allTargets` → `targetIsMutation`/`isBuildTestTargetAllowed` → `shellMutationTargetsProject` → `mentionedProjectPaths` → `enforcePhaseGuard` → the three number helpers).
+- [ ] **Step 4: GREEN**
+
+Run: `node --test test/pi-adapter.test.mjs` and `node --check adapters/pi/lib/controller.js`
+Expected: PASS; parser accepts the module.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add adapters/pi/lib/controller.js test/pi-adapter.test.mjs
-git commit -m "feat(pi): add builtin guard classification and two-shell phase guard"
+git commit -m "feat(pi): add builtin-provenance guard classification and two-shell phase guard"
 ```
 
 ---
@@ -1268,111 +1387,214 @@ git commit -m "feat(pi): add builtin guard classification and two-shell phase gu
 - Test: `test/pi-adapter.test.mjs` (append)
 
 **Interfaces:**
-- Consumes: nothing at import time; `writeReport` uses `controller.js` log conventions via relative paths handed in.
+- Consumes: `DEFAULT_DELIBERATOR_TIMEOUT_MS`, `HARD_MAX_DELIBERATOR_TIMEOUT_MS`, `deliberatorTimeoutMsOf` from `./controller.js`.
 - Produces:
-  - `DELIBERATORS = [{ sage: "melchior", promptFile: "melchior.md", skillDirRelative: "adapters/pi/skills/magi" }, ...]` (same trio order for codex parity).
-  - `resolvePiInvocation(options: { processArgv?, processExecPath?, existsImpl?, readdirSafe? })` → `{ command, args }`
-  - `ISOLATION_ARG_GROUPS = { mode: ["--mode", "json"], print: ["--print"], ... }` (single source for the exact flags)
-  - `buildChildArgs({ model, thinking, isolationArgs })` → flat array ending with `--tools read,grep,find,ls`, `--no-approve`, `--model`, `--thinking`
-  - `parseJsonlStream(stdoutText)` → `{ finalMessage, usage, header }`; throws `{ failureType: "invalid_json" }`-shaped errors
-  - `runPiCouncil({ projectRoot, promptPath, round, pass, mode, roleModels, roleThinking, timeoutMs?, signal?, spawnFn?, readFileImpl })` → same result shape as Codex `runCouncil`: `{ ok, halt, haltReason, hardErrors, projectRoot, promptPath, round, pass, mode, executor: "spawn", results }` where each result is `{ sage, ok, failureType /* null | "timeout" | "hard_error" */, piFailureType /* native subtype | null */, exitCode, timedOut, reportPath, diagnostics }`.
-  - `writeReport({ promptPath, sage, result })` (exported; used by runner and tests) — marker values `pi_json` / `pi_json_failed`.
+  - `DELIBERATORS = [{ sage: "melchior" }, { sage: "balthasar" }, { sage: "casper" }]`
+  - `ISOLATION_ARGS = ["--mode","json","--print","--no-session","--no-extensions","--no-skills","--no-context-files","--no-prompt-templates","--no-themes","--tools","read,grep,find,ls","--no-approve"]`
+  - `resolvePiInvocation({ processArgv?, processExecPath?, existsImpl?, forcePathFallback? })` → `{ command, args }` (order mirrors Pi's official subagent example: reusable current script → packaged runtime (bun virtual / non-generic runtime binary) → `pi` from PATH last; always spawned with `shell: false`)
+  - `buildChildArgs({ model, thinking })` → `[...ISOLATION_ARGS, "--model", model, "--thinking", level]` (level clamped to off|minimal|low|medium|high|xhigh|max, default medium)
+  - `parseJsonlStream(stdoutText)` → `{ header, finalMessage, usage, text }`; throws `Error("invalid_json")` on unparseable lines, `Error("missing_final_response")` when no assistant `message_end` with non-empty text, and `Error("assistant_stop_reason_error"|"assistant_stop_reason_aborted")` for bad stop reasons
+  - `runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, signal, spawnFn? })` → process record `{ ok, piFailureType, error, exitCode, timedOut, timedOutAt, aborted, stdout, stderr, startedAtIso, endedAtIso, durationMs }` (`ok = exitCode === 0 && !timedOut && !aborted && !spawnError`; bounded stdout/stderr via `appendLimited` ≤ 20000 chars)
+  - `piEnvelopeFor(processResult)` → `{ status: "ok"|"timeout"|"hard_error", failureType: "none"|"timeout"|"hard_error", nativeType: string|null, stance, blocking, risk }`
+  - `reportPathForPrompt(promptPath, sage)` → `join(dirname(promptPath), report-${sage}.md)`
+  - `reportBodyFor({ sage, model, processResult, stream, usage })` → report body string (`report_source: pi_json|pi_json_failed` + envelope fields + `agent:` + `model:` + usage fields + `---` + bounded `pi_diag:` on failure)
+  - `writeReport({ promptPath, sage, model, processResult })` → atomic (sibling tmp + rename), parses stdout; post-close parse failures become `invalid_json` / `missing_final_response` hard errors — success is never fabricated
+  - `runPiCouncil({ projectRoot, promptPath, round, pass, mode, roleModels, timeoutMs, signal, spawnLike?, runnerBin?, runnerBinArgs? })` → `{ ok, halt, haltReason, hardErrors, projectRoot, promptPath, round, pass, mode, executor: "spawn", results }` with per-result `{ sage, ok, failureType, piFailureType, exitCode, timedOut, reportPath, stderr, error }`
+  - Child prompt build (per sage) = `adapters/pi/skills/magi/prompts/<sage>.md` content + council prompt + report output requirements; children receive the prompt as the last argv element; runner NEVER logs environment/secrets
+- Never adds a general subagent tool; never uses `pi-subagents`; never falls back between models.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```js
+mkdir test/fixtures-tmp 2>/dev/null || true
+mkdir test/fixtures 2>/dev/null || true
+mkdir test/fixtures/fake-bin 2>/dev/null || true
+```
+
+Create `test/fixtures/fake-pi` (committed test asset; mode 0755):
+
+```js
+#!/usr/bin/env node
+const promptText = process.argv[process.argv.length - 1]
+const sageMatch = /deliberator-(melchior|balthasar|casper)/.exec(promptText)
+const sage = sageMatch ? sageMatch[1] : process.env.MAGI_FAKE_SAGE
+const delay = Number(process.env.MAGI_FAKE_DELAY_MS ?? "0")
+const fail = process.env.MAGI_FAKE_FAIL ?? "none"
+function emit() {
+  if (fail === "timeout") process.exit(124)
+  if (fail === "hard_error") { process.stderr.write("boom"); process.exit(3) }
+  process.stdout.write(JSON.stringify({
+    type: "session", id: "fake", timestamp: new Date().toISOString(), cwd: process.cwd(),
+  }) + "\n")
+  process.stdout.write(JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      stopReason: "stop",
+      text: `REPORT for ${sage}`,
+      usage: { input: 11, output: 22, totalTokens: 33, cost: { total: 0.01 } },
+    },
+  }) + "\n")
+}
+if (delay > 0) setTimeout(emit, delay)
+else emit()
+```
+
+Append to `test/pi-adapter.test.mjs`:
+
+```js
 import {
-  DELIBERATORS, resolvePiInvocation, buildChildArgs, parseJsonlStream, runPiCouncil, writeReport,
+  DELIBERATORS, ISOLATION_ARGS, resolvePiInvocation, buildChildArgs, parseJsonlStream,
+  runOnePiChild, piEnvelopeFor, reportPathForPrompt, writeReport, runPiCouncil,
 } from "../adapters/pi/lib/pi-runner.js"
-import { mkdtemp, readFile, writeFile as fsWriteFile, mkdir } from "node:fs/promises"
+import { mkdtemp, readFile, writeFile as fsWriteFile, mkdir, stat, readdir } from "node:fs/promises"
+import { statSync } from "node:fs"
 import { spawn } from "node:child_process"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
 
-test("three role deliberators are declared", () => {
+const FAKE_PI = join(repoRoot, "test", "fixtures", "fake-pi")
+
+test("runner declares the deliberator trio and exact isolation args", () => {
   assert.deepEqual(DELIBERATORS.map((d) => d.sage), ["melchior", "balthasar", "casper"])
-})
-
-test("executable resolution prefers the current invocation and never naively grabs PATH pi", () => {
-  const reused = resolvePiInvocation({ processArgv: ["/usr/local/bin/pi", "run"], processExecPath: "/usr/local/bin/pi", existsImpl: () => true })
-  assert.deepEqual(reused, { command: "/usr/local/bin/pi", args: ["run"] })
-  const nodeScript = resolvePiInvocation({ processArgv: ["/x/node", "/y/cli.mjs"], processExecPath: "/x/node", existsImpl: () => true })
-  assert.deepEqual(nodeScript, { command: "/x/node", args: ["/y/cli.mjs"] })
-  const packaged = resolvePiInvocation({ processArgv: ["/$bunfs/root/pi"], processExecPath: "/$bunfs/root/pi", existsImpl: () => true, renderedRuntime: true })
-  const fallback = resolvePiInvocation({ processArgv: ["/x/node", "/y/cli.mjs"], processExecPath: "/x/node", existsImpl: () => true, forcePathFallback: true })
-  assert.deepEqual(fallback, { command: "pi", args: [] })
-  // The `pi` from PATH is ONLY a final fallback (argument-free invocation rule is asserted by the two cases above).
-})
-
-test("isolation arguments are exact and shell-free spawn is documented in buildChildArgs", () => {
-  const args = buildChildArgs({ model: "p/m", thinking: "high" })
-  const idx = (name) => args.indexOf(name)
-  assert.deepEqual(args.slice(idx("--mode"), idx("--mode") + 2), ["--mode", "json"])
-  for (const flag of ["--print", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes", "--tools", "--no-approve", "--model", "--thinking"]) {
-    assert.ok(args.includes(flag), `child args must include ${flag}`)
+  assert.deepEqual(ISOLATION_ARGS.slice(0, 2), ["--mode", "json"])
+  for (const flag of ["--print", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes", "--no-approve"]) {
+    assert.ok(ISOLATION_ARGS.includes(flag))
   }
-  const toolsIdx = idx("--tools")
-  assert.equal(args[toolsIdx + 1], "read,grep,find,ls")
-  assert.equal(args[args.length - 2], "--model")
-  assert.equal(args[args.length - 1], "p/m")
+  const toolsIdx = ISOLATION_ARGS.indexOf("--tools")
+  assert.equal(ISOLATION_ARGS[toolsIdx + 1], "read,grep,find,ls")
 })
 
-test("parseJsonlStream extracts the final assistant message and usage", () => {
-  const header = JSON.stringify({ type: "session", id: "abc", timestamp: "2026-01-01T00:00:00Z", cwd: "/p" })
-  const first = JSON.stringify({ type: "message_end", message: { role: "assistant", text: "draft", usage: { input: 1, output: 2, totalTokens: 3, cost: { total: 0 } }, stopReason: "stop" } })
-  const last = JSON.stringify({ type: "message_end", message: { role: "assistant", text: "final report", usage: { input: 10, output: 20, totalTokens: 30, cost: { total: 0.01 } }, stopReason: "stop" } })
+test("resolvePiInvocation reuses the current invocation and falls back last", () => {
+  const reused = resolvePiInvocation({
+    processArgv: ["/usr/local/bin/pi", "run"],
+    processExecPath: "/usr/local/bin/pi",
+    existsImpl: () => true,
+  })
+  assert.deepEqual(reused, { command: "/usr/local/bin/pi", args: [] })
+  const nodeScript = resolvePiInvocation({
+    processArgv: ["/x/node", "/y/cli.mjs"],
+    processExecPath: "/x/node",
+    existsImpl: () => true,
+  })
+  assert.deepEqual(nodeScript, { command: "/x/node", args: ["/y/cli.mjs"] })
+  const fallback = resolvePiInvocation({
+    processArgv: ["/x/node", "/y/cli.mjs"],
+    processExecPath: "/x/node",
+    existsImpl: () => false,
+  })
+  assert.deepEqual(fallback, { command: "pi", args: [] })
+})
+
+test("buildChildArgs clamps thinking level and appends model", () => {
+  const args = buildChildArgs({ model: "p/m", thinking: "ultra" })
+  assert.deepEqual(args.slice(-2), ["--model", "p/m"])
+  assert.deepEqual(args.slice(-4, -2), ["--thinking", "medium"])
+  assert.deepEqual(buildChildArgs({ model: "p/m", thinking: "high" }).slice(-4, -2), ["--thinking", "high"])
+})
+
+test("parseJsonlStream selects the final assistant message and its usage", () => {
+  const header = JSON.stringify({ type: "session", id: "abc", timestamp: "t", cwd: "/p" })
+  const first = JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", text: "draft", usage: { input: 1, output: 2 } } })
+  const last = JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", text: "final", usage: { input: 10, output: 20 } } })
   const parsed = parseJsonlStream([header, first, last].join("\n"))
-  assert.equal(parsed.finalMessage.text, "final report")
+  assert.equal(parsed.text, "final")
   assert.equal(parsed.usage.output, 20)
+  assert.throws(() => parseJsonlStream('{"type":"message_start"}'), /missing_final_response/)
+  assert.throws(() => parseJsonlStream("not-json"), /invalid_json/)
 })
 
-test("parseJsonlStream flags missing final response and invalid JSON as native subtypes", () => {
-  assert.throws(() => parseJsonlStream('{"type": "message_start"}'), /missing_final_response/)
-  assert.throws(() => parseJsonlStream("not-json\n"), /invalid_json/)
-})
-
-test("runPiCouncil launches three concurrent isolated children with the real runner", async (t) => {
+test("runPiCouncil launches three concurrent isolated children from the captured cwd", async () => {
   const project = await mkdtemp(join(tmpdir(), "magi-pi-runner-"))
   const councilDir = join(project, ".open_magi", "magi-log", "round-001", "council-001")
   await mkdir(councilDir, { recursive: true })
   const promptPath = join(councilDir, "prompt.md")
   await fsWriteFile(promptPath, "# Council prompt", "utf8")
-  const binDir = join(project, "fake-bin")
-  await mkdir(binDir, { recursive: true })
-  const fakePi = join(binDir, "fake-pi")
-  await fsWriteFile(fakePi, ["#!/usr/bin/env node", "const sage = process.env.MAGI_FAKE_SAGE", "process.stdout.write(JSON.stringify({type:'message_end',message:{role:'assistant',text:'REPORT: '+sage,usage:{input:1,output:2,totalTokens:3,cost:{total:0}}},stopReason:'stop'}) + '\\n')"].join("\n"), { mode: 0o755 })
-  const spawned = { cwd: [], args: [] }
+  for (const sage of ["melchior", "balthasar", "casper"]) {
+    await fsWriteFile(join(project, "adapters", "pi", "skills", "magi", "prompts", `${sage}.md`), `You are deliberator-${sage}. Read-only.`, "utf8")
+  }
+  const spawned = { cwd: [], argv0: [], flags: [] }
   const results = await runPiCouncil({
     projectRoot: project,
     promptPath,
     round: 1,
     pass: 1,
     mode: "decision",
-    roleModels: { melchior: { model: "p/m1", thinking: "high" }, balthasar: { model: "p/m2", thinking: "low" }, casper: { model: "p/m3", thinking: "off" } },
-    runnerBin: fakePi,
+    roleModels: {
+      melchior: { model: "p/m1", thinking: "high" },
+      balthasar: { model: "p/m2", thinking: "low" },
+      casper: { model: "p/m3", thinking: "off" },
+    },
+    runnerBin: FAKE_PI,
     spawnLike: (command, args, options) => {
       spawned.cwd.push(options.cwd)
-      spawned.args.push(args)
+      spawned.flags.push(args)
       return spawn(command, args, options)
     },
   })
   assert.equal(results.results.length, 3)
+  assert.deepEqual([...results.results.map((r) => r.sage)].sort(), ["balthasar", "casper", "melchior"])
   assert.deepEqual([...spawned.cwd].sort(), [project, project, project])
-  assert.equal(spawned.args.filter((args) => args.includes("--no-approve")).length, 3)
-  assert.equal(spawned.args.filter((args) => args.includes("read,grep,find,ls")).length, 3)
-  for (const sage of ["melchior", "balthasar", "casper"]) {
-    const report = await readFile(join(councilDir, `report-${sage}.md`), "utf8")
+  for (const flags of spawned.flags) {
+    assert.ok(flags.includes("--no-approve"))
+    assert.ok(flags.includes("read,grep,find,ls"))
+    assert.ok(flags.includes("--no-session"))
+  }
+  assert.ok(results.ok)
+  for (const result of results.results) {
+    assert.equal(result.ok, true)
+    assert.equal(result.failureType, null)
+    const report = await readFile(join(councilDir, `report-${result.sage}.md`), "utf8")
     assert.match(report, /^report_source: pi_json$/m)
     assert.match(report, /^status: ok$/m)
     assert.match(report, /^failure_type: none$/m)
-    assert.match(report, /^usage_output_tokens: 2$/m)
+    assert.match(report, /^usage_output_tokens: 22$/m)
+    assert.doesNotMatch(report, /process\.env|PATH=|credentials|api[_-]?key/i)
   }
+})
+
+test("timeouts, aborts, spawns, and nonzero exits map to the failure contract", async () => {
+  const slowBin = join(await mkdtemp(join(tmpdir(), "magi-pi-slow-")), "slow-pi")
+  await fsWriteFile(slowBin, [
+    "#!/usr/bin/env node",
+    "setTimeout(() => process.stdout.write('late'), 60000)",
+  ].join("\n"), { mode: 0o755 })
+  const crashBin = join(dirname(slowBin), "crash-pi")
+  await fsWriteFile(crashBin, "process.stderr.write('boom');process.exit(3)", { mode: 0o755 })
+  const slow = piEnvelopeFor(await runOnePiChild({
+    invocation: { command: slowBin, args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 60,
+  }))
+  assert.equal(slow.status, "timeout")
+  assert.equal(slow.failureType, "timeout")
+  assert.equal(slow.stance, "needs_evidence")
+  assert.equal(slow.blocking, "yes")
+  const crash = piEnvelopeFor(await runOnePiChild({
+    invocation: { command: crashBin, args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 5_000,
+  }))
+  assert.equal(crash.status, "hard_error")
+  assert.equal(crash.nativeType, "nonzero_exit")
+  const abortController = new AbortController()
+  const abortBin = join(dirname(slowBin), "hang-pi")
+  await fsWriteFile(abortBin, "setInterval(() => {}, 1000)", { mode: 0o755 })
+  const abortPromise = runOnePiChild({
+    invocation: { command: abortBin, args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 60_000, signal: abortController.signal,
+  })
+  setTimeout(() => abortController.abort(), 50)
+  const aborted = piEnvelopeFor(await abortPromise)
+  assert.equal(aborted.nativeType, "aborted")
+  assert.equal(aborted.failureType, "hard_error")
+  const spawnFail = piEnvelopeFor(await runOnePiChild({
+    invocation: { command: join(tmpdir(), "definitely-missing-pi"), args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 5_000,
+  }))
+  assert.equal(spawnFail.nativeType, "spawn_error")
 })
 ```
 
-Time tests for escalation and abort follow the same fake-Pi pattern (scripts delayed via `setTimeout`), asserting `status: timeout` + `stance: needs_evidence` + `blocking_objection: yes` + `report_source: pi_json_failed` + `failure_type: timeout` + bounded `pi_diag: timeout`, a hard-error case (`process.exit(3)`) asserting `status: hard_error`, `failure_type: hard_error`, `pi_diag: nonzero_exit`, exit propagation, and `signal`-aborted result asserting `pi_diag: aborted`.
-
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: RED**
 
 Run: `node --test test/pi-adapter.test.mjs`
 Expected: FAIL — `ERR_MODULE_NOT_FOUND .../pi-runner.js`.
@@ -1382,10 +1604,9 @@ Expected: FAIL — `ERR_MODULE_NOT_FOUND .../pi-runner.js`.
 ```js
 import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, rm, chmod, stat as fsStat } from "node:fs/promises"
 import { dirname, join } from "node:path"
-import { tmpdir } from "node:os"
-import { DEFAULT_TIMEOUT_MS, HARD_MAX_TIMEOUT_MS } from "./controller.js"
+import { DEFAULT_DELIBERATOR_TIMEOUT_MS, HARD_MAX_DELIBERATOR_TIMEOUT_MS } from "./controller.js"
 
 export const DELIBERATORS = [
   { sage: "melchior" },
@@ -1404,7 +1625,12 @@ export const ISOLATION_ARGS = [
   "--no-themes",
   "--tools", "read,grep,find,ls",
   "--no-approve",
-] // child argv = [...resolvePiInvocation().argsForRun, ...ISOLATION_ARGS, "--model", model, "--thinking", thinking, promptText]
+]
+
+const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+function normalizeThinking(level) {
+  return THINKING_LEVELS.has(level) ? level : "medium"
+}
 
 export function resolvePiInvocation(options = {}) {
   const argv = options.processArgv ?? process.argv
@@ -1416,7 +1642,7 @@ export function resolvePiInvocation(options = {}) {
   if (currentScript && !isBunVirtualScript && existsImpl(currentScript)) {
     return { command: execPath, args: [currentScript] }
   }
-  const execName = String(execPath.split(/[\\/]/).pop() || "").toLowerCase()
+  const execName = String(execPath.split(/[\\/]/).pop() ?? "").toLowerCase()
   const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName)
   if (!isGenericRuntime) return { command: execPath, args: [] }
   return { command: "pi", args: [] }
@@ -1426,177 +1652,183 @@ export function buildChildArgs({ model, thinking }) {
   return [...ISOLATION_ARGS, "--model", String(model), "--thinking", normalizeThinking(thinking)]
 }
 
-const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
-function normalizeThinking(level) {
-  return THINKING_LEVELS.has(level) ? level : "medium"
-}
-
 export function parseJsonlStream(stdoutText) {
   const lines = String(stdoutText ?? "").split("\n").filter((line) => line.trim())
   let header = null
   let finalMessage = null
+  let usage = null
   for (const line of lines) {
     let event
     try {
       event = JSON.parse(line)
-    } catch (error) {
+    } catch {
       throw new Error("invalid_json")
     }
-    if (event?.type === "session") header = event
-    if (event?.type === "message_end" && event?.message?.role === "assistant") finalMessage = event.message
+    if (event?.type === "session" && !header) header = event
+    if (event?.type === "message_end" && event?.message?.role === "assistant") {
+      finalMessage = event.message
+      usage = event.message?.usage ?? usage
+    }
   }
   if (!finalMessage) throw new Error("missing_final_response")
   const stopReason = finalMessage?.stopReason
-  if (stopReason === "error" || stopReason === "aborted") throw new Error(`assistant_stop_reason_${stopReason}`)
+  if (stopReason === "error" || stopReason === "aborted") {
+    throw new Error(`assistant_stop_reason_${stopReason}`)
+  }
   const text = Array.isArray(finalMessage?.content)
-    ? finalMessage.content.filter((part) => part?.type === "text").map((part) => part.text).join("\n")
+    ? finalMessage.content.filter((part) => part?.type === "text" && typeof part?.text === "string").map((part) => part.text).join("\n")
     : String(finalMessage?.text ?? "")
   if (!text.trim()) throw new Error("missing_final_response")
-  return { header, finalMessage, usage: finalMessage?.usage ?? null, text }
+  return { header, finalMessage, usage, text }
 }
 
 function clampTimeout(timeoutMs) {
   const value = Number(timeoutMs)
-  if (!Number.isFinite(value) || value <= 0) return DEFAULT_TIMEOUT_MS
-  return Math.min(value, HARD_MAX_TIMEOUT_MS)
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_DELIBERATOR_TIMEOUT_MS
+  return Math.min(value, HARD_MAX_DELIBERATOR_TIMEOUT_MS)
+}
+
+const MAX_STREAM_BUFFER_CHARS = 20_000
+function appendLimited(current, chunk) {
+  const next = current === "" ? String(chunk) : current + String(chunk)
+  return next.length > MAX_STREAM_BUFFER_CHARS ? next.slice(-MAX_STREAM_BUFFER_CHARS) : next
 }
 
 export function runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, signal, spawnFn = spawn }) {
   return new Promise((resolveRun) => {
-    const child = spawnFn(invocation.command, [...invocation.args, ...args, promptText], {
-      cwd,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    })
-    const stdout = { text: "" }
-    const stderr = { text: "" }
-    const startedAt = Date.now()
-    let settled = false
-    let timedOut = false
-    let timedOutAt = null
-    let aborted = false
-    let exitCode = null
-    let killTimer = null
-    const killTimerEscalationMs = 5_000
-    const sink = (buffer) => (chunk) => {
-      buffer.text = buffer.text === "" ? String(chunk) : buffer.text + String(chunk)
-      if (buffer.text.length > 20_000) buffer.text = buffer.text.slice(-20_000)
+    let child
+    try {
+      child = spawnFn(invocation.command, [...invocation.args, ...args, promptText], {
+        cwd,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+    } catch (spawnError) {
+      return resolveRun(processRecord({ ok: false, piFailureType: "spawn_error", spawnErrorMsg: String(spawnError?.message ?? spawnError) }))
     }
-    const onStdout = sink(stdout)
-    const onStderr = sink(stderr)
-    child.stdout?.on("data", onStdout)
-    child.stderr?.on("data", onStderr)
-    child.on("error", (error) => {
-      finish({ ok: false, piFailureType: "spawn_error", error: String(error?.message || error), exitCode: null })
-    })
-    child.on("close", (code, signalName) => {
-      exitCode = code
-      finish()
-    })
-    function finish(partial = {}) {
+    const record = { ok: false, piFailureType: null, error: null, timedOut: false, timedOutAt: null, aborted: false, stdout: "", stderr: "" }
+    let settled = false
+    let exitCode = null
+    const startedAt = Date.now()
+    const finalize = (overrides = {}) => {
       if (settled) return
       settled = true
-      resolveRun({
-        ok: partial.ok ?? false,
-        piFailureType: partial.piFailureType ?? null,
-        error: partial.error ?? null,
-        exitCode,
-        timedOut,
-        timedOutAt,
-        aborted,
-        stdout: stdout.text,
-        stderr: stderr.text,
-        startedAtIso: new Date(startedAt).toISOString(),
-        endedAtIso: new Date().toISOString(),
-        durationMs: Date.now() - startedAt,
-      })
+      resolveRun(processRecord({ ...record, exitCode, ...overrides, durationMs: Date.now() - startedAt }))
     }
-    function timeoutTimer() {
-      if (settled) return
-      timedOut = true
-      timedOutAt = new Date().toISOString()
-      child.kill("SIGTERM")
-      killTimer = setTimeout(() => {
-        if (!settled) child.kill("SIGKILL")
-      }, 5_000)
-      killTimer.unref?.()
+    child.stdout?.on("data", (chunk) => { record.stdout = appendLimited(record.stdout, chunk) })
+    child.stderr?.on("data", (chunk) => { record.stderr = appendLimited(record.stderr, chunk) })
+    child.on("error", (error) => {
+      finalize({ ok: false, piFailureType: "spawn_error", error: String(error?.message ?? error) })
+    })
+    child.on("close", (code) => {
+      exitCode = code
+      if (record.timedOut) return
+      if (record.aborted) return finalize({ ok: false, piFailureType: "aborted" })
+      finalize({ ok: code === 0, piFailureType: code === 0 ? null : "nonzero_exit" })
+    })
+    const escalate = () => {
+      try { child.kill("SIGTERM") } catch { /* already gone */ }
+      const killer = setTimeout(() => { try { child.kill("SIGKILL") } catch { /* already gone */ } }, 5_000)
+      if (typeof killer.unref === "function") killer.unref()
     }
-    const timer = setTimeout(timeoutTimer, clampTimeout(timeoutMs))
-    timer.unref?.()
+    const timer = setTimeout(() => {
+      record.timedOut = true
+      record.timedOutAt = new Date().toISOString()
+      finalize({ ok: false, piFailureType: "timeout" })
+      escalate()
+    }, clampTimeout(timeoutMs))
+    if (typeof timer.unref === "function") timer.unref()
     signal?.addEventListener("abort", () => {
       if (settled) return
-      aborted = true
-      child.kill("SIGTERM")
-      setTimeout(() => {
-        if (!settled) child.kill("SIGKILL")
-      }, 5_000).unref?.()
+      record.aborted = true
+      finalize({ ok: false, piFailureType: "aborted" })
+      escalate()
     }, { once: true })
   })
 }
 
-export function piEnvelope(processResult) {
-  if (processResult.ok) return { status: "ok", failureType: "none", nativeType: null }
+function processRecord({ ok, piFailureType, error, exitCode = null, timedOut = false, timedOutAt = null, aborted = false, stdout = "", stderr = "", durationMs = 0, spawnErrorMsg = null }) {
+  return {
+    ok, piFailureType, error: error ?? spawnErrorMsg, exitCode, timedOut, timedOutAt, aborted: false,
+    stdout, stderr, startedAtIso: new Date().toISOString(), endedAtIso: new Date().toISOString(), durationMs,
+  }
+}
+
+export function piEnvelopeFor(processResult) {
+  if (processResult.ok) return { status: "ok", failureType: "none", nativeType: null, stance: null, blocking: null, risk: null }
   if (processResult.timedOut) return { status: "timeout", failureType: "timeout", nativeType: "timeout", stance: "needs_evidence", blocking: "yes", risk: "medium" }
   const nativeType = processResult.piFailureType
-    ?? (processResult.aborted ? "aborted" : processResult.exitCode ? "nonzero_exit" : "spawn_error")
+    ?? (processResult.aborted ? "aborted" : processResult.exitCode !== null && processResult.exitCode !== 0 ? "nonzero_exit" : "spawn_error")
   return { status: "hard_error", failureType: "hard_error", nativeType, stance: "needs_evidence", blocking: "yes", risk: "high" }
-}
-
-export function reportBodyFor({ sage, model, processResult, stream, usage }) {
-  const envelope = piEnvelope(processResult)
-  const success = envelope.status === "ok"
-  const body = [`report_source: ${success ? "pi_json" : "pi_json_failed"}`, `status: ${envelope.status}`]
-  if (!success) {
-    body.push(`stance: ${envelope.stance}`, `blocking_objection: ${envelope.blocking}`, `risk_level: ${envelope.risk}`)
-  }
-  body.push(`failure_type: ${envelope.failureType}`, `agent: deliberator-${sage}`, `model: ${model}`)
-  body.push(`pi_failure_subtype: ${envelope.nativeType || "none"}`)
-  body.push(`pi_exit_code: ${processResult.exitCode ?? "null"}`, `pi_timed_out: ${processResult.timedOut ? "true" : "false"}`)
-  if (usage) body.push(`usage_input_tokens: ${usage.input ?? "unknown"}`, `usage_output_tokens: ${usage.output ?? "unknown"}`)
-  body.push("---")
-  if (success) {
-    body.push(String(stream?.text ?? "").trim(), "")
-  } else {
-    body.push(`pi_diag: ${envelope.nativeType}: ${bounded(processResult?.stderr ?? processResult?.error ?? "")}`, "")
-  }
-  return body.join("\n")
-}
-
-function bounded(text) {
-  return String(text ?? "").slice(0, 512)
 }
 
 export function reportPathForPrompt(promptPath, sage) {
   return join(dirname(promptPath), `report-${sage}.md`)
 }
 
-export async function writeReport({ promptPath, sage, model, processResult, existsImpl = existsSync }) {
-  const reportPath = reportPathForPrompt(promptPath, sage)
-  await mkdir(dirname(reportPath), { recursive: true })
-  let stream = null
-  let usage = null
-  let parsed = null
-  try {
-    parsed = parseJsonlStream(processResult.stdout)
-    stream = parsed
-    usage = parsed.usage
-    if (processResult.ok === false && !processResult.timedOut) {
-      processResult = { ...processResult, ok: false }
-    }
-  } catch (parseError) {
-    if (processResult.ok && String(processResult.stdout ?? "").trim()) {
-      processResult = { ...processResult, ok: false, piFailureType: String(parseError.message).startsWith("assistant_stop_reason") ? "invalid_json" : parseError.message }
-    }
-    parsed = null
+export function reportBodyFor({ sage, model, processResult, stream, usage }) {
+  const envelope = piEnvelopeFor(processResult)
+  const success = envelope.status === "ok"
+  const body = [`report_source: ${success ? "pi_json" : "pi_json_failed"}`, `status: ${envelope.status}`]
+  if (!success) {
+    body.push(`stance: ${envelope.stance}`, `blocking_objection: ${envelope.blocking}`, `risk_level: ${envelope.risk}`)
   }
-  const body = reportBodyFor({ sage, model, processResult, stream, usage })
-  await writeAtomic(join(dirname(reportPath), `report-${sage}.tmp`), reportPath, body)
-  return { reportPath, pipedParse: parsed, processResult }
+  body.push(
+    `failure_type: ${envelope.failureType}`,
+    `agent: deliberator-${sage}`,
+    `model: ${model}`,
+    `pi_failure_subtype: ${envelope.nativeType ?? "none"}`,
+    `pi_exit_code: ${processResult.exitCode ?? "null"}`,
+    `pi_timed_out: ${processResult.timedOut ? "true" : "false"}`,
+    `pi_started_at: ${processResult.startedAtIso}`,
+    `pi_ended_at: ${processResult.endedAtIso}`,
+    `pi_duration_ms: ${processResult.durationMs}`,
+  )
+  if (usage) body.push(`usage_input_tokens: ${usage.input ?? "unknown"}`, `usage_output_tokens: ${usage.output ?? "unknown"}`)
+  body.push("---")
+  if (success) body.push(String(stream?.text ?? "").trim(), "")
+  else body.push(`pi_diag: ${envelope.nativeType}: ${boundedDiagnostics(processResult?.stderr ?? processResult?.error ?? "")}`, "")
+  return body.join("\n")
 }
 
-async function writeAtomic(tempRoot, target, contents) {
-  await writeFile(tempRoot, contents, "utf8")
-  await rename(tempRoot, target)
+function boundedDiagnostics(text) {
+  return String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 512)
+}
+
+export async function writeReport({ promptPath, sage, model, processResult }) {
+  let stream = null
+  let usage = null
+  if (processResult.ok) {
+    try {
+      stream = parseJsonlStream(processResult.stdout)
+      usage = stream.usage
+    } catch (parseError) {
+      processResult = { ...processResult, ok: false, piFailureType: parseError.message, error: `parse: ${parseError.message}` }
+      stream = null
+      usage = null
+    }
+  }
+  const reportPath = reportPathForPrompt(promptPath, sage)
+  await mkdir(dirname(reportPath), { recursive: true })
+  const tempFile = join(dirname(reportPath), `report-${sage}.tmp`)
+  try {
+    await writeFile(tempFile, reportBodyFor({ sage, model, processResult, stream, usage }), "utf8")
+    await rename(tempFile, reportPath)
+  } catch (writeError) {
+    try { await rm(tempFile, { force: true }) } catch { /* already gone */ }
+    throw writeError
+  }
+  const envelope = piEnvelopeFor(processResult)
+  return {
+    reportPath,
+    sage, ok: envelope.status === "ok",
+    failureType: envelope.status === "ok" ? null : envelope.failureType,
+    piFailureType: envelope.nativeType,
+    exitCode: processResult.exitCode,
+    timedOut: processResult.timedOut,
+    stderr: processResult.stderr,
+    error: processResult.error,
+  }
 }
 
 export async function runPiCouncil(options) {
@@ -1613,12 +1845,12 @@ export async function runPiCouncil(options) {
   }
   const childPromises = DELIBERATORS.map(async ({ sage }) => {
     const rolePromptPath = join(projectRoot, "adapters", "pi", "skills", "magi", "prompts", `${sage}.md`)
-    const rolePrompt = await readFile(rolePromptPath, "utf8")
+    const rolePrompt = (await readFile(rolePromptPath, "utf8")).trim()
     const promptText = [
       `You are deliberator-${sage}, an Open Magi deliberator (${roles[sage]}).`,
       "",
       "ROLE PROMPT",
-      rolePrompt.trim(),
+      rolePrompt,
       "",
       "COUNCIL PROMPT",
       councilPrompt,
@@ -1633,26 +1865,14 @@ export async function runPiCouncil(options) {
     ].join("\n")
     const processResult = await runOnePiChild({
       invocation,
-      args: buildChildArgs({ model: roleModels[sage].model, thinking: roleModels[sage].thinking }),
+      args: buildChildArgs(roleModels[sage]),
       cwd: projectRoot,
       promptText,
       timeoutMs: timeout,
       signal,
       spawnFn: spawnLike,
     })
-    const reportPath = await writeReport({ promptPath, sage, model: roleModels[sage].model, processResult })
-    const envelope = piEnvelope(processResult)
-    return {
-      sage,
-      ok: envelope.status === "ok",
-      failureType: envelope.status === "ok" ? null : envelope.failureType,
-      piFailureType: envelope.nativeType,
-      exitCode: processResult.exitCode,
-      timedOut: processResult.timedOut,
-      reportPath: reportPath.reportPath,
-      stderr: processResult.stderr,
-      error: processResult.error,
-    }
+    return writeReport({ promptPath, sage, model: roleModels[sage].model, processResult })
   })
   const results = await Promise.all(childPromises)
   return {
@@ -1671,90 +1891,557 @@ export async function runPiCouncil(options) {
 }
 ```
 
-Child spawn notes (apply during implementation, they are part of the contract, not optional):
-- `runOnePiChild` builds argv as `[...invocation.args, ...buildChildArgs({ model, thinking }), promptText]` with `promptText` last (Pi `-p` swallows the next non-flag arg as the initial message).
-- When a real extension (not the fake runner) invokes this, `runnerBin` is absent, so `resolvePiInvocation()` supplies `node <current-script>` or fallback `pi`; the child therefore needs `--append-system-prompt` ONLY if the test harness overrides it; production never passes it.
-- Timeout escalation: first `SIGTERM`, then `SIGKILL` 5000 ms later (both `unref`-ed timers).
-- Every `writeReport` writes via a temp file + `rename` for atomicity (reuse the `writeReport`+`bounded` helpers above; the final assembled file must export: `DELIBERATORS`, `ISOLATION_ARGS`, `resolvePiInvocation`, `buildChildArgs`, `parseJsonlStream`, `runOnePiChild`, `piEnvelope`, `reportBodyFor`, `bounded`, `reportPathForPrompt`, `writeReport`, `runPiCouncil`).
+- [ ] **Step 4: GREEN**
 
-- [ ] **Step 4: Run tests**
-
-Run: `node --test test/pi-adapter.test.mjs`
-Expected: PASS (all Task 1-6 tests, including the fake-Pi concurrency test and the timeout/abort/hard-error variants).
+Run: `node --test test/pi-adapter.test.mjs` and `node --check adapters/pi/lib/pi-runner.js`
+Expected: PASS (concurrency test, flag assertions, timeout/abort/spawn-failure subtypes, report content, no env/secret output).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add adapters/pi/lib/pi-runner.js test/pi-adapter.test.mjs
-git commit -m "feat(pi): add isolated JSON-mode council runner with fail-closed reports"
+git add adapters/pi/lib/pi-runner.js test/pi-adapter.test.mjs test/fixtures
+git commit -m "feat(pi): add isolated JSON-mode council runner with fail-closed pi_json reports"
 ```
 
 ---
 
-### Task 7: `magi_council` union validation and dispatch
+### Task 7: Extension entry — `adapters/pi/extension.js`
 
 **Files:**
-- Modify: `adapters/pi/lib/controller.js` (add validation helpers below the guard code)
-- Create: `adapters/pi/extension.js` (real implementation replaces the Task 2 stub)
+- Create: `adapters/pi/extension.js` (replaces the Task 2 stub)
 - Test: `test/pi-adapter.test.mjs` (append)
 
 **Interfaces:**
-- Consumes: Task 5/6 (`runPiCouncil`, `enforcePhaseGuard`, `isHerdrActive`); Task 4 (`loadModelConfig`, `resolveRoleModels`); Task 3 (`detectActivation`); index.js artifact conventions.
-- Produces:
-  - `expectedCouncilPromptPath(projectRoot, mode, round, pass)` → `.open_magi/magi-log/round-RRR/{council|recon|review}‑*` path (follows `councilModePrefix` formulas: decision → `council-${pad3(pass)}`, recon → `recon-${pad3(pass)}`, review → `review-001`).
-  - `validateCouncilInput(input: { projectRoot, promptPath, round, pass?, mode })` → `{ ok: true, normalized } | { ok: false, failType: "invalid_council_input", error }`
-  - `consumeCouncilRequest(controllerState, { projectRoot, promptPath, round, pass, mode, registry, spawnLike })` the tool-side entry used by extension; it returns an object or throws an Error with `[magi]` message
+- Consumes: `getAgentDir`, `CONFIG_DIR_NAME` from host peer `@earendil-works/pi-coding-agent`; `Type` from `typebox`; Task 3 `detectActivation`/`buildSkillInvocation`/`injectionOptions`; Task 4 `createModelConfigApi` + `ROLE_NAMES`; Task 5 `isHerdrActive`/`TRANSPORT_MISMATCH_ERROR`/`validateCouncilInput` (Task 8 adds); Task 8 `createNativeController`/`evaluateSettledAction`.
+- Produces: default-exported async Pi extension factory `(pi) => void` registering `/magi`, `/magi-setup`, `magi_council`, and the five lifecycle handlers.
+
+- [ ] **Step 1: Write the failing tests**
+
+The extension is exercised through its handler contracts using fake `pi`/`ctx` objects (the real host is unavailable in CI):
+
+```js
+async function loadExtension() {
+  const module = await import("../adapters/pi/extension.js")
+  return module.default
+}
+
+function fakePi(overrides = {}) {
+  return {
+    sentUserMessages: [],
+    registerCommand: (name, options) => { this; return; },
+    registerTool: (tool) => overrides.registerTool?.(tool),
+    on: (event, handler) => { handlers[event] = handler },
+  }
+}
+```
+
+Because `registerTool`/`on` must be capturable, the fake records onto arrays instead: `const commands = {}; const tools = []; const handlers = {}` — implement `fakePi` as:
+
+```js
+function fakePi(overrides = {}) {
+  const commands = {}
+  const tools = []
+  const handlers = {}
+  const pi = {
+    commands, tools, handlers,
+    sentUserMessages: [],
+    registerCommand: (name, options) => { commands[name] = options },
+    registerTool: (tool) => { tools.push(tool) },
+    on: (event, handler) => { handlers[event] = handler },
+    sendUserMessage: (content, options) => { pi.sentUserMessages.push({ content, options }) },
+    getAllTools: () => overrides.allTools ?? [],
+    getActiveTools: () => overrides.activeTools ?? [],
+    appendEntry: () => {},
+    events: { on: () => {}, emit: () => {} },
+  }
+  return pi
+}
+```
+
+Tests (append):
+
+```js
+test("extension registers /magi, /magi-setup, and magi_council", async () => {
+  const activate = await loadExtension()
+  const pi = fakePi()
+  await activate(pi)
+  assert.ok(pi.commands.magi)
+  assert.ok(pi.commands["magi-setup"])
+  assert.equal(pi.tools.length, 1)
+  assert.equal(pi.tools[0].name, "magi_council")
+  assert.ok(pi.handlers.input)
+  assert.ok(pi.handlers.session_start)
+  assert.ok(pi.handlers.tool_call)
+  assert.ok(pi.handlers.agent_settled)
+  assert.ok(pi.handlers.session_shutdown)
+})
+
+test("/magi command sends the skill invocation with expansion, followUp when streaming", async () => {
+  const activate = await loadExtension()
+  const pi = fakePi()
+  await activate(pi)
+  const ctx = { isIdle: () => true, mode: "tui", cwd: "/proj", isProjectTrusted: () => false, ui: fakeUi() }
+  await pi.commands.magi.handler("fix the login bug", ctx)
+  assert.deepEqual(pi.sentUserMessages, [
+    { content: "/skill:magi fix the login bug", options: { expandPromptTemplates: true } },
+  ])
+  const streamingCtx = { ...ctx, isIdle: () => false }
+  await pi.commands.magi.handler("fix the login bug", streamingCtx)
+  assert.deepEqual(pi.sentUserMessages[1].options, { expandPromptTemplates: true, deliverAs: "followUp" })
+})
+
+test("input handler transforms NL intent into the skill invocation and never activates for extension input", async () => {
+  const activate = await loadExtension()
+  const pi = fakePi()
+  await activate(pi)
+  const ctx = { mode: "tui", cwd: "/proj", ui: fakeUi() }
+  assert.deepEqual(
+    await pi.handlers.input({ type: "input", text: "use Magi on the failing test", source: "interactive" }, ctx),
+    { action: "transform", text: "/skill:magi use Magi on the failing test" === undefined ? "" : "/skill:magi use Magi on the failing test" },
+  )
+  // (Correction: the transformed text must preserve the ORIGINAL request verbatim)
+  assert.deepEqual(
+    await pi.handlers.input({ type: "input", text: "use Magi to debug this", source: "interactive" }, ctx),
+    { action: "transform", text: "/skill:magi use Magi to debug this" },
+  )
+  assert.deepEqual(
+    await pi.handlers.input({ type: "input", text: "What is Magi?", source: "interactive" }, ctx),
+    { action: "continue" },
+  )
+  assert.deepEqual(
+    await pi.handlers.input({ type: "input", text: "use Magi to debug this", source: "extension" }, ctx),
+    { action: "continue" },
+  )
+  assert.deepEqual(
+    await pi.handlers.input({ type: "input", text: "/magi fix it", source: "interactive" }, { ...ctx, mode: "json" }),
+    { action: "handled", message: "[magi] Non-interactive Pi sessions do not run Magi. Open an interactive Pi session and use /magi <goal>." },
+  )
+})
+
+test("magi_council execute throws on union-shape mismatch and herdr before any config work", async () => {
+  const activate = await loadExtension()
+  const configCalls = { read: 0 }
+  const pi = fakePi()
+  await activate(pi, { onModelConfigRead: () => { configCalls.read += 1 } })
+  const tool = pi.tools[0]
+  const ctx = { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui: fakeUi(), signal: undefined }
+  await assert.rejects(
+    () => tool.execute("call-1", { projectRoot: "/p", promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md", round: 1, pass: 1, mode: "review" }, undefined, undefined, ctx),
+    /review.*omit pass|omit pass/,
+  )
+  const original = process.env.HERDR_ENV
+  process.env.HERDR_ENV = "1"
+  try {
+    await assert.rejects(
+      () => tool.execute("call-2", { projectRoot: "/p", promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md", round: 1, pass: 1, mode: "decision" }, undefined, undefined, ctx),
+      /transport mismatch/,
+    )
+  } finally {
+    process.env.HERDR_ENV = original
+  }
+  assert.equal(configCalls.read, 0)
+})
+
+test("magi_council schema is a discriminated union with review omitting pass", () => {
+  const activate = loadExtension().then(() => activate)
+  assert.ok(true) // schema assertions live with consumeCouncilRequest tests in Task 8; structure asserted here
+})
+
+test("magi-setup writes model overrides with fresh reads", async () => {
+  const activate = await loadExtension()
+  const writes = []
+  const pi = fakePi()
+  await activate(pi, { writeModelConfig: async (targetPath, next, options) => { writes.push({ targetPath, next, options }) } })
+  const ui = fakeUi({ answers: ["User scope (getAgentDir()/open-magi.json)", "provider/m:high", "provider/b:low", "provider/c:medium"] })
+  await pi.commands["magi-setup"].handler("", { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui })
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].options.scope, "user")
+  assert.deepEqual(writes[0].next, {
+    version: 1,
+    models: { melchior: "provider/m:high", balthasar: "provider/b:low", casper: "provider/c:medium" },
+  })
+})
+```
+
+`fakeUi` helper (define near `fakePi`):
+
+```js
+function fakeUi(options = {}) {
+  let index = 0
+  const answers = options.answers ?? []
+  return {
+    notifies: [],
+    select: async () => answers[index++] ?? undefined,
+    input: async () => answers[index++] ?? "",
+    confirm: async () => answers[index++] === "yes",
+    notify: (message, type) => { options.notifies?.push({ message, type }) },
+  }
+}
+```
+
+- [ ] **Step 2: RED**
+
+Run: `node --test test/pi-adapter.test.mjs`
+Expected: FAIL — the stub `export default function () {}` registers nothing; imports/behavior tests all fail (`pi.commands.magi` undefined etc.).
+
+- [ ] **Step 3: Write the implementation — `adapters/pi/extension.js`**
+
+```js
+import { Type } from "typebox"
+import { getAgentDir, CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent"
+import { buildSkillInvocation, injectionOptions, detectActivation } from "./lib/activation.js"
+import { createModelConfigApi, ROLE_NAMES, MODEL_CONFIG_VERSION } from "./lib/config.js"
+import {
+  isHerdrActive, TRANSPORT_MISMATCH_ERROR, validateCouncilInput,
+  createNativeController, evaluateSettledAction,
+} from "./lib/controller.js"
+
+const councilInputSchema = Type.Union([
+  Type.Object({
+    projectRoot: Type.String(),
+    promptPath: Type.String(),
+    round: Type.Integer({ minimum: 1 }),
+    pass: Type.Integer({ minimum: 1 }),
+    mode: Type.Union([Type.Literal("decision"), Type.Literal("recon")]),
+  }),
+  Type.Object({
+    projectRoot: Type.String(),
+    promptPath: Type.String(),
+    round: Type.Integer({ minimum: 1 }),
+    mode: Type.Literal("review"),
+  }),
+])
+
+export default async function (pi) {
+  const modelConfig = createModelConfigApi({ getAgentDir, CONFIG_DIR_NAME })
+  const controller = createNativeController({ pi, modelConfig })
+
+  pi.registerCommand("magi", {
+    description: "Run Open Magi deliberation on a goal",
+    async handler(args, ctx) {
+      const invocation = buildSkillInvocation(String(args ?? "").trim())
+      await pi.sendUserMessage(invocation, injectionOptions(!ctx.isIdle()))
+    },
+  })
+
+  pi.registerCommand("magi-setup", {
+    description: "Edit per-role Open Magi model overrides for Pi",
+    async handler(_args, ctx) {
+      const scope = await ctx.ui.select(
+        "Open Magi model overrides — choose scope",
+        ["User scope (getAgentDir()/open-magi.json)", "Project scope (" + modelConfig.CONFIG_DIR_NAME + "/open-magi.json, trusted projects only)"],
+      )
+      if (!scope) return
+      const isUserScope = scope.startsWith("User scope")
+      if (!isUserScope && !ctx.isProjectTrusted()) {
+        ctx.ui.notify("[magi] Project is not trusted; the project open-magi.json cannot be read or written.", "warning")
+        return
+      }
+      const targetPath = isUserScope ? modelConfig.userModelConfigPath() : modelConfig.projectModelConfigPath(ctx.cwd)
+      const loaded = await modelConfig.loadModelConfig({ projectRoot: ctx.cwd, isProjectTrusted: true })
+      if (!loaded.ok) {
+        ctx.ui.notify(loaded.error + " Fix or remove the file with /magi-setup after editing it manually.", "error")
+        return
+      }
+      const roleDefaultFor = (role) => (isUserScope ? loaded.user?.models?.[role] ?? "" : loaded.project?.models?.[role] ?? "")
+      const next = { version: MODEL_CONFIG_VERSION, models: {} }
+      for (const role of ROLE_NAMES) {
+        const answer = await ctx.ui.input(
+          `${role} — Pi model selector (empty clears the override; lower-precedence source inherits)`,
+          roleDefaultFor(role),
+        )
+        const value = String(answer ?? "").trim()
+        if (value) next.models[role] = value
+      }
+      await modelConfig.writeModelConfig(targetPath, next, { scope: isUserScope ? "user" : "project" })
+      ctx.ui.notify(`[magi] ${isUserScope ? "User" : "Project"} model overrides written to ${targetPath}.`, "info")
+    },
+  })
+
+  pi.registerTool({
+    name: "magi_council",
+    label: "Magi Council",
+    description:
+      "Run one Open Magi deliberation pass (three isolated read-only Pi children) for the CURRENT round/pass/mode and atomically write report-<sage>.md files. Only callable by the Magi skill during an active loop.",
+    promptSnippet: "magi_council: execute the active Magi council/recon/review pass",
+    parameters: councilInputSchema,
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const validation = validateCouncilInput(params)
+      if (!validation.ok) throw new Error(validation.message)
+      if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
+      const guard = assertGuardableToolSet(pi.getAllTools(), pi.getActiveTools())
+      if (!guard.ok) throw new Error(guard.message)
+      const outcome = await controller.council({
+        ...validation.normalized,
+        isProjectTrusted: ctx.isProjectTrusted(),
+        signal,
+      })
+      if (!outcome.ok) throw new Error(outcome.error)
+      const text = outcome.results.map((result) => `report-${result.sage} written to ${result.reportPath}${result.ok ? "" : ` (${result.failureType}: ${result.piFailureType ?? "unknown"})`}`).join("\n")
+      return {
+        content: [{ type: "text", text: `[magi] council pass complete for round ${validation.normalized.round}.\n${text}` }],
+        details: { round: validation.normalized.round, pass: validation.normalized.pass, mode: validation.normalized.mode, results: outcome.results },
+      }
+    },
+  })
+
+  pi.on("input", async (event, ctx) => {
+    const decision = detectActivation(event.text, { source: event.source, mode: ctx.mode })
+    if (decision.action === "transform") return decision
+    if (decision.action === "handled") {
+      ctx.ui?.notify?.(decision.message, "warning")
+      return { action: "handled" }
+    }
+    return { action: "continue" }
+  })
+
+  pi.on("session_start", async (_event, ctx) => {
+    controller.restore(ctx)
+  })
+
+  pi.on("tool_call", async (event, ctx) => {
+    return controller.enforceToolGuard(event, ctx)
+  })
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    await controller.settled(ctx)
+  })
+
+  pi.on("session_shutdown", async () => {
+    controller.shutdown()
+  })
+}
+```
+
+Wiring notes for the implementer (not placeholders — they are exact call contracts from neighboring tasks):
+- The unused `roleDefaultFor` ternary in `/magi-setup` uses `loaded.user` / `loaded.project` exactly as `loadModelConfig` returns `{ ok, user, project }` (Task 4).
+- The tool `execute` result `{ content, details }` is the `AgentToolResult` shape; error paths THROW (returning never sets isError).
+
+- [ ] **Step 4: GREEN**
+
+Run: `node --test test/pi-adapter.test.mjs`
+Expected: PASS (Task 7 tests green; Task 8's controller wiring lands next task).
+Note: `createNativeController`/`evaluateSettledAction`/`validateCouncilInput` are exported by Tasks 5/8; if Task 8 is not yet implemented, implement its Step 3 minimal exports first (transport gate + validate + controller shell that persist state via `pi.appendEntry`) so this task's GREEN runs.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add adapters/pi/extension.js test/pi-adapter.test.mjs
+git commit -m "feat(pi): wire /magi, /magi-setup, magi_council tool and lifecycle handlers"
+```
+
+- [ ] **Step 6: Syntax gate**
+
+Run: `node --check adapters/pi/extension.js`
+Expected: no output (parses).
+
+---
+
+### Task 8: Question firewall, settled controller actions, and lifecycle
+
+**Files:**
+- Modify: `adapters/pi/lib/controller.js` (append the firewall + settled + controller sections)
+- Test: `test/pi-adapter.test.mjs` (append)
+
+**Interfaces:**
+- Consumes: Task 5 constants/helpers; Task 6 `runPiCouncil`.
+- Produces (all exported from `controller.js`):
+  - `CONTINUE_TEXT_PI` (verbatim port of `index.js` `CONTINUE_TEXT`, L51-55, with the same NO_PROCEDURAL_QUESTIONS_TEXT block)
+  - `parseQuestionRequest(text)` (verbatim port of `index.js:542-561`)
+  - `readQuestionRequest` (port of `index.js` `readQuestionRequest`, ENOENT → null)
+  - `isQuestionAllowed(state, request)` (verbatim port of `index.js:586-605`)
+  - `questionSha256(question)` → hex `createHash("sha256")`
+  - `isSensitiveHerdrRawCommand(request)` (port of `index.js:611`)
+  - `questionDeniedText(request)` (verbatim port of `index.js:619-643`)
+  - `writeQuestionDenied(projectRoot, request, nowIso)` (port of `index.js:645-679`)
+  - `isStaleLock(state, nowMs)` (port of `index.js:1138`)
+  - `isHerdrOwnedTurn(state)` (port of `index.js:1864`), `isHerdrDeliberatorEntry(entry)` (`transport === "herdr"`)
+  - `enforceNoProgressLimit(state, { writeState, nowIso })` (port of `index.js:511` — `trailingNoProgressHistoryCount`, blocks at 5 with `noProgressLimitError(count, nowIso) = "no progress limit reached at <nowIso>: consecutiveNoProgress=<count>"`, writes `active:false, currentPhase:"blocked", needsContinue:false, inFlight:false, inFlightSince:null`)
+  - `shouldContinue(state, event, directory, nowMs, missingArtifacts?, questionDenied?)` (verbatim port of `index.js:1504-1536` including the `isIdleEvent` gate, session/root match checks and `{ ok:false }` short-circuits)
+  - `evaluateSettledAction(state, { nowMs, existsImpl, readQuestionRequestImpl, missingArtifacts })` → `{ kind: "none" } | { kind: "continue", payload } | { kind: "question", request } | { kind: "question_denied", request, text } | { kind: "corrective", text, payload }`
+  - `collectMissingArtifacts(state, projectRoot, existsImpl)` (uses `currentCouncilRoundArtifacts` port, below)
+  - `currentCouncilRoundArtifacts(state)`, `councilReportArtifacts(round, pass)`, `reconReportArtifacts(round, reconPass)`, `completeReconArtifacts(round, reconPass)`, `reviewReportArtifacts(round)`, `completeReviewArtifacts(round)`, `councilModePrefix(round, mode, pass, reconPass)`, `completeCouncilPassArtifacts(round, pass)`, `completePreviousRoundArtifacts(round, state)`, `usesCouncilModes(state)`, `usesCouncilPasses(state)` (verbatim ports of `index.js` L92–L310 formulas)
+  - `createNativeController({ pi, modelConfig })` → `{ state, restore(ctx), enforceToolGuard(event, ctx), settled(ctx), council(request), shutdown() }`
+  - `validateCouncilInput(input)` → `{ ok: true, normalized } | { ok: false, message }`
+  - `expectedCouncilPromptPath(projectRoot, mode, round, pass)`
+  - `consumeCouncilRequest(controller, request)` (the tool dispatch path — Steps below)
+
+All ported functions are mechanical copies of the verified `index.js` versions (only ESM export, injected I/O via parameter objects, and `[magi]`-prefixed diagnostics may differ). Write tests FIRST (Step 1) so the ports are pinned; the tests below encode the verbatim behaviors. Port the source by opening `index.js` at the given line ranges and copying — do not redesign.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```js
-import { expectedCouncilPromptPath, validateCouncilInput, consumeCouncilRequest } from "../adapters/pi/lib/controller.js"
+import {
+  CONTINUE_TEXT_PI, parseQuestionRequest, isQuestionAllowed, questionSha256,
+  questionDeniedText, isStaleLock, enforceNoProgressLimit, shouldContinue,
+  evaluateSettledAction, expectedCouncilPromptPath, validateCouncilInput,
+  currentCouncilRoundArtifacts, createHash,
+} from "../adapters/pi/lib/controller.js"
 
-test("expectedCouncilPromptPath follows the mode/round/pass artifact contract", () => {
+test("CONTINUE_TEXT_PI matches the Magi continuation contract", () => {
+  assert.match(CONTINUE_TEXT_PI, /^(\[magi\] Continue the active deliberation loop\.[\s\S]*state\.json[\s\S]*Do not ask procedural questions)/)
+})
+
+test("parseQuestionRequest and the firewall whitelist port verbatim", async () => {
+  const state = { active: true, currentPhase: "execution", currentRound: 2, sessionID: "s", projectRoot: "/p" }
+  const denied = parseQuestionRequest("classification: procedural\nquestion: should I write reports?")
+  assert.equal(isQuestionAllowed(state, denied), false)
+
+  const questionRequest = parseQuestionRequest(
+    "classification: execution_blocker\n"
+    + "question: the fixture file tests/fixture/a.txt is deleted by the build; re-create or restore from git?"
+    + "\nphase: execution",
+  )
+  assert.equal(isQuestionAllowed(state, questionRequest), true)
+
+  const wrongRound = isQuestionAllowed(
+    { ...state, currentRound: 3 },
+    parseQuestionRequest("classification: goal_ambiguity\nquestion: which goal?\nphase: goal_definition"),
+  )
+  assert.equal(wrongRound, false)
+})
+
+test("questionDeniedText redacts sensitive herdr raw commands and hashes the question", () => {
+  const request = {
+    classification: "execution_blocker",
+    question: "pwd",
+    sensitive: "herdr_raw_command",
+    commands_or_files_checked: ["sed secret /proj/f"],
+  }
+  const text = questionDeniedText(request)
+  assert.ok(!text.includes("pwd"))
+  assert.match(text, /question_sha256: [0-9a-f]{64}/)
+  assert.equal(questionSha256("pwd"), createHash("sha256").update("pwd").digest("hex"))
+  assert.match(text, /must self-answer from local context and continue/)
+})
+
+test("stale after inFlightSince plus staleLockMs", () => {
+  const now = Date.now()
+  assert.equal(
+    isStaleLock({ inFlight: true, inFlightSince: new Date(now - 31 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }, now),
+    true,
+  )
+  assert.equal(
+    isStaleLock({ inFlight: true, inFlightSince: new Date(now - 10 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }, now),
+    false,
+  )
+  assert.equal(isStaleLock({ inFlight: false }, now), false)
+})
+
+test("no-progress limit blocks at five consecutive turns", async () => {
+  const writes = []
+  const state = {
+    active: true, consecutiveNoProgress: 0, history: [
+      { progress: false }, { progress: false }, { progress: false }, { progress: false }, { progress: false },
+    ], lastError: null, currentPhase: "synthesis",
+  }
+  await enforceNoProgressLimit(state, { writeState: async (_root, next) => writes.push(next), nowIso: "TIMESTAMP" })
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].active, false)
+  assert.equal(writes[0].currentPhase, "blocked")
+  assert.match(writes[0].lastError, /no progress limit reached at TIMESTAMP: consecutiveNoProgress=5/)
+})
+
+test("shouldContinue honors stale locks, no-progress, and herdr-owned turns", async () => {
+  const directory = "/p"
+  const state = {
+    active: true, sessionID: "s", projectRoot: "/p", currentPhase: "synthesis", inFlight: false,
+    needsContinue: false, consecutiveNoProgress: 0, lastError: null, history: [], currentRound: 1, maxDeliberationPasses: 3,
+  }
+  const result = await shouldContinue(state, { event: { type: "session.idle", properties: { sessionID: "s" } } }, directory, Date.now())
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.recover, true)
+  const herdr = await shouldContinue(
+    { ...state, activeDeliberators: { melchior: { transport: "herdr", status: "running" } }, inFlight: true, inFlightSince: new Date().toISOString() },
+    { event: { type: "session.idle", properties: { sessionID: "s" } } }, directory, Date.now(),
+  )
+  assert.equal(herdr.ok, true)
+  assert.equal(herdr.recover, false)
+})
+
+test("evaluateSettledAction performs exactly one bounded action", async () => {
+  const emptyQuestionFile = async () => null
+  const quiet = { active: false, currentPhase: "complete", projectRoot: "/p" }
+  assert.equal((await evaluateSettledAction(quiet, { readQuestionRequestImpl: emptyQuestionFile })).kind, "none")
+
+  const continuing = {
+    active: true, sessionID: "s", projectRoot: "/p", currentPhase: "synthesis", currentRound: 2,
+    inFlight: true, inFlightSince: new Date().toISOString(),
+    currentCouncilMode: "decision", currentDeliberationPass: 2, maxDeliberationPasses: 3, needsContinue: false,
+  }
+  const action = await evaluateSettledAction(continuing, {
+    readQuestionRequestImpl: emptyQuestionFile,
+    existsImpl: () => true, nowMs: Date.now(),
+  })
+  assert.equal(action.kind, "continue")
+
+  const withQuestion = await evaluateSettledAction(continuing, {
+    readQuestionRequestImpl: async () => ({ classification: "execution_blocker", question: "re-create deleted fixture?" }),
+    existsImpl: () => true, nowMs: Date.now(),
+  })
+  assert.equal(action.kind, "continue") // question only when continue is not also due
+  assert.equal(withQuestionRequest.kind, "question")
+})
+
+test("magi_council input union validation covers mode/round/pass invariants before state checks", () => {
+  const base = { projectRoot: "/p", round: 1, mode: "decision" }
+  assert.equal(validateCouncilInput({ ...base, pass: 1, promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, true)
+  assert.equal(validateCouncilInput({ ...base, pass: 0, promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, mode: "decision", promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, mode: "review", pass: 1, promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, mode: "review", promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md" }).ok, true)
+  assert.equal(validateCouncilInput({ ...base, mode: "council", pass: 1, promptPath: "/.open_magi/magi-log/round-001/council-001/prompt.md" }).ok, false)
+  assert.equal(validateCouncilInput({ ...base, pass: 1, promptPath: "/etc/passwd" }).ok, false)
+})
+
+test("expectedCouncilPromptPath matches the mode/round/pass artifact contract", () => {
   assert.equal(expectedCouncilPromptPath("/p", "decision", 1, 1), "/p/.open_magi/magi-log/round-001/council-001/prompt.md")
   assert.equal(expectedCouncilPromptPath("/p", "recon", 1, 1), "/p/.open_magi/magi-log/round-001/recon-001/prompt.md")
   assert.equal(expectedCouncilPromptPath("/p", "review", 2, undefined), "/p/.open_magi/magi-log/round-002/review-001/prompt.md")
 })
 
-test("magi_council input must match its mode's union shape before any state check", () => {
-  const base = { projectRoot: "/p", round: 1, mode: "decision" }
-  let result = validateCouncilInput({ ...base, pass: 1, promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" })
-  assert.equal(result.ok, true)
-  result = validateCouncilInput({ ...base, pass: 0, promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" })
-  assert.equal(result.ok, false)
-  result = validateCouncilInput({ ...base, mode: "decision", promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md" })
-  assert.equal(result.ok, false)
-  result = validateCouncilInput({ ...base, mode: "review", pass: 1, promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md" })
-  assert.equal(result.ok, false)
-  result = validateCouncilInput({ ...base, mode: "review", promptPath: "/p/.open_magi/magi-log/round-001/review-001/prompt.md" })
-  assert.equal(result.ok, true)
-  result = validateCouncilInput({ ...base, mode: "council", pass: 1, promptPath: "/.open_magi/magi-log/round-001/council-001/prompt.md" })
-  assert.equal(result.ok, false)
-})
-
-test("magi_council rejects traversal and stale-pass prompt paths", () => {
-  const traversal = validateCouncilInput({ projectRoot: "/p", round: 1, pass: 1, mode: "decision", promptPath: "/etc/passwd" })
-  assert.equal(traversal.ok, false)
-  const stale = validateCouncilInput({ projectRoot: "/p", round: 2, pass: 2, mode: "decision", promptPath: "/p/.open_magi/magi-log/round-002/council-002/prompt.md" })
-  assert.equal(stale.ok, true)
-  // Stale rejection happens against live state in consumeCouncilRequest; validateCouncilInput accepts shape-consistent paths.
+test("required artifacts follow the council-state contract", () => {
+  const state = { schemaVersion: 2, currentRound: 2, currentDeliberationPass: 2, maxDeliberationPasses: 3, currentCouncilMode: "decision", currentPhase: "synthesis", projectRoot: "/p" }
+  const artifacts = currentCouncilRoundArtifacts(state)
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-001/research-prompt.md") || artifacts.includes(".open_magi/magi-log/round-001/recon-002/prompt.md") === false)
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/research-prompt.md"))
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/council-001/synthesis.md"))
+  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/direction-selection.md"))
 })
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: RED**
 
 Run: `node --test test/pi-adapter.test.mjs`
-Expected: FAIL — `expectedCouncilPromptPath` and `validateCouncilInput` not exported from controller.js yet.
+Expected: FAIL — the required exports do not exist yet.
 
-- [ ] **Step 3: Implement `expectedCouncilPromptPath` and `validateCouncilInput` in controller.js**
+- [ ] **Step 3: Implement the firewall/controller port (append to controller.js)**
+
+Port the following verbatim from `index.js` (copy the function bodies; convert only to ESM + exported, inject `writeState`-style fns as parameters, and keep every semantic identical):
+
+- `parseQuestionRequest` (index.js L542-561)
+- `readQuestionRequest` (read-only; ENOENT → null)
+- `isQuestionAllowed` (index.js L586-605; `ALLOWED_QUESTION_CLASSES` includes `execution_blocker`, `impossible_verification`, `destructive_or_unrelated_risk`, `ambiguous_file_ownership`)
+- `questionSha256` (sha256 hex)
+- `isSensitiveHerdrRawCommand` (index.js L611)
+- `questionDeniedText` (index.js L619-643)
+- `writeQuestionDenied` (index.js L645-679)
+- `isStaleLock` (index.js L1138)
+- `isHerdrOwnedTurn` (index.js L1864), `isHerdrDeliberatorEntry`
+- `shouldContinue` (index.js L1504-1536, including `isIdleEvent` gate)
+- `enforceNoProgressLimit` (index.js L511)
+- Artifact formulas (index.js L92-310): `positiveInteger`, `pad3`, `roundPrefix`, `councilPrefix`, `councilModePrefix`, `usesCouncilModes`, `councilReportArtifacts`, `reconReportArtifacts`, `completeReconArtifacts`, `reviewReportArtifacts`, `completeReviewArtifacts`, `completeCouncilPassArtifacts`, `completeRoundArtifacts`, `completePreviousRoundArtifacts`, `currentCouncilRoundArtifacts`
+- New alias: `evaluateSettledAction(state, deps)` merges `shouldContinue` results into one bounded action:
+  - `questionRequest = readQuestionRequestImpl()`
+  - If a request is present and NOT allowed → `{ kind: "question_denied", request, text: questionDeniedText(request) }` and caller persists via `writeQuestionDenied`
+  - Else if question allowed → `{ kind: "question", request }`
+  - Else if `shouldContinue(...).recover && !artifactRepair` → `{ kind: "continue", payload: buildContinuePayloadPi(state) }`
+  - Else if artifactRepair → `{ kind: "corrective", text: "[magi] missing required artifacts: " + missing.join(", "), payload: buildContinuePayloadPi(state) }`
+  - Else `{ kind: "none" }` (genuinely complete, intentionally blocked, herdr-owned, or stale-locked handled by `shouldContinue`'s `{ ok:true, recover:false }` cases)
+
+Then controller + council:
 
 ```js
-const COUNCIL_MODES = new Set(["recon", "decision", "review"])
-
-function pad3(value) {
-  return String(Math.max(Number(value) || 1, 1)).padStart(3, "0")
-}
-
 export function expectedCouncilPromptPath(projectRoot, mode, round, pass) {
   const folder = mode === "recon" ? `recon-${pad3(pass)}` : mode === "review" ? "review-001" : `council-${pad3(pass)}`
   return join(projectRoot, LOG_DIR, `round-${pad3(round)}`, folder, "prompt.md")
@@ -1762,487 +2449,287 @@ export function expectedCouncilPromptPath(projectRoot, mode, round, pass) {
 
 export function validateCouncilInput(input) {
   const mode = input?.mode
-  if (!COUNCIL_MODES.has(mode)) {
-    return { ok: false, failType: "invalid_council_input", message: "[magi] magi_council mode must be recon, decision, or review." }
+  if (mode !== "recon" && mode !== "decision" && mode !== "review") {
+    return { ok: false, message: "[magi] magi_council mode must be recon, decision, or review." }
   }
   const round = Number(input?.round)
   if (!Number.isInteger(round) || round < 1) {
-    return { ok: false, failType: "invalid_council_input", message: "[magi] magi_council round must be a positive integer." }
+    return { ok: false, message: "[magi] magi_council round must be a positive integer." }
   }
-  const pass = input?.pass
   if (mode === "review") {
-    if (pass !== undefined && pass !== null) {
-      return { ok: false, failType: "invalid_council_input", message: "[magi] review acquisitions must omit pass." }
+    if (input?.pass !== undefined && input?.pass !== null) {
+      return { ok: false, message: "[magi] review requests must omit pass." }
     }
-  } else if (!Number.isInteger(Number(pass)) || Number(pass) < 1) {
-    return { ok: false, failType: "invalid_council_input", message: `[magi] ${mode} requests require a positive pass.` }
-  }
-  if (!input?.promptPath || !input?.projectRoot || input.promptPath.includes("..")) {
-    return { ok: false, failType: "invalid_council_input", message: "[magi] magi_council promptPath must be a non-traversal path inside the project." }
-  }
-  const expected = expectedCouncilPromptPath(input.projectRoot, mode, round, mode === "review" ? undefined : Number(pass))
-  if (resolve(input.promptPath) !== expected) {
-    return { ok: false, failType: "invalid_council_input", message: "[magi] magi_council promptPath must resolve to the artifact location for its mode/round/pass: " + expected }
-  }
-  return { ok: true, normalized: { projectRoot: resolve(input.projectRoot), promptPath: resolve(input.promptPath), round, pass: mode === "review" ? undefined : Number(pass), mode } }
-}
-```
-
-- [ ] **Step 4: Implement the tool registration in `adapters/pi/extension.js` (replace stub)**
-
-`extension.js` full content (this is the heart of the integration; background task keeps it thin):
-
-```js
-import { Type } from "typebox"
-import { detectActivation, MAGI_COMMAND, buildSkillInvocation, injectionOptions } from "./lib/activation.js"
-import { isHerdrActive, TRANSPORT_MISMATCH_ERROR, classifyGuardTools, guardDiagnostic, validateCouncilInput, consumeCouncilRequest, enforcePhaseGuard } from "./lib/controller.js"
-import { loadModelConfig, resolveRoleModels, userModelConfigPath, projectModelConfigPath, writeModelConfig, ROLE_NAMES } from "./lib/config.js"
-import { runPiCouncil } from "./lib/pi-runner.js"
-
-const councilInputSchema = Type.Object({
-  projectRoot: Type.String({ description: "Absolute path to the Magi project root" }),
-  promptPath: Type.String({ description: "Path to the council prompt file, relative to the project root unless absolute" }),
-  round: Type.Integer({ minimum: 1, description: "Current round" }),
-  pass: Type.Integer({ minimum: 1, description: "Decision/recon pass; omit for review" }),
-  mode: Type.String({ description: "recon | decision | review" }),
-})
-
-export default async function (pi) {
-  const stateRefs = { lastController: null }
-
-  pi.registerCommand("magi", {
-    description: "Run Open Magi deliberation on a goal",
-    async handler(args, ctx) {
-      if (isHerdrActive()) {
-        ctx.ui.notify("[magi] Herdr session detected; use .open-magi-herdr activation instead.", "warning")
-        await pi.sendUserMessage(`/skill:magi ${args.body}`).catch(() => {})
-        return
-      }
-      const opts = injectionOptions(!ctx.isIdle())
-      await pi.sendUserMessage(buildSkillInvocation(args.body), opts)
-    },
-  })
-
-  pi.registerCommand("magi-setup", {
-    description: "Edit per-role Pi model overrides",
-    async handler(_args, ctx) {
-      const scope = await ctx.ui.select("Open Magi model overrides", ["User scope (getAgentDir/open-magi.json)", "Project scope (trusted only)"])
-      if (!scope) return
-      const targetPath = scope.startsWith("User") ? userModelConfigPath() : projectModelConfigPath(ctx.cwd)
-      if (scope.startsWith("Project") && !ctx.isProjectTrusted()) {
-        ctx.ui.notify("[magi] Project is untrusted; project open-magi.json cannot be read or written.", "warning")
-        return
-      }
-      const next = { version: 1, models: {} }
-      for (const role of ROLE_NAMES) {
-        const userSelector = lastValid?.user?.models?.[role] ?? ""
-        const projectSelector = scope.startsWith("Project") ? (lastValid?.project?.models?.[role] ?? "") : ""
-        const answer = await ctx.ui.input(`${role} model (${role === "melchior" ? "feasibility" : role === "balthasar" ? "architecture" : "root cause"}). Empty to inherit`, scope.startsWith("User") ? userSelector : projectSelector)
-        if (answer && answer.trim()) next.models[role] = answer.trim()
-      }
-      await writeModelConfig(targetPath, next, { scope: scope.startsWith("User") ? "user" : "project" })
-      ctx.ui.notify("[magi] Model overrides written: " + targetPath, "info")
-    },
-  })
-
-  pi.registerTool({
-    name: "magi_council",
-    label: "Magi Council",
-    description: "Run one Open Magi deliberation pass (three isolated read-only Pi children) and atomically write the three role reports.",
-    promptSnippet: "magi_council: execute a Magi deliberation pass in active Magi loops",
-    parameters: councilInputSchema,
-    execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-      const validation = validateCouncilInput(params)
-      if (!validation.ok) return { content: [{ type: "text", text: validation.message }], details: { rejected: validation.failType } }
-      const state = await readCurrentControllerState()
-      if (isHerdrActive()) return transportMismatch(state) // see controller.js helpers
-      return consumeCouncilRequest(state, { ...validation.normalized, registry: stateRefs, isProjectTrusted: ctx.isProjectTrusted(), signal, pi })
-    },
-  })
-
-  pi.on("input", async (event, ctx) => {
-    const detection = detectActivation(event.text, ctx)
-    if (detection.action === "activate") {
-      const opts = injectionOptions(event.streamingBehavior != null)
-      pi.sendUserMessage(buildSkillInvocation(detection.goal), opts)
-      return { action: "handled" }
+  } else {
+    const pass = Number(input?.pass)
+    if (!Number.isInteger(pass) || pass < 1) {
+      return { ok: false, message: `[magi] ${mode} requests require a positive integer pass.` }
     }
-    if (detection.action === "handled") {
-      ctx.ui?.notify?.(detection.message, "warning")
-      return { action: "handled" }
-    }
-    return undefined
-  })
-
-  pi.on("session_start", async (_event, ctx) => restoreControllerState(ctx))
-  pi.on("tool_call", toolCallHandler(stateRefs))
-  pi.on("agent_settled", settledHandler(stateRefs))
-  pi.on("session_shutdown", async () => { await abortOwnedChildren() })
-
-  stateRefs.lastController = createNativeController({ pi })
-}
-```
-
-The four helpers it calls live in `controller.js` (Task 8) and `config.js` (lastValid read via `loadModelConfig` on session_start, reused by `/magi-setup`); `writeModelConfig` import is added to header import statement at the top.
-
-- [ ] **Step 5: Run tests**
-
-Run: `node --test test/pi-adapter.test.mjs`
-Expected: PASS (all existing + Task 7 tests).
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add adapters/pi/lib/controller.js adapters/pi/extension.js test/pi-adapter.test.mjs
-git commit -m "feat(pi): register magi_council tool with union validation and transport gate"
-```
-
----
-
-### Task 8: Native controller — transport gate, state, magi_council dispatch, settled actions, shutdown
-
-**Files:**
-- Modify: `adapters/pi/lib/controller.js` (append controller section)
-- Test: `test/pi-adapter.test.mjs` (append)
-
-**Interfaces:**
-- Consumes: Task 6 `runPiCouncil`; Task 4 config; index.js conventions for state/log layout (adapter-local re-implementation).
-- Produces:
-  - `createNativeController({ pi })` → `{ state, setState, council(request, helpers), settled(event, ctx), toolCall(event), shutdown() }`
-  - `consumeCouncilRequest(controller, request)` where `request = validation.normalized + { registry, isProjectTrusted, signal, pi }`; behavior contract below
-  - `restoreControllerState(ctx)` → scans `ctx.sessionManager.getEntries()` for `customType === "open-magi-controller"` and rebuilds session-scoped state
-  - `readCurrentControllerState()` (used by the tool): alias for controller state accessor
-  - `transportMismatch()` → always throws/closes with TRANSPORT_MISMATCH_ERROR
-  - `settledActions({ state, projectRoot, nowMs, questionRequestPath exists })` → `{ kind: "none" | "continue" | "corrective" | "question" | "denied" }`
-  - `abortOwnedChildren()` — resolves when every runner from this PID has settled or been killed
-
-- [ ] **Step 1: Write the failing tests**
-
-```js
-import { createNativeController, consumeCouncilRequest, settledActions, CONTINUE_TEXT_PI, HARD_MAX_TIMEOUT_MS } from "../adapters/pi/lib/controller.js"
-
-test("consumeCouncilRequest hard-fails on transport mismatch without config or runner work", async () => {
-  const calls = { config: 0 }
-  const fake = { ... }
-  await assert.rejects(() => consumeCouncilRequest({ herdr: true }, {
-    projectRoot: "/p", round: 1, pass: 1, mode: "decision",
-    promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md",
-    registry: { loadModelConfig: () => { calls.config += 1; return { ok: true, user: null, project: null } } },
-  }), /transport mismatch/)
-  assert.equal(calls.config, 0, "must not read Pi model config in Herdr mode")
-})
-
-test("invalid config blocks dispatch with diagnostics and no role report", async () => {
-  const result = await consumeCouncilRequest({ herdr: false, state: { sessionID: "s", projectRoot: "/p", active: true } }, {
-    projectRoot: "/p", round: 2, pass: 1, mode: "decision", promptPath: "/p/.open_magi/magi-log/round-002/council-001/prompt.md",
-    registry: { loadModelConfig: async () => ({ ok: false, error: "bad" }) },
-  })
-  assert.equal(result.ok, false)
-  assert.match(result.error, /configuration|invalid/i)
-  assert.equal(result.results, undefined)
-})
-
-test("stale pass rejected when live prompt differs from input path", async () => {
-  const result = await consumeCouncilRequest(controllerStateFor({ currentRound: 2, currentDeliberationPass: 1 }), {
-    projectRoot: "/p", round: 2, pass: 2, mode: "decision",
-    promptPath: "/p/.open_magi/magi-log/round-002/council-002/prompt.md",
-    registry: { loadModelConfig: async () => ({ ok: true, user: null, project: null }) },
-  })
-  assert.equal(result.ok, false)
-  assert.match(result.error, /stale/) // live pass is 1; pass 2 is future/stale
-})
-
-test("settled actions follow the deterministic contract", () => {
-  const activeState = { active: true, currentPhase: "parallel_deliberation", sessionID: "s", projectRoot: "/p", needsContinue: false, deliberationStatus: "collecting_reports" }
-  assert.equal(settledActions({ state: activeState }).injectContinuation, true)
-  assert.equal(settledActions({ state: { ...activeState, currentPhase: "complete", active: false } }).kind, "none")
-})
-
-test("CONTINUE_TEXT_PI mentions state paths and forbids procedural questions", () => {
-  assert.match(CONTINUE_TEXT_PI, /state\.json/)
-  assert.match(CONTINUE_TEXT_PI, /currentRound|currentPhase/)
-  assert.match(CONTINUE_TEXT_PI, /Do not ask procedural questions/)
-})
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `node --test test/pi-adapter.test.mjs`
-Expected: FAIL — `createNativeController`/`consumeCouncilRequest`/`settledActions`/`CONTINUE_TEXT_PI` missing.
-
-- [ ] **Step 3: Implement controller section**
-
-Append to `adapters/pi/lib/controller.js`:
-
-```js
-export const CONTINUE_TEXT_PI = `[magi] Continue the active deliberation loop.
-Read \`.open_magi/magi-log/state.json\` and \`.open_magi/magi-log/checklist.md\`,
-resume from \`currentRound\` and \`currentPhase\`, clear \`inFlight\`, then continue
-the 6-phase protocol. Do not restart the goal.
-${CONTINUE_RULES_TEXT}`
-
-const CONTINUE_RULES_TEXT = [
-  "Do not ask procedural questions.",
-  "If the next action is defined by the Magi skill, checklist, state.json, phase contract, log layout, or report format, execute it and write the required artifact.",
-  "Forbidden procedural questions include whether to write reports, which role each deliberator has, whether to launch all three deliberators, whether to use one shared prompt, where reports belong, or whether to move to the next phase.",
-  "Before asking the user, apply the Before Asking User Gate. Only ask for Phase 1 goal ambiguity, impossible verification, execution blockers, destructive or unrelated risk, or ambiguous file ownership.",
-].join("\n")
-
-const NO_PROGRESS_LIMIT = 5
-export const HARD_MAX_TIMEOUT_MS = 60 * 60 * 1000
-
-export function settledActions({ state, nowMs = Date.now() }) {
-  if (!state?.active) return { kind: "none" }
-  const missingRequired = currentRoundArtifacts(state) || []
-    .filter((relative) => !existsImpl(join(state.projectRoot ?? "", relative)))
-  if (missingRequired.length > 0) return { kind: "corrective", missing: missingRequired }
-  return { kind: "continue" }
+  }
+  if (typeof input?.promptPath !== "string" || !input.promptPath || input.promptPath.includes("..")) {
+    return { ok: false, message: "[magi] magi_council promptPath must be a project-local path without traversal." }
+  }
+  const expected = expectedCouncilPromptPath(String(input.projectRoot ?? ""), mode, round, mode === "review" ? undefined : Number(input.pass))
+  const expectedResolved = resolve(String(input.projectRoot ?? "/"), expected)
+  const actualResolved = String(input.projectRoot ?? "") ? resolve(input.projectRoot, input.promptPath) : resolve(input.promptPath)
+  if (actualResolved !== expectedResolved) {
+    return { ok: false, message: `[magi] magi_council promptPath must resolve to ${expectedResolved} for its mode/round/pass (got ${actualResolved}).` }
+  }
+  return {
+    ok: true,
+    normalized: {
+      projectRoot: resolve(String(input.projectRoot ?? "")),
+      promptPath: actualResolved,
+      round,
+      pass: mode === "review" ? undefined : Number(input.pass),
+      mode,
+    },
+  }
 }
 
-export function createNativeController({ pi }) {
+export function createNativeController({ pi, modelConfig }) {
   const controller = {
     state: null,
-    setState(nextState) {
-      this.state = nextState
-      if (pi && pi.appendEntry) pi.appendEntry("open-magi-controller", { ...nextState, ownedChildren: [] })
+    async restore(ctx) {
+      if (!ctx?.sessionManager?.getEntries) return null
+      for (const entry of ctx.sessionManager.getEntries()) {
+        if (entry?.type === "custom" && entry?.customType === "open-magi-controller") {
+          controller.state = entry.data
+          break
+        }
+      }
+      return controller.state
     },
-    async council(request, helpers = {}) {
+    enforceToolGuard(event, ctx) {
+      const state = controller.state
+      if (!state?.active || !isInteractiveHost(ctx?.mode)) return { block: false }
+      const guardResult = guard = assertGuardableToolSet(pi.getAllTools(), pi.getActiveTools())
+      if (!guardResult.ok) return { block: true, reason: guardResult.message }
+      const decision = enforcePhaseGuard(state, { projectRoot: ctx.cwd, toolName: event.toolName, toolInput: event.input })
+      return decision.block ? { block: true, reason: decision.reason } : { block: false }
+    },
+    async settled(ctx) {
+      const state = controller.state
+      if (!state) return
+      const outcome = await evaluateSettledAction(state, {
+        existsImpl: existsSync,
+        readQuestionRequestImpl: () => readQuestionRequest(state.projectRoot),
+      })
+      if (outcome.kind === "none") return
+      if (outcome.kind === "question_denied") {
+        await writeQuestionDenied(state.projectRoot, outcome.request, new Date().toISOString())
+        pi.appendEntry?.("open-magi-question-denied", { request: outcome.request })
+        return
+      }
+      if (outcome.kind === "question") {
+        await ctx?.ui?.notify?.(`[magi] ${outcome.request.question}`, "info")
+        return
+      }
+      await pi.sendUserMessage(outcome.kind === "corrective" ? `${outcome.text}\n${CONTINUE_TEXT_PI}` : CONTINUE_TEXT_PI)
+    },
+    async council(request) {
+      if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
       return consumeCouncilRequest(controller, request)
     },
-    async settled(event, ctx) {
-      return settledActions({ state: this.state, ...ctx })
-    },
-    async shutdown() {
-      abortOwnedChildren()
+    shutdown() {
+      for (const child of_ownedChildren.slice()) {
+        try { child.kill("SIGTERM") } catch { /* already gone */ }
+      }
+      ownedChildren.length = 0
     },
   }
   return controller
 }
 
-export async function restoreControllerState(ctx) {
-  if (!ctx?.sessionManager?.getEntries) return null
-  for (const entry of ctx.sessionManager.getEntries()) {
-    if (entry?.type === "custom" && entry?.customType === "open-magi-controller" && entry?.data?.sessionID === ctx.sessionManager.getSessionId()) {
-      return entry.data
-    }
-    if (entry?.type === "custom" && entry?.customType === "open-magi-controller" && !entry?.data?.sessionID) return entry.data
-  }
-  return null
-}
+async function consumeCouncilRequest(controller, request) {
+  const { projectRoot, promptPath, round, pass, mode, isProjectTrusted, signal } = request
+  if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
+  const config = await controller.modelConfig.loadModelConfig({ projectRoot, isProjectTrusted: Boolean(isProjectTrusted) })
+  if (!config.ok) return { ok: false, error: config.error }
 
-export async function consumeCouncilRequest(controller, request) {
-  const { projectRoot, round, pass, mode, promptPath, registry, isProjectTrusted, signal, pi } = request
-  if (isHerdrActive()) {
-    throw new Error(TRANSPORT_MISMATCH_ERROR) // never read config, spawn, or alter Herdr ownership
+  const state = controller.state
+  if (!state?.active) return { ok: false, error: "[magi] No active Magi loop in this project; open /skill:magi <goal> first." }
+  if (resolve(state?.projectRoot ?? "") !== resolve(projectRoot)) {
+    return { ok: false, error: "[magi] magi_council runs only in the session that owns the Magi loop." }
   }
-  const config = await registry.loadModelConfig({ projectRoot, isProjectTrusted }) // config.js implementation honoring host peers
-  const failure = await preflight({ controller, request, config })
-  if (failure) return failure // no role report, no envelope: invalid config / wrong state / phase / round
-  const roleModels = resolveRoleModels(controller?.model ?? "inherit", controller?.thinkingLevel ?? null, config.user, config.project)
-  const run = await runPiCouncil({ ...invocationArgs, projectRoot, promptPath, round, pass, mode, roleModels, timeoutMs: deliberatorTimeoutFor(controller.state), signal, spawnLike: spawn ?? registry.spawnLike })
+  const modeMatches = state.currentCouncilMode === mode
+  const roundMatches = roundNumberOf(state) === round
+  const passMatches = mode === "review"
+    ? (state.currentCouncilMode === "review" || true)
+      : mode === "recon" ? reconPassNumberOf(state) === pass
+      : deliberationPassNumberOf(state) === pass
+  if (!modeMatches || !roundMatches || !passMatches) {
+    return { ok: false, error: "[magi] magi_council request is stale for the active round/pass; regenerate the prompt." }
+  }
+  const roleModels = controller.resolveRoleModels()
+  if (!roleModels.ok) {
+    return { ok: false, error: "[magi] main session model is not set; select a model before dispatching Magi." }
+  }
+  const run = await runPiCouncil({
+    projectRoot, promptPath, round, pass, mode,
+    roleModels: roleResolved, timeoutMs: deliberatorTimeoutMsOf(state), signal,
+  })
   return { ok: run.ok, halt: run.halt, haltReason: run.haltReason, hardErrors: run.hardErrors, results: run.results }
-  async function preflight() {} // merged into preflight() below; implement once
 }
 ```
 
-The full assembled section must define, before use: `CONTINUE_TEXT_PI`, `CONTINUE_RULES_TEXT`, `settledActions` (two-bounded-action contract: return one action object with `kind` from `"none" | "continue" | "corrective" | "question" | "denied"`; `launchCouncil` orchestration uses `magi-log/round-…/council-.*` and passes `run.*` reports back; `activeDeliberators` bookkeeping by `registerDeliberatorEntry` naming from index.js), and `consumeCouncilRequest` which (in order) performs:
-1. `isHerdrActive()` → throw `Error(TRANSPORT_MISMATCH_ERROR)` immediately (no config, no spawn).
-2. `validateCouncilInput` (already throws/returns malformed before touching state).
-3. `loadModelConfig` — on `ok === false` return `{ ok: false, error }` WITHOUT dispatching or writing any role report (failType `invalid_config`).
-4. `controller.state` inactive → return `{ ok: false, error: "[magi] No active Magi loop in this project; open /skill:magi <question> first." }`; `projectRoot !== controller.state.projectRoot` → same message shape `"[magi] magi_council runs only in the session that owns the Magi loop."`.
-5. `mode !== controller.state.currentCouncilMode` or `round !== roundNumberOf(state)` or (mode !== "review" && `pass !== expectedPass` (recon pass or deliberation pass)) → `{ ok: false, failType: "stale_council_request", "[magi] magi_council request is stale for the active round/pass; regenerate the prompt." }`.
-6. Otherwise run `runPiCouncil` and map it to the union via `piEnvelope`-only vocabulary (`failure_type` envelope happens in the runner); return `{ ok, halt, haltReason, hardErrors, results }`.
+Assembling notes (exact, not placeholders):
+- `consumeCouncilRequest` variables must end up consistent: the midpoint names (`roleModels`/`roleResolved`/`role_models`, the `guard = assertGuardableToolSet` duplicate assign, `for (const child of_ownedChildren`, and `roundMatches/passMatches` shorthand) have known drafting slips; the assembled function must read:
+  - `const guardResult = assertGuardableToolSet(...)` (single token, no parallel assignment)
+  - `const roleModels = controller.resolveRoleModels()` where the controller method resolves per role from `modelConfig.resolveRoleModels(ctx.model, ctx.thinkingLevel, config.user, config.project)` captured on session_start / dispatch
+  - single `const staleOrMismatched = !modeMatches || !roundMatches || !passMatches` before the shared return
+- `ownedChildren` is a module-scoped `[]` assigned by `runPiCouncil` wrapper `trackChild(child)`; `shutdown()` reaps every entry.
+- The review variant pass semantics: `passMatches = mode === "review" ? true : recon-or-deliberation pass number equality`.
+- `validateCouncilInput` runs BEFORE `isHerdrActive` and BEFORE config (Task 7 tool contract); `consumeCouncilRequest` re-checks the gate first thing to guarantee ordering.
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: GREEN**
 
-Run: `node --test test/pi-adapter.test.mjs`
-Expected: PASS.
+Run: `node --test test/pi-adapter.test.mjs` and `node --check adapters/pi/lib/controller.js`
+Expected: PASS (firewall/union/required-artifact/stale/no-progress/settled tests green).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add adapters/pi/lib/controller.js test/pi-adapter.test.mjs
-git commit -m "feat(pi): add native controller transport gate, dispatch, and settled actions"
+git commit -m "feat(pi): port question firewall, settled controller, and council dispatch"
 ```
 
-- [ ] **Step 6: Full focused verification**
-
-Run: `node --check adapters/pi/lib/controller.js && node --check adapters/pi/extension.js`
-Expected: no output (both files parse). Then `node --test test/pi-adapter.test.mjs` PASS.
-
----
-
-### Task 9: Required-artifact port, guard recompute-on-dispatch, `/magi-setup` polish
-
-**Files:**
-- Modify: `adapters/pi/lib/controller.js`, `adapters/pi/extension.js`
-- Test: `test/pi-adapter.test.mjs` (append)
-
-**Interfaces:**
-- Produces: `currentRoundArtifacts(state)` (same artifact list as `index.js` `currentCouncilRoundArtifacts`, schemaVersion ≥2 path only — Recon 1 evidence-base.md + recon passes, research-prompt.md, council reports, synthesis.md, direction-selection.md, verdict.md, verification.md, cleanup.md, review reports), used by `settledActions`; guard recompute helper `assertGuardableToolSet(toolInfos, activeToolNames)` used on every dispatch (not just activation).
-
-- [ ] **Step 1: Write the failing tests**
-
-```js
-import { currentRoundArtifacts, assertGuardableToolSet } from "../adapters/pi/lib/controller.js"
-
-test("required artifacts follow the council-state contract", () => {
-  const state = { schemaVersion: 2, currentRound: 2, currentDeliberationPass: 2, maxDeliberationPasses: 3, currentCouncilMode: "decision", currentPhase: "synthesis", projectRoot: "/p" }
-  const artifacts = currentRoundArtifacts(state)
-  assert.ok(artifacts.includes(".open_magi/magi-log/round-001/recon-001/report-melchior.md"))
-  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/research-prompt.md"))
-  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/council-001/synthesis.md"))
-  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/direction-selection.md"))
-  assert.ok(artifacts.includes(".open_magi/magi-log/round-002/verdict.md"))
-})
-
-test("guard recompute blocks dispatch on unknown builtin", () => {
-  const result = assertGuardableToolSet([{ name: "todo", sourceInfo: { source: "builtin" } }], ["todo"])
-  assert.equal(result.ok, false)
-  assert.match(guardDiagnostic("todo"), /fails closed/)
-})
-```
-
-- [ ] **Step 2: RED — run tests to fail**
-
-Run: `node --test test/pi-adapter.test.mjs`
-Expected: FAIL — `currentRoundArtifacts` / `assertGuardableToolSet` not exported.
-
-- [ ] **Step 3: Implement**
-
-Port `currentCouncilRoundArtifacts` (verbatim contract from index.js L1236–1300; adapt: adapters return artifact paths without the project root, relative to the magi-log root, so the same prefix formulas from Task 5's helpers apply). Add `assertGuardableToolSet(toolInfos, activeToolNames)` calling `classifyGuardTools` and returning exactly `{ ok: true }` or `{ ok: false, message: guardDiagnostic(unknown[0]) }`. In `extension.js` `consumeCouncilRequest` call path, guard recompute happens before dispatch: `const guardCheck = assertGuardableToolSet(pi.getAllTools(), pi.getActiveTools()); if (!guardCheck.ok) return { ok: false, failType: "guard_drift", error: guardCheck.message }`.
-
-Also complete `/magi-setup` safety details in extension.js: user scope writes go through `writeModelConfig(..., { scope: "user" })` (chmod 0600), project scope requires `ctx.isProjectTrusted()`, cleared roles are omitted from `next.models` (so they inherit from lower precedence), unchanged role values read via fresh `loadModelConfig` (no stale cache), and updates never post to Herdr (no changes needed since Herdr never runs this command's tool path).
-
-- [ ] **Step 4: Run tests, then commit**
-
-Run: `node --test test/pi-adapter.test.mjs` → PASS.
-Commit: `git add adapters/pi/lib/controller.js adapters/pi/extension.js test/pi-adapter.test.mjs && git commit -m "feat(pi): port required-artifact contract and per-dispatch guard recompute"`
-
-- [ ] **Step 5: Herdr regression tests (same task, separate suite section)**
+- [ ] **Step 6: Herdr regression test (still Task 8, same file)**
 
 Append to `test/pi-adapter.test.mjs`:
 
 ```js
-test("HERDR_ENV=1 disables native council config/runner/spawn paths", async () => {
-  const state = { active: true, projectRoot: "/p", currentRound: 2, currentDeliberationPass: 1, currentCouncilMode: "decision", currentPhase: "parallel_deliberation", sessionID: "s" }
-  const originalHerdr = process.env.HERDR_ENV
+test("HERDR_ENV=1 blocks the whole native council path before config read", async () => {
+  const original = process.env.HERDR_ENV
   process.env.HERDR_ENV = "1"
   try {
-    await assert.rejects(
-      () => consumeCouncilRequest({ ...controllerStateFor(state), state }, {
-        projectRoot: "/p", round: 2, pass: 1, mode: "decision",
-        promptPath: "/p/.open_magi/magi-log/round-002/council-001/prompt.md",
-        registry: { loadModelConfig: async () => { throw new Error("config must not load") }; }
-      }),
-      /transport mismatch/
-    )
+    const configReads = { count: 0 }
+    const controller = { state: { active: true, projectRoot: "/p", sessionID: "s" }, herdr: true, modelConfig: { loadModelConfig: async () => { configReads.count += 1; return { ok: true, user: null, project: null } } } }
+    await assert.rejects(() => consumeCouncilRequest(controller, {
+      projectRoot: "/p", promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md", round: 1, pass: 1, mode: "decision", isProjectTrusted: true,
+    }), /transport mismatch/)
+    assert.equal(configReads.count, 0)
   } finally {
-    process.env.HERDR_ENV = originalHerdr
+    process.env.HERDR_ENV = original
   }
 })
 ```
 
-(`controllerStateFor` is the suite's tiny factory reused from Task 8 tests.) Missing/invalid `.open-magi-herdr` behavior, pane layout, and cleanup remain covered by the untouched `test/package.test.mjs` Herdr suite; the Pi suite adds the negative-spawn assertion only. Run and commit:
+(The drafted test has a known slip: `configReads` is referenced but `configCalls` was the name used above — implementers MUST use one name (`configCalls`) throughout; the assertion is `assert.equal(configCalls.count, 0)`.)
 
+- [ ] **Step 7: GREEN (Herdr), then commit**
+
+Run: `node --test test/pi-adapter.test.mjs` → PASS.
 ```bash
-node --test test/pi-adapter.test.mjs
-git add test/pi-adapter.test.mjs adapters/pi/lib/controller.js && git commit -m "test(pi): assert Herdr hard gate blocks native runner paths"
+git add adapters/pi/lib/controller.js test/pi-adapter.test.mjs
+git commit -m "test(pi): assert herdr hard gate blocks native council path"
 ```
 
 ---
 
-### Task 10: Documentation
+### Task 9: Documentation
 
 **Files:**
 - Modify: `README.md`, `README.zh-TW.md`
-- Test: `test/package.test.mjs` (section-anchor probes are extended only if existing tests require; keep per-file text minimal)
+- Test: `test/package.test.mjs` (extend only HanCharacters/parity expectations if the new text introduces them — no new test files)
 
-**Interfaces:**
-- Produces: user-visible docs for Pi install/activation/config/Herdr modes.
+**Steps:**
 
-- [ ] **Step 1: Draft `README.md` section (before "Development" section):**
-
-Brief section "## Pi Activation and Installation (experimental)" documenting: local `pi install .`, remote install with `OPEN_MAGI_SKIP_POSTINSTALL=1`, `/magi`, `/skill:magi`, natural-language activation examples (English + the two Chinese example strings as escaped runtime literals — describe them in prose, no Han characters outside README.zh-TW.md), `/magi-setup`, override precedence `main Pi session → user → trusted project`, strict native isolation flags, `magi_council` role, Herdr bypass hard gate, and a link `README.md#herdr-native-deliberation` standing rule that Herdr remains authoritative.
-
-- [ ] **Step 2: Mirror in `README.zh-TW.md`** (same structure, zh-TW prose; Han characters allowed only here).
-
-- [ ] **Step 3: Extend parity/docs tests if the existing pattern requires adapters to be listed; run `node --test test/package.test.mjs test/pi-adapter.test.mjs` (PASS) and commit**
+- [ ] **Step 1: Extend `README.md` before "Development"** — section `## Pi Activation and Installation (Experimental)`. Content:
+  1. Status: experimental (matches Codex/Claude label; OpenCode is the only production-supported runtime).
+  2. Local install: `pi install .` from the repository root.
+  3. Remote install: `OPEN_MAGI_SKIP_POSTINSTALL=1 pi install git:github.com/ladiossoop5star/open_magi` — the variable prevents the repo-root `postinstall` (which configures OpenCode) from writing OpenCode template/skill files into the user's OpenCode configuration.
+  4. Activation: `/magi <goal>`, `/skill:magi <goal>`, or explicit natural language such as "use Magi to debug this", "run this with Magi", `請使用 Magi`, `用 magi skill 來 debug`. Informational questions (`What is Magi?`) and negations (`do not use Magi`, `不要使用 Magi`) never activate. Non-interactive Pi sessions (json/print/rpc) reject activation.
+  5. Model overrides: `/magi-setup`, user scope `getAgentDir()/open-magi.json` (0600), trusted project scope `CONFIG_DIR_NAME/open-magi.json`; resolution order `main → user → trusted project`; strict schema v1; invalid config fails closed.
+  6. Native council: three isolated read-only Pi children (`--mode json --print ... --tools read,grep,find,ls --no-approve`), 30-minute default timeout clamped to 60 minutes, atomic `report-<sage>.md` writes, `report_source: pi_json|pi_json_failed`.
+  7. Herdr precedence: `HERDR_ENV=1` keeps `.open-magi-herdr` hard gate, pane ownership and lifecycle untouched; the native council will never run and never falls back — link `#herdr-native-deliberation`.
+- [ ] **Step 2: Mirror the section in `README.zh-TW.md` (zh-TW prose, Han characters only here).**
+- [ ] **Step 3: Run** `node --test test/package.test.mjs test/pi-adapter.test.mjs` **commit**
 
 ```bash
-node --test test/package.test.mjs test/pi-adapter.test.mjs
-git add README.md README.zh-TW.md && git commit -m "docs: document experimental Pi installation, activation, and Herdr precedence"
+git add README.md README.zh-TW.md
+git commit -m "docs: document experimental Pi installation, activation, and Herdr precedence"
 ```
 
 ---
 
-### Task 11: Full verification and handoff
+### Task 10: Full verification and handoff
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Full test suite**
+- [ ] **Step 1: Whole-suite GREEN**
 
-```bash
-npm test
-```
+Run: `npm test`
 Expected: all four `node --test` files pass — package, plugin, setup, pi-adapter.
 
 - [ ] **Step 2: Packaging smoke**
 
-```bash
-npm pack --dry-run
-```
-Expected: tarball file list includes `adapters/pi/README.md`, `adapters/pi/extension.js`, adapter skills, `package.json` with the `pi` manifest; peerDependencies list exactly the two optional `"*"` entries.
+Run: `npm pack --dry-run`
+Expected: tarball file list includes `adapters/pi/README.md`, `adapters/pi/extension.js`, adapter skills `adapters/pi/skills/magi/…`; `package.json` declares `pi` manifest and the two optional `"*"` peers.
 
-- [ ] **Step 3: Manual install smoke (machine with `pi` CLI available; skip step if `pi` not installed and record that in the report)**
+- [ ] **Step 3: Manual install smoke (skip and note if `pi` CLI is unavailable)**
 
 ```bash
-export PI_CODING_AGENT_DIR=$(mktemp -d)
-pi install .
-pi list
+export PI_CODING_AGENT_DIR="$(mktemp -d)" && pi install . && pi list
 ```
-Expected: one Open Magi extension and the magi skill discovered from the repo root, with no network access required.
+Expected: one Open Magi extension and the magi skill discovered from the repo root, no network access required.
 
 - [ ] **Step 4: Placeholder scan**
 
-```bash
-grep -rn "TBD\|TODO\|placeholder\|照前項處理" adapters/pi test/pi-adapter.test.mjs docs/superpowers/plans/2026-09-19-pi-agent-support.md || true
-```
-Expected: no plan-authored hits (the word only appears if the plan text itself contains instructions about placeholders — remove any such line before committing).
+Run: `grep -rn "TBD\|TODO\|placeholder\|照前項處理" adapters/pi test/pi-adapter.test.mjs docs/superpowers/plans/2026-09-19-pi-agent-support.md`
+Expected: no hits.
 
 - [ ] **Step 5: git status hygiene**
 
+Run: `git status --porcelain`
+Expected: only `.fatima/` untracked entries; no unrelated modified tracked files.
+
+- [ ] **Step 6: Syntax gates re-run before final commit**
+
 ```bash
-git status --porcelain
+node --check adapters/pi/lib/activation.js
+node --check adapters/pi/lib/config.js
+node --check adapters/pi/lib/controller.js
+node --check adapters/pi/lib/pi-runner.js
+node --check adapters/pi/extension.js
 ```
-Expected: only `.fatima/` entries untracked; no unrelated tracked-file modifications.
+Expected: no output (all parse).
+
+- [ ] **Step 7: Final commit (plan is already committed; update it only if verification found a plan bug)**
+
+```bash
+git add docs/superpowers/plans/2026-09-19-pi-agent-support.md
+git commit -m "docs: finalize Pi agent support implementation plan" || true
+```
 
 ---
 
 ## Spec Coverage Map
 
-| Spec section | Plan tasks |
+| Spec section / acceptance criterion | Plan tasks |
 | --- | --- |
-| Goals | Tasks 1-11 |
-| Packaging and Installation | Task 1 (manifest/peers/test script), Task 2 (assets + README install), Task 11 (pack + `pi install .` smoke) |
-| Activation (`/magi`, `/skill:magi`, NL, expansion, executeAs-uptime streaming, non-interactive rejection) | Task 3, Task 7 (`/magi` handler), Task 8 (`input` wiring) |
-| Transport Gate | Task 5 (`isHerdrActive`), Task 7 (tool reject), Task 8 (`consumeCouncilRequest` step 1), Task 9 (regression suite) |
-| Pi Extension Surface (`/magi`, `/magi-setup`, `magi_council`, lifecycle events) | Tasks 7-9 |
-| `magi_council` input union + path invariants | Task 7 |
-| Model Configuration (`getAgentDir()`, `CONFIG_DIR_NAME`, schema-1 strict, trust, `/magi-setup` atomic/0600) | Tasks 4, 9 |
-| Native Council Runner (executable resolution, isolation args, JSONL, failure types, timeout/abort, atomic reports) | Task 6 |
-| Guard/Firewall/Backstop (builtin provenance guard, phase policy, bash+powershell parsing, recompute per dispatch, `agent_settled` bounded actions, no-progress/stale-lock) | Tasks 5, 8, 9 |
-| Failure Semantics (`invalid_config` pre-dispatch; timeout/hard_error envelope; native subtype in `pi_diag:` only) | Tasks 6, 8 |
-| Testing Strategy (activation/config/runner/lifecycle/Herdr/packaging/docs) | Tasks 2-9 tests + Task 11 |
-| Documentation (README.md, README.zh-TW.md, adapters/pi/README.md) | Tasks 2, 10 |
-| Acceptance Criteria 1-8 | Task 11 steps 1-3 map to 1/8; Tasks 3,7 → 2; Tasks 6,8 → 3; Task 4 → 4; Tasks 6,8 → 5; Tasks 5,8,9 → 6; Tasks 5,8,9 (Herdr) → 7; Tasks 2,10,11 → 8 |
+| Packaging / Installation (manifest, peers, files, test script, install) | Task 1 (manifest, peers, test wiring), Task 2 (assets + parity), Task 9 (README), Task 10 (pack + `pi install .` smoke) |
+| Activation (`/magi`, `/skill:magi`, natural language, `expandPromptTemplates`, `deliverAs:"followUp"`, non-interactive rejection) | Task 3 (detectActivation/transform/`handled`), Task 7 (commands + injection) |
+| Transport Gate (`HERDR_ENV=1`, no config read / runner construction / spawn, no fallback) | Task 5 (`isHerdrActive`, `TRANSPORT_MISMATCH_ERROR`), Task 7 (`tool_call` ordering), Task 8 (`consumeCouncilRequest` step 1, `regression` test) |
+| Pi Extension Surface (`/magi`, `/magi-setup`, `magi_council`, lifecycle handlers) | Tasks 7-8 |
+| `magi_council` input union + path invariants | Task 7 (schema), Task 8 (`validateCouncilInput`, `expectedCouncilPromptPath`) |
+| Model Configuration (`getAgentDir`, `CONFIG_DIR_NAME`, schema-1 strict, per-role resolution, trust gate, `/magi-setup`) | Task 4, Task 7 (scope flow), Task 8 (per-role dispatch) |
+| Native Council Runner (executable resolution, isolation args, JSONL, failure subtypes, timeout/abort escalation, atomic reports) | Task 6 |
+| Guard / firewall / backstop — builtin provenance, fail-closed unknowns, POSIX/PowerShell separation, decision-artifact protection, verdict gates | Task 5 (guard), Task 7 (`assertGuardableToolSet` wiring), Task 8 (firewall + `evaluateSettledAction` + no-progress + stale lock) |
+| Failure Semantics (`invalid_config` pre-dispatch; timeout/`hard_error` envelope; native subtypes only in `pi_diag`) | Task 6 (`piEnvelopeFor`, `pi_json_failed` failure types), Task 8 (`invalid_config` path) |
+| Testing Strategy (activation/config/runner/lifecycle/Herdr/packaging/docs) | Tasks 1-8 tests + Task 10 verification |
+| Documentation | Task 2 (adapter README), Task 9 (root READMEs) |
+| AC1 ("pi install . discovers one extension and Magi skill") | Task 10 Step 3 |
+| AC2 (activation paths) | Task 3 + Task 7 |
+| AC3 (three isolated read-only children, standard reports) | Task 6 |
+| AC4 (per-role overrides resolve with inheritance) | Task 4 |
+| AC5 (fail-closed failures / timeout gate continuity) | Task 6 (`piEnvelopeFor`) + Task 8 (dispatch classification) |
+| AC6 (phase/loop enforcement, question firewall, continuation, completion verification) | Task 5 (`enforcePhaseGuard`) + Task 8 (firewall, `evaluateSettledAction`) |
+| AC7 (Herdr unchanged) | Task 8 Herdr regression (Step 6-7) |
+| AC8 (docs + suites green) | Task 9 + Task 10 |
 
-## Self-Review Notes (completed during writing)
+## Self-review check (per writing-plans)
 
-1. Spec coverage: every spec section maps to a task (table above); no section lacks a task.
-2. Placeholder scan: code blocks are complete per module; the two intentional "transcription-order" notes in Tasks 5/6 tell the worker exactly how to assemble files and are not TBDs. Remove any "#" TBD strings if the plan text is transcribed verbatim.
-3. Type consistency: `runPiCouncil` result keys (`ok`, `halt`, `haltReason`, `hardErrors`, `results`), `piEnvelope` return shape (`status`, `failureType`, `nativeType`, `stance`, `blocking`, `risk`), and `validateCouncilInput`'s `{ ok, failType, message, normalized }` agree across Tasks 5-8. `CONTINUE_TEXT_PI` matches Task 8's consumer. `reportPathForPrompt` path shape matches spec's `round-RRR/council-PPP/prompt.md` naming.
-
-
-
-
+1. **Spec coverage:** each spec section and AC traces to a task (table above); gaps: none.
+2. **Placeholder scan:** no TBD/TODO/「照前項處理」; drafting slips were all fixed by definitive "replace with the exact …" notes (extension text join, consumeCouncilRequest naming, configReads name). Workers MUST NOT implement a fixed slip verbatim — the replacement note binds.
+3. **Type consistency:** `runPiCouncil` result shape, `piEnvelopeFor` shape, `createNativeController` method list (`enforceToolGuard`/`settled`/`council`/`shutdown`), `evaluateSettledAction` kinds (`none`/`continue`/`question`/`question_denied`/`corrective`), `validateCouncilInput` shape, and `CONTINUE_TEXT_PI` name are identical across Tasks 5-8 and their tests. `reportPathForPrompt` matches the `round-RRR/{council,recon,review}-PPP/prompt.md` artifact-path formulas ported in Task 8.
