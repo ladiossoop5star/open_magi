@@ -390,9 +390,24 @@ tool settles.
 
 ## Guard, Question Firewall, and Completion Backstop
 
-The Pi `tool_call` guard maps every mutation- or execution-capable built-in
-active in the host session to the existing Magi phase policy: `write`, `edit`,
-and both shell-family tools, `bash` and Pi's built-in `powershell`:
+The guard contract is deterministic and is computed at Magi activation from
+Pi's public tool API:
+
+- `pi.getAllTools()` exposes each configured tool's provenance as
+  `sourceInfo.source`; only tools with `sourceInfo.source === "builtin"` are
+  builtins. Third-party extension and SDK tools are never classified as
+  builtins and are never silently disabled; they remain subject to Pi's own
+  tool controls.
+- The guard set is the intersection of `pi.getActiveTools()` with builtin
+  tools. Read-only builtins `read`, `grep`, `find`, and `ls` are classified as
+  read-only. Mutation/execution builtins `write`, `edit`, `bash`, and
+  `powershell` are classified as guarded mutation/execution tools.
+- If any other builtin is active, Magi activation fails closed with a clear
+  diagnostic before dispatch; the guard never invents behavior for a builtin
+  it has not classified.
+
+The guard maps each guarded mutation/execution tool to the existing Magi phase
+policy:
 
 - Project code mutation is denied before the execution phase.
 - Execution-phase mutation requires the current verdict artifact.
@@ -407,11 +422,10 @@ and both shell-family tools, `bash` and Pi's built-in `powershell`:
   syntax-appropriate parsing: POSIX redirect grammar covers `bash`, while
   `powershell` targets are parsed with PowerShell redirect and assignment
   syntax rather than being squeezed through the POSIX parser.
-- The guard fails closed for the unknown: if Pi reports an active built-in
-  that is mutation- or execution-capable but the adapter has no explicit
-  classification for it, the guard denies the call with a clear diagnostic
-  instead of allowing it to bypass the phase policy, so a future Pi built-in
-  can never silently escape the guard.
+- The classification is recomputed before each dispatch: if the active tool
+  set changes after activation (Pi refreshes tools immediately when extensions
+  register tools), an unrecognized active builtin blocks dispatch with the
+  same clear diagnostic, so the guard can never silently drift out of date.
 
 At `agent_settled`, the controller reads current state and required artifacts.
 It performs one bounded action:
@@ -519,11 +533,15 @@ contract in `shared/magi/references/deliberation.md`:
   current verdict in execution.
 - Verify Magi artifact writes, build/test exceptions, redirect parsing, and
   protected decision artifacts.
+- Verify the guard set is the intersection of `pi.getActiveTools()` with
+  tools whose `sourceInfo.source` is `builtin`, that `read`/`grep`/`find`/`ls`
+  classify as read-only, and that third-party extension or SDK tools are
+  neither treated as builtins nor silently disabled.
 - Verify `powershell` mutation is denied before execution and allowed only
   after the current verdict in execution, that its build/test exceptions are
   classified with PowerShell syntax rules rather than inherited from the Bash
-  classifier, and that an unknown active mutation- or execution-capable
-  built-in fails closed.
+  classifier, and that an unrecognized active builtin fails Magi activation
+  closed with a clear diagnostic before dispatch.
 - Verify `agent_settled` continuation, approved and denied questions,
   false-completion repair, completion silence, stale locks, and no-progress
   limits.
