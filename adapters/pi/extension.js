@@ -5,30 +5,38 @@ import {
   assertGuardableToolSet, createNativeController,
 } from "./lib/controller.js"
 
-// Peers stay OPTIONAL at runtime: production resolves them; CI-less peers are
-// handled through the testOverrides injection seam (mandatory in tests).
 export default async function (pi, testOverrides = {}) {
-  const host = testOverrides.host ?? await import("@earendil-works/pi-coding-agent")
-  const typebox = testOverrides.typebox ?? await import("typebox")
-  const Type = typebox?.Type ?? typebox
-  const modelConfig = testOverrides.modelConfig ?? createModelConfigApi({ getAgentDir: host.getAgentDir, CONFIG_DIR_NAME: host.CONFIG_DIR_NAME })
+  const modelConfig = testOverrides.modelConfig ?? createModelConfigApi()
   const controller = testOverrides.controllerOverride ?? createNativeController({ pi, modelConfig })
 
-  const councilInputSchema = Type.Union([
-    Type.Object({
-      projectRoot: Type.String(),
-      promptPath: Type.String(),
-      round: Type.Integer({ minimum: 1 }),
-      pass: Type.Integer({ minimum: 1 }),
-      mode: Type.Union([Type.Literal("decision"), Type.Literal("recon")]),
-    }, { additionalProperties: false }),
-    Type.Object({
-      projectRoot: Type.String(),
-      promptPath: Type.String(),
-      round: Type.Integer({ minimum: 1 }),
-      mode: Type.Literal("review"),
-    }, { additionalProperties: false }),
-  ])
+  // Pi accepts ordinary JSON Schema and validates schemas without TypeBox
+  // metadata. Keeping this schema local makes a path-installed extension
+  // independent of packages in Pi's own global node_modules tree.
+  const sharedProperties = {
+    projectRoot: { type: "string" },
+    promptPath: { type: "string" },
+    round: { type: "integer", minimum: 1 },
+  }
+  const councilInputSchema = {
+    anyOf: [
+      {
+        type: "object",
+        required: ["projectRoot", "promptPath", "round", "pass", "mode"],
+        properties: {
+          ...sharedProperties,
+          pass: { type: "integer", minimum: 1 },
+          mode: { anyOf: [{ type: "string", const: "decision" }, { type: "string", const: "recon" }] },
+        },
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        required: ["projectRoot", "promptPath", "round", "mode"],
+        properties: { ...sharedProperties, mode: { type: "string", const: "review" } },
+        additionalProperties: false,
+      },
+    ],
+  }
 
   pi.registerCommand("magi", {
     description: "Run Open Magi deliberation on a goal",

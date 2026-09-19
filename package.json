@@ -45,18 +45,6 @@
   "engines": {
     "node": ">=20"
   },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    },
-    "typebox": {
-      "optional": true
-    }
-  },
   "keywords": [
     "opencode",
     "plugin",

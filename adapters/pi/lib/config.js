@@ -1,9 +1,19 @@
 import { join, dirname } from "node:path"
 import { readFile, writeFile, rename, chmod, mkdir, rm } from "node:fs/promises"
+import { homedir } from "node:os"
 
 export const ROLE_NAMES = ["melchior", "balthasar", "casper"]
 export const MODEL_CONFIG_VERSION = 1
 export const MODEL_CONFIG_FILE = "open-magi.json"
+export const PI_CONFIG_DIR_NAME = ".pi"
+
+export function getPiAgentDir(env = process.env, home = homedir()) {
+  const configured = String(env.PI_CODING_AGENT_DIR ?? "").trim()
+  if (configured === "~") return home
+  if (configured.startsWith("~/")) return join(home, configured.slice(2))
+  if (configured) return configured
+  return join(home, PI_CONFIG_DIR_NAME, "agent")
+}
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
 
@@ -56,7 +66,7 @@ export function resolveRoleModels(mainModel, mainThinking, userConfig, projectCo
   return result
 }
 
-export function createModelConfigApi({ getAgentDir, CONFIG_DIR_NAME, readFileImpl = readFile, writeFileImpl = writeFile, chmodImpl = chmod, renameImpl = rename, mkdirImpl = mkdir, rmImpl = rm } = {}) {
+export function createModelConfigApi({ getAgentDir = getPiAgentDir, CONFIG_DIR_NAME = PI_CONFIG_DIR_NAME, readFileImpl = readFile, writeFileImpl = writeFile, chmodImpl = chmod, renameImpl = rename, mkdirImpl = mkdir, rmImpl = rm } = {}) {
   const userModelConfigPath = () => join(getAgentDir(), MODEL_CONFIG_FILE)
   const projectModelConfigPath = (projectRoot) => join(projectRoot, CONFIG_DIR_NAME, MODEL_CONFIG_FILE)
 

@@ -36,15 +36,9 @@ test("published file list contains adapters/pi and keeps existing entries", () =
   }
 })
 
-test("Pi host modules are optional wildcard peers and never bundled", () => {
-  assert.deepEqual(pkg.peerDependencies, {
-    "@earendil-works/pi-coding-agent": "*",
-    typebox: "*",
-  })
-  assert.deepEqual(pkg.peerDependenciesMeta, {
-    "@earendil-works/pi-coding-agent": { optional: true },
-    typebox: { optional: true },
-  })
+test("path-installed Pi extension has no external runtime dependencies", () => {
+  assert.equal(pkg.peerDependencies, undefined)
+  assert.equal(pkg.peerDependenciesMeta, undefined)
   const raw = readFileSync(join(repoRoot, "package.json"), "utf8")
   assert.ok(!raw.includes("bundledDependencies"), "no bundledDependencies key expected")
 })
@@ -1268,6 +1262,25 @@ function fakePi(overrides = {}) {
   }
   return pi
 }
+
+test("installed extension activates without locally resolvable Pi host packages", async () => {
+  const module = await import("../adapters/pi/extension.js")
+  const pi = fakePi()
+  const controllerOverride = {
+    council: async () => ({ ok: true, results: [] }),
+    restore: async () => {},
+    enforceToolGuard: async () => undefined,
+    settled: async () => {},
+    shutdown: async () => {},
+  }
+
+  await module.default(pi, { controllerOverride })
+
+  assert.ok(pi.commands.magi)
+  assert.ok(pi.commands["magi-setup"])
+  assert.equal(pi.tools[0]?.name, "magi_council")
+  assert.ok(Array.isArray(pi.tools[0]?.parameters?.anyOf))
+})
 
 // Helper that builds a fake modelConfig for the /magi-setup tests.
 function magiSetupModelConfigHooks({ writes, current, project }) {
