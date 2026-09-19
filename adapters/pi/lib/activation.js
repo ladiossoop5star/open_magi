@@ -40,6 +40,13 @@ function normalize(text) {
   return String(text ?? "").trim().toLowerCase()
 }
 
+// Normalized INTENT matching uses whitespace-collapsed text (extra internal
+// spaces never block activation); the transform payload keeps the ORIGINAL
+// goal text verbatim from the raw request.
+function normalizeForIntent(text) {
+  return String(text ?? "").trim().toLowerCase().replace(/\s+/g, " ")
+}
+
 function containsStandaloneMagi(text) {
   return /(^|[^a-z0-9])magi([^a-z0-9]|$)/.test(text)
 }
@@ -62,16 +69,16 @@ const NON_INTERACTIVE_MESSAGE =
 function magiIntent(rawText, source) {
   if (source === "extension") return null
   const normalized = normalize(rawText)
-  if (normalized === MAGI_COMMAND || normalized.startsWith(`${MAGI_COMMAND} `)) {
+  const intentNormalized = normalizeForIntent(rawText)
+  if (normalized === MAGI_COMMAND || intentNormalized.startsWith(`${MAGI_COMMAND} `)) {
     return { kind: "slash" }
   }
-  if (!containsStandaloneMagi(normalized)) return null
-  if (hasGoverningNegation(normalized)) return null
-  if (isQuestionText(normalized)) return null
-  if (!hasPositiveMarker(normalized)) return null
+  if (!containsStandaloneMagi(intentNormalized)) return null
+  if (hasGoverningNegation(intentNormalized)) return null
+  if (isQuestionText(intentNormalized)) return null
+  if (!hasPositiveMarker(intentNormalized)) return null
   return { kind: "natural" }
 }
-
 export function detectActivation(rawText, context) {
   const source = context?.source ?? "interactive"
   const intent = magiIntent(rawText, source)

@@ -723,11 +723,11 @@ test("model/auth/provider failures classify as model_unavailable, not nonzero_ex
 })
 
 import {
-  CONTINUE_TEXT_PI, parseQuestionRequest, isQuestionAllowed, questionSha256,
+  CONTINUE_TEXT_PI, parseQuestionRequest, isQuestionAllowed, questionSha256, consumeCouncilRequest,
   questionDeniedText, isStaleLock, enforceNoProgressLimit, shouldContinue,
   evaluateSettledAction, expectedCouncilPromptPath, validateCouncilInput,
   currentCouncilRoundArtifacts, readMagiState, writeMagiState,
-  createNativeController, consumeCouncilRequest,
+  createNativeController,
 } from "../adapters/pi/lib/controller.js"
 import { createHash } from "node:crypto"
 import { writeFileSync, existsSync, rmSync } from "node:fs"
@@ -1014,9 +1014,11 @@ test("evaluateSettledAction performs exactly one bounded action", async () => {
   const quiet = { active: false, currentPhase: "complete", projectRoot: "/p" }
   assert.equal((await evaluateSettledAction(quiet, { readQuestionRequestImpl: emptyQuestionFile })).kind, "none")
 
+  // F3 fix: a FRESH inFlight lock stays silent (the runner owns it); only a
+  // STALE lock recovers. "continuing" here is a not-in-flight loop.
   const continuing = {
     active: true, sessionID: "s", projectRoot: "/p", currentPhase: "synthesis", currentRound: 2,
-    inFlight: true, inFlightSince: new Date().toISOString(),
+    inFlight: false, inFlightSince: null,
     currentCouncilMode: "decision", currentDeliberationPass: 2, maxDeliberationPasses: 3, needsContinue: false,
   }
   const action = await evaluateSettledAction(continuing, {
@@ -1157,9 +1159,24 @@ test("artifact repair and false completion produce corrective continuations over
   // genuine completion: terminal phase is silent.
   const complete = { ...state, currentPhase: "complete", active: true }
   assert.equal((await evaluateSettledAction(complete, { directory: project, readQuestionRequestImpl: async () => null, existsImpl: existsSync })).kind, "none")
-  // stale lock neither continues nor injects a continuation after settle.
-  const stale = { ...state, currentPhase: "synthesis", inFlight: true, inFlightSince: new Date(Date.now() - 31 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }
-  assert.equal((await evaluateSettledAction(stale, { directory: project, readQuestionRequestImpl: async () => null, existsImpl: existsSync, nowMs: Date.now() })).kind, "none")
+  // STALE LOCK: one recovery continuation (F3: authoritative stale semantics);
+  // a FRESH unchanged inFlight lock stays silent.
+  const freshInFlightState = { ...state, currentPhase: "synthesis", inFlight: true, inFlightSince: new Date().toISOString(), staleLockMs: 30 * 60 * 1000 }
+  assert.equal((await evaluateSettledAction({ ...freshInFlightState, projectRoot: "/missing-project-root" }, {
+    directory: "/missing-project-root",
+    readQuestionRequestImpl: async () => null,
+    existsImpl: (p) => p.includes(".open_magi") || true,
+    nowMs: Date.now(),
+    missingArtifacts: [],
+  })).kind, "none")
+  const staleState = { ...state, currentPhase: "synthesis", inFlight: true, inFlightSince: new Date(Date.now() - 31 * 60 * 1000).toISOString(), staleLockMs: 30 * 60 * 1000 }
+  const staleResult = await evaluateSettledAction(staleState, {
+    directory: "/missing-project-root2",
+    readQuestionRequestImpl: async () => null,
+    existsImpl: () => true, nowMs: Date.now(), missingArtifacts: [],
+  })
+  assert.equal(staleResult.kind, "continue", "stale lock yields ONE recovery continuation")
+  assert.equal(staleResult.staleLockRecovery, true, "recovery metadata set so settled() can clear the lock")
 })
 
 function fakeUi(options = {}) {
@@ -1536,4 +1553,146 @@ test("HERDR_ENV=1 blocks the whole native council path before config, runner, or
   } finally {
     process.env.HERDR_ENV = original
   }
+})
+
+test("second concurrent magi_council dispatch for the same round/mode/pass fails BEFORE spawning", async () => {
+  const herdrOriginal = process.env.HERDR_ENV
+  process.env.HERDR_ENV = "0"
+  try {
+    const { mkdtemp, mkdir } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join, dirname } = await import("node:path")
+    const { writeFileSync } = await import("node:fs")
+    const project = await mkdtemp(join(tmpdir(), "magi-serial-"))
+    const logDir = join(project, ".open_magi", "magi-log")
+    await mkdir(logDir, { recursive: true })
+    const promptPath = join(logDir, "round-001", "council-001", "prompt.md")
+    await mkdir(dirname(promptPath), { recursive: true })
+    writeFileSync(join(logDir, "state.json"), JSON.stringify({
+      active: true, projectRoot: project, sessionID: "s", currentRound: 1,
+      currentPhase: "parallel_deliberation", currentCouncilMode: "decision",
+      currentDeliberationPass: 1, maxDeliberationPasses: 3, schemaVersion: 2,
+    }))
+    writeFileSync(promptPath, "# council prompt", "utf8")
+    const modelConfig = {
+      loadModelConfig: async () => ({ ok: true, user: null, project: null }),
+      resolveRoleModels: () => ({ melchior: { model: "m" }, balthasar: { model: "m" }, casper: { model: "m" } }),
+      userModelConfigPath: () => "/u/open-magi.json",
+      projectModelConfigPath: (root) => `${root}/.pi/open-magi.json`,
+      writeModelConfig: async () => {},
+    }
+    const controller = createNativeController({ pi: { appendEntry: () => {}, sendUserMessage: async () => {} }, modelConfig })
+    await controller.restore({ mode: "tui", cwd: project }, { mainModel: "m", thinkingLevel: "low" })
+    let running = 0, maxRunning = 0
+    const runner = async () => {
+      running += 1
+      maxRunning = Math.max(maxRunning, running)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      running -= 1
+      return { ok: true, halt: false, haltReason: null, hardErrors: [], results: [{ ok: true, sage: "melchior", failureType: null, reportPath: "/x" }] }
+    }
+    const request = { projectRoot: project, promptPath, round: 1, pass: 1, mode: "decision", isProjectTrusted: true, runner }
+    const [first, second] = await Promise.allSettled([
+      consumeCouncilRequest(controller, request),
+      consumeCouncilRequest(controller, request),
+    ])
+    assert.equal(first.status, "fulfilled", "first dispatch completes")
+    const secondFate = second.status === "rejected" ? String(second.reason?.message ?? second.reason) : null
+    if (secondFate === null) {
+      // If serialization is enforced WITHOUT throwing, a second call must fail pre-dispatch via { ok: false, error }
+      assert.equal(second.value.ok, false)
+      assert.match(second.value.error, /already in flight|in flight/)
+    } else {
+      assert.match(secondFate, /already in flight|in flight/)
+    }
+    assert.ok(maxRunning <= 1, `runner must never run twice concurrently (saw ${maxRunning})`)
+  } finally {
+    process.env.HERDR_ENV = herdrOriginal
+  }
+})
+
+test("stale native inFlight lock yields ONE recovery continuation (authoritative stale semantics)", async () => {
+  const stale = {
+    active: true, sessionID: "s", projectRoot: "/p", currentRound: 1,
+    currentPhase: "parallel_deliberation", currentCouncilMode: "decision",
+    currentDeliberationPass: 1, maxDeliberationPasses: 3, schemaVersion: 2,
+    inFlight: true, inFlightSince: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
+    staleLockMs: 30 * 60 * 1000, needsContinue: false,
+  }
+  // (a) evaluateSettledAction surfaces the recovery continuation
+  const action = await evaluateSettledAction(stale, {
+    readQuestionRequestImpl: async () => null,
+    existsImpl: () => true, nowMs: Date.now(), missingArtifacts: [],
+  })
+  assert.equal(action.kind, "continue", "stale lock must yield one recovery continuation")
+  // (b) through settled(): continuity is sent exactly once and inFlight is cleared
+  const { mkdtemp, mkdir, readFile } = await import("node:fs/promises")
+  const { tmpdir } = await import("node:os")
+  const { join } = await import("node:path")
+  const { writeFileSync } = await import("node:fs")
+  const project = await mkdtemp(join(tmpdir(), "magi-stale-"))
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  writeFileSync(join(logDir, "state.json"), JSON.stringify({ ...stale, projectRoot: project }))
+  const sent = []
+  const pi = { sendUserMessage: async (content) => { sent.push(content) }, appendEntry: () => {} }
+  const controller = createNativeController({ pi, modelConfig: null })
+  await controller.settled({ mode: "tui", cwd: project, ui: fakeUi({ answers: ["y"] }) })
+  assert.equal(sent.length, 1, "one recovery continuation injected")
+  assert.match(sent[0], /Continue the active deliberation loop/)
+  const refreshed = readMagiState(project)
+  assert.equal(refreshed.inFlight, false, "stale lock cleared so the next settle does not re-fire recovery")
+  assert.equal(readMagiState(project).inFlightSince, null)
+})
+
+test("magi_council pre-dispatch rejects a MISSING canonical prompt file with a clear [magi] error", async () => {
+  const herdrOriginal = process.env.HERDR_ENV
+  process.env.HERDR_ENV = "0"
+  try {
+    const { mkdtemp, mkdir } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join, dirname } = await import("node:path")
+    const { writeFileSync } = await import("node:fs")
+    const project = await mkdtemp(join(tmpdir(), "magi-prompt-missing-"))
+    const logDir = join(project, ".open_magi", "magi-log")
+    await mkdir(logDir, { recursive: true })
+    const promptPath = join(logDir, "round-001", "council-001", "prompt.md")
+    await mkdir(dirname(promptPath), { recursive: true })
+    writeFileSync(join(logDir, "state.json"), JSON.stringify({
+      active: true, projectRoot: project, sessionID: "s", currentRound: 1,
+      currentPhase: "parallel_deliberation", currentCouncilMode: "decision",
+      currentDeliberationPass: 1, maxDeliberationPasses: 3, schemaVersion: 2,
+    }))
+    // NOTE: prompt.md intentionally NOT written.
+    const configReads = { count: 0 }
+    const modelConfig = {
+      loadModelConfig: async () => { configReads.count += 1; return { ok: true, user: null, project: null } },
+      resolveRoleModels: () => ({ melchior: { model: "m" }, balthasar: { model: "m" }, casper: { model: "m" } }),
+      userModelConfigPath: () => "/u/open-magi.json",
+      projectModelConfigPath: (root) => `${root}/.pi/open-magi.json`,
+      writeModelConfig: async () => {},
+    }
+    const controller = createNativeController({ pi: { appendEntry: () => {} }, modelConfig })
+    await controller.restore({ mode: "tui", cwd: project }, { mainModel: "m", thinkingLevel: "low" })
+    const outcome = await consumeCouncilRequest(controller, {
+      projectRoot: project, promptPath, round: 1, pass: 1, mode: "decision", isProjectTrusted: true,
+      runner: () => { throw new Error("must not dispatch") },
+    })
+    assert.equal(outcome.ok, false)
+    assert.match(outcome.error, /\[magi\].*prompt.*(missing|not found)/i)
+    assert.equal(configReads.count, 0, "prompt existence must be verified BEFORE config read")
+  } finally {
+    process.env.HERDR_ENV = herdrOriginal
+  }
+})
+
+test("internal whitespace is collapsed for intent matching; the goal text stays verbatim in the payload", () => {
+  assert.deepEqual(detectActivation("use     Magi   to   debug", interactive), {
+    action: "transform", text: "/skill:magi use     Magi   to   debug",
+  })
+  assert.deepEqual(detectActivation("run this  with      Magi, now", interactive).action, "transform")
+  // negations/questions/extension-source behavior is unchanged
+  assert.deepEqual(detectActivation("do  not  use  Magi", interactive), { action: "continue" })
+  assert.deepEqual(detectActivation("What is Magi?", interactive), { action: "continue" })
+  assert.deepEqual(detectActivation("use     Magi   to   debug", { source: "extension", mode: "tui" }), { action: "continue" })
 })

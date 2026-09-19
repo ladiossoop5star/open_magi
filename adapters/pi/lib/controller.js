@@ -620,8 +620,15 @@ export async function evaluateSettledAction(state, deps = {}) {
     return { kind: "question_denied", request: questionRequest, text: questionDeniedText(questionRequest) }
   }
   if (questionRequest) return { kind: "question", request: questionRequest }
-  // A stale inFlight lock stays silent (the pass is presumed dead on the disk).
-  if (state?.inFlight && isStaleLock(state, nowMs)) return { kind: "none" }
+  // Stale native inFlight lock: yield ONE recovery continuation (matching the
+  // authoritative OpenCode stale-lock semantics). Fresh in-flight stays silent;
+  // Herdr-owned turns are untouched (handled earlier in shouldContinue).
+  if (state?.inFlight && isStaleLock(state, nowMs)) {
+    return { kind: "continue", payload: buildContinuePayloadPi(state), staleLockRecovery: true }
+  }
+  // FRESH native inFlight lock (the runner owns dispatch): stay silent — the
+  // settled continuation must NOT fire while a pass is still in flight.
+  if (state?.inFlight) return { kind: "none" }
   const missing = injectedMissing ?? collectMissingArtifacts(state, directory ?? ".", existsImpl)
   if (missing.length > 0) {
     return { kind: "corrective", text: `[magi] missing required artifacts: ${missing.join(", ")}`, payload: buildContinuePayloadPi(state) }
@@ -635,10 +642,6 @@ export async function evaluateSettledAction(state, deps = {}) {
   if ((state?.currentPhase === "goal_check" || state?.currentPhase === "cleanup") && !existsImpl(join(directory ?? ".", verificationPathFor(state)))) {
     return { kind: "corrective", text: "[magi] phase reached goal_check/cleanup but verification.md is missing; produce the verification trail first.", payload: buildContinuePayloadPi(state) }
   }
-  // Pi semantics: the council runner maintains inFlight itself, so the settled
-  // injection keys off the loop's needsContinue/terminal/herdr state, not the
-  // runner-owned inFlight. A stale lock still stays silent.
-  if (state?.inFlight && isStaleLock(state, nowMs)) return { kind: "none" }
   return { kind: "continue", payload: buildContinuePayloadPi(state) }
 }
 
@@ -651,6 +654,9 @@ export function createNativeController({ pi, modelConfig }) {
     session: null,
     // Instance-scoped child registry (Set). Two controllers never share it.
     childRegistry: new Set(),
+    // In-flight council dispatch serialization: keyed on
+    // <projectRoot>|<round>|<mode>|<pass> (instance-local).
+    councilLocks: new Set(),
     // Capture uses the correct Pi 0.85.1 API surface (pi.getThinkingLevel()
     // when available, ctx.model.id for the model - both sourced from types.d.ts).
     async restore(ctx, { mainModel, thinkingLevel } = {}) {
@@ -722,6 +728,11 @@ export function createNativeController({ pi, modelConfig }) {
         await pi?.sendUserMessage?.(`[magi] question answered by the user: ${answer}`)
         return
       }
+      // A stale-lock recovery clears the inFlight lock in state.json exactly
+      // once, so the NEXT settled() call does not re-fire recovery forever.
+      if (outcome.staleLockRecovery) {
+        writeMagiState(ctx?.cwd ?? ".", { ...state, inFlight: false, inFlightSince: null })
+      }
       await pi?.sendUserMessage?.(outcome.kind === "corrective" ? `${outcome.text}\n${CONTINUE_TEXT_PI}` : CONTINUE_TEXT_PI)
     },
     async council(request) {
@@ -788,8 +799,30 @@ export function createNativeController({ pi, modelConfig }) {
 }
 
 export async function consumeCouncilRequest(controller, request) {
-  const { projectRoot, promptPath, round, pass, mode, isProjectTrusted, signal, runner, spawnLike } = request
+  const { projectRoot, promptPath, round, pass, mode, isProjectTrusted, signal, runner, spawnLike, existsImpl = existsSync } = request
   if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
+  // Serialize an active council for the same controller/project/round/mode/pass:
+  // a second concurrent dispatch fails BEFORE spawning/running; different
+  // project/round/mode/pass keys proceed independently.
+  const lockKey = `${resolve(String(projectRoot))}|${round}|${mode}|${pass ?? "review"}`
+  if (controller.councilLocks?.has(lockKey)) {
+    return { ok: false, error: "[magi] a council pass for this round/pass is already in flight; wait for it to complete." }
+  }
+  controller.councilLocks?.add(lockKey)
+  try {
+    return await dispatchCouncil(controller, request, existsImpl, lockKey)
+  } finally {
+    controller.councilLocks?.delete(lockKey)
+  }
+}
+
+async function dispatchCouncil(controller, request, existsImpl, lockKey) {
+  const { projectRoot, promptPath, round, pass, mode, isProjectTrusted, signal, runner, spawnLike } = request
+  // Pre-dispatch gate: the canonical prompt file must exist on disk BEFORE any
+  // config read, runner construction, or child spawn.
+  if (!existsImpl(promptPath)) {
+    return { ok: false, error: "[magi] the canonical council prompt file is missing or was deleted before the pass could start: " + promptPath }
+  }
   const config = await controller.modelConfig.loadModelConfig({ projectRoot, isProjectTrusted: Boolean(isProjectTrusted) })
   if (!config.ok) return { ok: false, error: config.error }
   // Filesystem authority: read state fresh at dispatch time.
