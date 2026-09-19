@@ -107,6 +107,23 @@ both Git and npm package layouts contain the declared resources. The root
 the existing test files, so `npm test` and CI run the Pi tests as part of the
 full repository suite rather than relying on focused invocation.
 
+The root package also declares a peer-only contract for the host modules the Pi
+adapter actually imports:
+
+- `package.json` `peerDependencies` lists only host modules the Pi adapter
+  actually imports, expected to be `@earendil-works/pi-coding-agent` and
+  `typebox`, each with a `"*"` range.
+- Each of those entries is marked `"optional": true` in
+  `peerDependenciesMeta`, so npm 7+ does not auto-install the Pi runtime
+  dependencies for OpenCode-only consumers who never use the Pi adapter.
+- None of them may appear in `dependencies` or `bundledDependencies`; the
+  adapter must resolve them from the host Pi runtime, never a bundled copy.
+- Tests must verify this exact manifest contract and that the Pi adapter
+  imports only declared host peers.
+- If the implementation later needs another Pi core module, it is added by the
+  same rule (declared as an optional `"*"` peer and never bundled); unused
+  modules must not be predeclared.
+
 Before the feature is pushed, development installation is local:
 
 ```bash
@@ -342,9 +359,12 @@ equivalent restrictions:
 --no-approve
 ```
 
-`--no-approve` guarantees a child can never surface trust or project-resource
-approval prompts: a headless deliberator has no interactive user to answer
-them, so any resource requiring approval must fail closed instead of hanging.
+`--no-approve` forces each child to ignore all project-local settings,
+resources, and extensions for its run, regardless of any saved trust decision
+or the global `defaultProjectTrust` setting, which could otherwise auto-trust
+them without prompting. Non-interactive modes never show a trust prompt, so no
+approval path exists; the flag closes the silently-trusted path so project-local
+Pi configuration can never weaken deliberator isolation.
 
 The selected model and inherited thinking level are passed explicitly. A role
 override that includes a thinking suffix controls that role's thinking level.
@@ -508,6 +528,11 @@ contract in `shared/magi/references/deliberation.md`:
 - Install the local root package into an isolated `PI_CODING_AGENT_DIR` and
   verify Pi discovers the extension and Magi skill without network access.
 - Verify every Pi manifest path exists and `npm pack` contains the Pi adapter.
+- Verify the root manifest declares only the imported host modules as optional
+  `"*"` peers (`@earendil-works/pi-coding-agent`, `typebox`), marks them
+  `"optional": true` in `peerDependenciesMeta`, excludes them from
+  `dependencies` and `bundledDependencies`, and that the adapter imports only
+  declared host peers.
 - Keep shared Magi asset parity checks green.
 - Document experimental status, local and Git installation, activation,
   `/magi-setup`, configuration precedence, strict native isolation, supported
