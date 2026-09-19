@@ -438,6 +438,40 @@ premature，必須先讓 state 與實際完成狀態一致。
 - Codex 版依賴 `run-council` 來取得真正分離的 deliberator process。如果 CLI runner
   不可用，Magi 應停止並回報問題，不應假造 report 檔案。
 
+## Pi 實驗說明
+
+Pi 支援是實驗性質，封裝在 repository 根目錄，讓 `pi install .` 可以直接找到 Pi manifest (`package.json` 的 `pi` key 指到 `adapters/pi/extension.js` 與 `adapters/pi/skills`)。Pi 與 extension API 的預期版本是 @earendil-works/pi-coding-agent 0.85.1；OpenCode 仍是唯一正式支援的 runtime，Pi 維持實驗狀態。完整指南見 Pi 實驗說明文件 (`adapters/pi/README.md`)。
+
+安裝與使用（只限互動式 Pi session；`rpc`、`json`、`print` 模式會收到拒絕訊息而不是啟動審議）：
+
+```bash
+OPEN_MAGI_SKIP_POSTINSTALL=1 pi install git:github.com/ladiossoop5star/open_magi
+```
+
+- 啟動方式：`/magi <goal>`、`/skill:magi <goal>`，或明確的自然語言，例如英文
+  "use Magi to debug this"、"run this with Magi"、"run Magi now"、"start
+  Magi"、"debug this through Magi"，中文「請使用 Magi 處理這個問題」與「用
+  magi skill 來 debug」。資訊型問句 (`What is Magi?`) 與否定句 (`do not use
+  Magi`、中文「不要使用 Magi」) 一律不啟動。
+- `/magi-setup` 用對話框編輯 per-role 模型覆寫：user scope 在 Pi agent 目錄
+  (`getAgentDir()/open-magi.json`，支援 `PI_CODING_AGENT_DIR` 覆寫，模式 0600)；
+  trusted project scope 讀 `CONFIG_DIR_NAME/open-magi.json`；優先順序
+  main session → user → trusted project。per-role 選擇器格式
+  `provider/model:thinking`，thinking 為
+  off|minimal|low|medium|high|xhigh|max 中的可選值；空答案清除該 role。
+- 審議透過內部 `magi_council` tool 執行：三個隔離並行、唯讀的 Pi 子行程
+  (JSON 模式 `--mode json --print --no-session --no-extensions --no-skills
+  --no-context-files --no-prompt-templates --no-themes --tools
+  read,grep,find,ls --no-approve`)，原子寫入 `report-<sage>.md`，錯誤一律
+  fail-closed。
+- Herdr `HERDR_ENV=1` 仍是最終權威：`.open-magi-herdr` gate、pane 與生命週期
+  走 Herdr 契約，原生 Pi council 一律不用（Herdr 模式下 native runner 不會執行）。
+- 失敗不 fallback、不換模型：timeout 走 SIGTERM 再 SIGKILL（五秒）、
+  model/auth/provider 錯誤歸類為 `model_unavailable`，
+  子行程停格寫入 `report_source: pi_json_failed`。
+- 移除：`pi remove git:github.com/ladiossoop5star/open_magi`（本機 checkout 用
+  `pi remove .`）。疑難排解見 Pi 實驗說明文件。
+
 ## Claude 實驗說明
 
 Claude Code 支援獨立包在 `adapters/claude`。不要用 OpenCode npm package 或

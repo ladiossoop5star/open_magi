@@ -88,12 +88,19 @@ Claude Code support is experimental. It exposes `/open-magi:magi`, three native
 plugin agents, a headless `run-council` runner, and a conservative Stop hook
 through `adapters/claude`.
 
+Pi support is experimental. It exposes `/magi`, `/skill:magi`, an inline
+natural-language activation path, `/magi-setup`, an internal `magi_council
+runner` tool, a question firewall, and the Herdr hard transport membrane
+through `adapters/pi` and the root `pi` manifest.
+
 Future plan:
 
 1. Stabilize the OpenCode plugin and Magi protocol through real project usage.
 2. Validate Codex-native hooks and subagents for runtime backstop parity.
 3. Harden Claude Code native plugin-agent behavior through real usage.
-4. Add a Copilot CLI adapter if its extension points can support the required
+4. Validate Pi-native council pipeline and controller behavior through real
+   usage (activation, question firewall, and shutdown semantics).
+5. Add a Copilot CLI adapter if its extension points can support the required
    loop control, subagent delegation, and artifact checks.
 
 Each future adapter should use the coding agent's own install path and runtime
@@ -275,6 +282,56 @@ see the
 [Linux sandbox troubleshooting](adapters/codex/README.md#linux-sandbox-troubleshooting)
 section. Claude and OpenCode deliberators do not use an OS sandbox and are not
 affected.
+
+## Pi Experimental Notes
+
+Pi support is experimental and packaged in the repository root so `pi install
+.` discovers it: the `pi` manifest in `package.json` points at
+`adapters/pi/extension.js` and `adapters/pi/skills`. The installed Pi and
+extension API expectation is @earendil-works/pi-coding-agent 0.85.1; Pi remains
+experimental even after OpenCode stabilizes. See
+[Pi experimental notes](adapters/pi/README.md) for the full guide.
+
+Install and use (interactive Pi sessions only — `rpc`, `json`, and `print`
+modes reboot Magi with a rejection message instead of starting a loop):
+
+```bash
+OPEN_MAGI_SKIP_POSTINSTALL=1 pi install git:github.com/ladiossoop5star/open_magi
+```
+
+- Activation: `/magi <goal>`, `/skill:magi <goal>`, or explicit natural
+  language such as "use Magi to debug this", "run this with Magi",
+  "run Magi now", "start Magi", "debug this through Magi", the Mandarin
+  "Qing shi yong Magi chu li zhe ge wen ti" (`\u8acb\u4f7f\u7528 Magi
+  \u8655\u7406\u9019\u500b\u554f\u984c`), or "yong magi skill lai debug"
+  (`\u7528 magi skill \u4f86 debug`). Informational questions (`What is
+  Magi?`) and negations (`do not use Magi`, the Mandarin negative command
+  `\u4e0d\u8981\u4f7f\u7528 Magi`) never activate.
+- `/magi-setup` edits per-role Pi model overrides with a dialog; the user
+  config lives under Pi's agent directory via `getAgentDir()/open-magi.json`
+  (honors `PI_CODING_AGENT_DIR`) with mode 0600, the trusted project config
+  reads `CONFIG_DIR_NAME/open-magi.json` under the project, and the precedence
+  is main session -> user -> trusted project. Per-role selector format:
+  `provider/model:thinking` with an optional thinking level
+  (off|minimal|low|medium|high|xhigh|max); an empty answer clears the role.
+- Deliberation runs through the internal `magi_council` tool: three ISOLATED
+  concurrent read-only Pi children in JSON mode
+  (`--mode json --print --no-session --no-extensions --no-skills
+  --no-context-files --no-prompt-templates --no-themes --tools
+  read,grep,find,ls --no-approve`), atomic `report-<sage>.md` writes, and
+  fail-closed error envelopes.
+- Herdr `HERDR_ENV=1` stays authoritative: the `.open-magi-herdr` gate,
+  panes, and lifecycle keep the Herdr contract and the native Pi council is
+  NEVER used (native runner never runs in Herdr mode).
+- Failures are fail-closed and NEVER fall back between models: timeout with
+  SIGTERM then SIGKILL after five seconds, model/auth/provider errors produce
+  `model_unavailable`, and subprocess-stop failures write
+  `report_source: pi_json_failed` reports.
+- Uninstall: `pi remove git:github.com/ladiossoop5star/open_magi` (or `pi
+  remove .` for a local checkout). Troubleshooting lives in the
+  [Pi experimental notes](adapters/pi/README.md).
+- Quiet STOPS: the adapter docs are deliberately no-Han outside README.zh-TW.md
+  and `pi-subagents` is never a dependency.
 
 ## Claude Experimental Notes
 
