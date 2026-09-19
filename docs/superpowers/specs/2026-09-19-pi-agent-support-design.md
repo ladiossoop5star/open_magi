@@ -168,7 +168,15 @@ strings. The repository hygiene rules only permit literal Han characters in
 The `input` event runs before skill expansion. Natural-language activation is
 transformed into `/skill:magi <original request>`, preserving the user's full
 goal. `/magi` injects the same skill invocation rather than maintaining a
-separate workflow.
+separate workflow. The `/magi` handler sends that invocation with
+`pi.sendUserMessage("/skill:magi <goal>", { expandPromptTemplates: true })`,
+because Pi expands skill commands only when `expandPromptTemplates` is opted
+into and otherwise defaults to `false`, which would deliver the invocation as
+literal text. When the agent is streaming, the handler must also pass
+`deliverAs: "followUp"` so the call cannot throw; a normal idle command
+invocation may omit `deliverAs`. The injected message arrives as
+extension-originated input and bypasses natural-language detection per the
+rule below, so activation cannot recurse.
 
 Natural-language recognition requires all of the following:
 
@@ -500,6 +508,9 @@ contract in `shared/magi/references/deliberation.md`:
 - Verify informational questions, incidental mentions, and English/Chinese
   negation do not activate.
 - Verify extension-originated messages cannot recursively activate Magi.
+- Verify the `/magi` injection expands into the Magi skill rather than being
+  delivered as literal text, in both idle delivery and streaming-safe
+  `deliverAs: "followUp"` delivery.
 - Verify non-interactive controller modes reject activation clearly.
 
 ### Configuration
@@ -548,6 +559,9 @@ contract in `shared/magi/references/deliberation.md`:
 - Verify `magi_council` rejects union-shape mismatches — a `review` request
   carrying `pass`, or a `decision`/`recon` request missing or non-positive
   `pass` — before any state check.
+- Verify `magi_council` rejects traversal and stale-pass requests whose
+  `promptPath` does not resolve to the expected current Magi artifact location
+  for its mode, round, and pass.
 
 ### Herdr Regression
 
