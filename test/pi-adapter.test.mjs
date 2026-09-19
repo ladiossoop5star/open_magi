@@ -930,6 +930,40 @@ test("shutdown kills and reaps live children; SIGKILL fallback and empty registr
   assert.equal(controller.childRegistry.size, 0, "stubborn child removed via the SIGKILL close")
 })
 
+test("a close-capable child MUST NOT be reaped by a timer: shutdown resolves only on the real close", async () => {
+  const { EventEmitter } = await import("node:events")
+  const controller = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: {} })
+  const child = new EventEmitter()
+  child.exitCode = null
+  child.killed = false
+  child.killedSignals = []
+  // A real ChildProcess-compatible fake: supports once and emits close ONLY when the test fires it.
+  child.kill = (signal) => child.killedSignals.push(signal)
+  const closeFire = {}
+  child.once("close", (fn) => { closeFire.fire = fn })
+  child.once = ((event, fn) => { if (event === "close") closeDeferrerRegister(child, fn); return EventEmitter.prototype.once.call(child, event, fn) })
+  function closeDeferrerRegister(target, fn) { closeFire.fire = () => target.emit("close", 0) }
+  controller.registerChild(child)
+  const settled = { done: false }
+  const shutdownPromise = controller.shutdown({ killAfterMs: 60 })
+  shutdownPromise.then(() => { settled.done = true })
+  // LONG past BOTH the SIGKILL grace (60ms) and every timer/fallback horizon;
+  // resolved-by-grace would have completed shutdown by this point.
+  await new Promise((r) => setTimeout(r, 400))
+  assert.ok(child.killedSignals.includes("SIGTERM"), "SIGTERM must be sent")
+  assert.ok(child.killedSignals.includes("SIGKILL"), "SIGKILL must escalate after killAfterMs")
+  assert.equal(settled.done, false, "death by grace-interval NEVER counts as reaping; wait for the real close")
+  // THE ACTUAL reap: the test emits close like a real ChildProcess does after SIGKILL.
+  closeFire.fire()
+  await shutdownPromise
+  assert.equal(controller.childRegistry.size, 0, "reap placed on close only")
+})
+
+function unusableStubChild() {
+  // A fake that genuinely lacks once/on/close semantics (adversarial API stub).
+  return { kill() {}, exitCode: null }
+}
+
 test("no-progress limit reached: blocked state persists and NOTHING is sent", async () => {
   const project = await mkdtemp(join(tmpdir(), "magi-no-progress-"))
   const logDir = join(project, ".open_magi", "magi-log")

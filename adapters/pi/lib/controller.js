@@ -729,10 +729,11 @@ export function createNativeController({ pi, modelConfig }) {
       return consumeCouncilRequest(controller, request)
     },
     shutdown({ killAfterMs = 5_000 } = {}) {
-      // SIGTERM -> wait close (killAfterMs cap) -> SIGKILL -> still no close:
-      // `reapFallback` (same cap + tiny grace) resolves the wait safely so the
-      // runtime never hangs on a child whose API cannot emit close. Note
-      // killed=true only means a signal was SENT, never that reaping happened.
+      // SIGTERM -> wait close (killAfterMs cap) -> SIGKILL -> A CLOSE-CAPABLE
+      // CHILD IS REAPED ONLY BY ITS close EVENT, never by a timer: killed=true
+      // means a signal was SENT, never that reaping happened. The bounded
+      // fallback exists ONLY for a non-Node stub that genuinely has no usable
+      // once/on/close interface (detected at registration time).
       const pending = [...controller.childRegistry]
       if (pending.length === 0) return Promise.resolve()
       return Promise.all(pending.map((child) => new Promise((resolve) => {
@@ -744,20 +745,33 @@ export function createNativeController({ pi, modelConfig }) {
           clearTimeout(fallbackTimer)
           resolve()
         }
+        const canEmitClose = typeof child.once === "function" && typeof child.emit === "function"
         if (child.exitCode !== null) { reaped(); return } // close already happened
+        // The SIGKILL escalation timer is intentionally NOT unref-ed: bounded
+        // escalation must still fire even for cancellations in short-lived
+        // runs (unref would let the event loop drain before SIGKILL fires).
         const killTimerLocal = setTimeout(() => {
           try { child.kill("SIGKILL") } catch { /* already gone */ }
         }, killAfterMs)
-        if (typeof killTimerLocal.unref === "function") killTimerLocal.unref()
         killTimer = killTimerLocal
-        // No-close fallback: resolve on the safety net only when the child API
-        // cannot emit close at all (never conflicts with a genuine close event).
-        // NOTE: the fallback timer is intentionally NOT unref-ed: the shutdown
-        // promise must be awaited even when a fake child cannot emit close.
-        const fallbackTimerLocal = setTimeout(() => { reaped() }, killAfterMs + 250)
-        fallbackTimer = fallbackTimerLocal
+        // Attach the reaper BEFORE sending the signal: a fake child (or a fast
+        // real one) may emit close synchronously inside kill().
+        // SIGTERM -> wait close (killAfterMs cap for SIGNALS ONLY) -> SIGKILL :
+        // a close-capable child is REAPED ONLY BY ITS close EVENT, never by a
+        // timer (killed=true means a signal was SENT, never that reaping
+        // happened). The bounded fallback exists ONLY for a non-Node stub that
+        // genuinely has no usable once/on/close interface.
+        if (typeof child.once === "function") {
+          child.once("close", reaped)
+          child.once("error", reaped)
+        }
         try { child.kill("SIGTERM") } catch { /* already closed */ }
-        child.once("close", reaped)
+        if (!canEmitClose) {
+          // Adversarial stub without any event interface: the bounded wait is
+          // the only possible exit. Keep the shutdown promise awaited (not unref-ed).
+          const fallbackTimerLocal = setTimeout(() => { reaped() }, killAfterMs + 250)
+          fallbackTimer = fallbackTimerLocal
+        }
       })))
     },
     // Runner seam: the per-child onChild pointer feeds registerChild; a close
