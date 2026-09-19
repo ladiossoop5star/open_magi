@@ -1571,9 +1571,10 @@ test("buildChildArgs has one precise order ending with model then thinking; prom
   assert.deepEqual(args.slice(0, toolsIdx), ["--mode", "json", "--print", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes"])
   assert.deepEqual(args.slice(toolsIdx, toolsIdx + 2), ["--tools", "read,grep,find,ls"])
   assert.equal(args[toolsIdx + 2], "--no-approve")
-  assert.deepEqual(args.slice(-4), ["--model", "p/m", "--thinking", "high"])
-  // Ultra is not a thinking level: the value clamps to medium.
-  assert.deepEqual(args.slice(-1), ["medium"])
+  // Invalid thinking level clamps to medium; a VALID level is used verbatim.
+  assert.deepEqual(args.slice(-4), ["--model", "p/m", "--thinking", "medium"])
+  assert.deepEqual(buildChildArgs({ model: "p/m", thinking: "high" }).slice(-4), ["--model", "p/m", "--thinking", "high"])
+  assert.deepEqual(buildChildArgs({ model: "p/m", thinking: "off" }).slice(-4), ["--model", "p/m", "--thinking", "off"])
   // The child prompt is always the last element of the FULL spawned argv (added by runOnePiChild).
   assert.deepEqual(
     [...resolvePiInvocation({ processArgv: [], processExecPath: "/x/node", existsImpl: () => false }).args, ...buildChildArgs({ model: "p/m", thinking: "low" }), "PROMPT TEXT"].slice(-1),
@@ -1704,7 +1705,10 @@ test("timeouts, aborts, spawns, and nonzero exits map to the failure contract", 
     "setTimeout(() => process.stdout.write('late'), 60000)",
   ].join("\n"), { mode: 0o755 })
   const crashBin = join(dirname(slowBin), "crash-pi")
-  await fsWriteFile(crashBin, "process.stderr.write('boom');process.exit(3)", { mode: 0o755 })
+  await fsWriteFile(crashBin, [
+    "#!/usr/bin/env node",
+    "process.stderr.write('boom');process.exit(3)",
+  ].join("\n"), { mode: 0o755 })
   const slow = piEnvelopeFor(await runOnePiChild({
     invocation: { command: slowBin, args: [] },
     args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 60,
@@ -1721,7 +1725,10 @@ test("timeouts, aborts, spawns, and nonzero exits map to the failure contract", 
   assert.equal(crash.nativeType, "nonzero_exit")
   const abortController = new AbortController()
   const abortBin = join(dirname(slowBin), "hang-pi")
-  await fsWriteFile(abortBin, "setInterval(() => {}, 1000)", { mode: 0o755 })
+  await fsWriteFile(abortBin, [
+    "#!/usr/bin/env node",
+    "setInterval(() => {}, 1000)",
+  ].join("\n"), { mode: 0o755 })
   const abortPromise = runOnePiChild({
     invocation: { command: abortBin, args: [] },
     args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 60_000, signal: abortController.signal,
@@ -1735,6 +1742,66 @@ test("timeouts, aborts, spawns, and nonzero exits map to the failure contract", 
     args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 5_000,
   }))
   assert.equal(spawnFail.nativeType, "spawn_error")
+})
+
+test("runner handles sync-throw spawnFn, async error events, and pre-aborted signals", async () => {
+  const syncThrow = await runOnePiChild({
+    invocation: { command: "ignored", args: [] },
+    args: [], cwd: "/anywhere", promptText: "hi", timeoutMs: 5_000,
+    spawnFn: () => { throw new Error("cannot spawn from sync fn") },
+  })
+  assert.equal(syncThrow.ok, false)
+  assert.equal(syncThrow.piFailureType, "spawn_error")
+  assert.match(syncThrow.error, /cannot spawn from sync/)
+  assert.notEqual(syncThrow.startedAtIso, null)
+  assert.notEqual(syncThrow.endedAtIso, null)
+
+  const { EventEmitter } = await import("node:events")
+  const asyncError = await runOnePiChild({
+    invocation: { command: "ignored", args: [] },
+    args: [], cwd: "/x", promptText: "hi", timeoutMs: 5_000,
+    spawnFn: () => {
+      const fake = new EventEmitter()
+      fake.stdout = undefined
+      fake.stderr = undefined
+      const fakeChild = Object.assign(fake, { kill: () => {}, exitCode: null, killed: false })
+      setTimeout(() => fake.emit("error", new Error("cannot spawn from async")), 10)
+      return fakeChild
+    },
+  })
+  assert.equal(asyncError.ok, false)
+  assert.equal(asyncError.piFailureType, "spawn_error")
+  assert.match(asyncError.error, /cannot spawn from async/)
+
+
+  const preAbortBin = join(await mkdtemp(join(tmpdir(), "magi-pi-preabort-")), "hang-pi")
+  await fsWriteFile(preAbortBin, [
+    "#!/usr/bin/env node",
+    "setInterval(() => {}, 1000)",
+  ].join("\n"), { mode: 0o755 })
+  const preAborted = new AbortController()
+  preAborted.abort()
+  const preAbortedRecord = await runOnePiChild({
+    invocation: { command: preAbortBin, args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 20_000, signal: preAborted.signal,
+  })
+  assert.equal(preAbortedRecord.aborted, true)
+  assert.equal(piEnvelopeFor(preAbortedRecord).nativeType, "aborted")
+})
+
+test("model/auth/provider failures classify as model_unavailable, not nonzero_exit", async () => {
+  const authBin = join(dirname(slowBin), "authfail-pi")
+  await fsWriteFile(authBin, [
+    "#!/usr/bin/env node",
+    "process.stderr.write('Error: invalid_api_key (unauthorized 401): provider rejected the credentials');process.exit(3)",
+  ].join("\n"), { mode: 0o755 })
+  const authRecord = await runOnePiChild({
+    invocation: { command: authBin, args: [] },
+    args: [], cwd: tmpdir(), promptText: "hi", timeoutMs: 5_000,
+  })
+  const envelope = piEnvelopeFor(authRecord)
+  assert.equal(envelope.status, "hard_error")
+  assert.equal(envelope.nativeType, "model_unavailable")
 })
 ```
 
@@ -1829,7 +1896,9 @@ export function parseJsonlStream(stdoutText) {
   return { header, finalMessage, usage, text }
 }
 
-function clampTimeout(timeoutMs) {
+const MAX_STREAM_BUFFER_CHARS = 20_000
+
+function clampDeliberatorTimeout(timeoutMs) {
   const value = Number(timeoutMs)
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_DELIBERATOR_TIMEOUT_MS
   return Math.min(value, HARD_MAX_DELIBERATOR_TIMEOUT_MS)
@@ -1842,13 +1911,36 @@ export function runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, si
   return new Promise((resolveRun) => {
     const record = {
       ok: false, piFailureType: null, error: null, exitCode: null,
-      timedOut: false, timedOutAt: null, aborted: false, killSignalAt: null,
+      timedOut: false, timedOutAt: null, aborted: false,
       stdout: "", stderr: "", startedAtIso: new Date().toISOString(), endedAtIso: null, durationMs: 0,
     }
-    let child
+    // NOTE: ALL lifecycle variables are initialized BEFORE spawn: the sync-throw
+    // path calls settle() which clears these; A TDZ here would crash the caller.
+    let child = null
     let settled = false
-    let killTimer = null
     let escalated = false
+    let timer = null
+    let killTimer = null
+    const startedAt = Date.now()
+    const appendLimited = (current, chunk) => {
+      const next = current === "" ? String(chunk) : current + String(chunk)
+      return next.length > MAX_STREAM_BUFFER_CHARS ? next.slice(-MAX_STREAM_BUFFER_CHARS) : next
+    }
+    function settle(finalState = {}) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearTimeout(killTimer)
+      child?.stdout?.removeAllListeners?.("data")
+      child?.stderr?.removeAllListeners?.("data")
+      const finalRecord = {
+        ...record,
+        ...finalState,
+        durationMs: Date.now() - startedAt,
+        endedAtIso: new Date().toISOString(),
+      }
+      resolveRun(finalRecord)
+    }
     try {
       child = spawnFn(invocation.command, [...invocation.args, ...args, promptText], {
         cwd,
@@ -1858,12 +1950,13 @@ export function runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, si
       })
       onChild?.(child)
     } catch (spawnError) {
+      // Sync throw: a complete spawn_error record without touching unset vars.
       return settle({ ok: false, piFailureType: "spawn_error", error: String(spawnError?.message ?? spawnError) })
     }
-    const startedAt = Date.now()
-    const appendLimited = (current, chunk) => {
-      const next = current === "" ? String(chunk) : current + String(chunk)
-      return next.length > MAX_STREAM_BUFFER_CHARS ? next.slice(-MAX_STREAM_BUFFER_CHARS) : next
+    if (signal?.aborted) {
+      // Abort signal already fired before the call: abort immediately, then reap.
+      record.aborted = true
+      escalate()
     }
     child.stdout?.on("data", (chunk) => { record.stdout = appendLimited(record.stdout, chunk) })
     child.stderr?.on("data", (chunk) => { record.stderr = appendLimited(record.stderr, chunk) })
@@ -1871,19 +1964,20 @@ export function runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, si
       settle({ ok: false, piFailureType: "spawn_error", error: String(error?.message ?? error), exitCode: null })
     })
     child.on("close", (code) => {
-      if (record.aborted) return settle({ ok: false, piFailureType: "aborted", exitCode: code })
-      if (record.timedOut) return settle({ ok: false, piFailureType: "timeout", exitCode: code })
-      settle({ ok: code === 0, piFailureType: code === 0 ? null : "nonzero_exit", exitCode: code })
+      if (record.aborted) return settle({ ok: false, exitCode: code })
+      if (record.timedOut) return settle({ ok: false, exitCode: code })
+      // nonzero_exit gets its subtype later (envelope checks model errors);
+      // keep piFailureType null so piEnvelopeFor can see bounded stderr.
+      settle({ ok: code === 0, exitCode: code })
     })
     function escalate() {
       if (escalated) return
       escalated = true
-      record.killSignalAt = new Date().toISOString()
       try { child.kill("SIGTERM") } catch { /* already gone */ }
       killTimer = setTimeout(() => { try { child.kill("SIGKILL") } catch { /* already gone */ } }, 5_000)
       if (typeof killTimer.unref === "function") killTimer.unref()
     }
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       record.timedOut = true
       record.timedOutAt = new Date().toISOString()
       escalate()
@@ -1894,31 +1988,7 @@ export function runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, si
       record.aborted = true
       escalate()
     }, { once: true })
-    function settle(finalState = {}) {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      if (typeof killTimer?.unref === "function" && killTimer) clearTimeout(killTimer)
-      child?.stdout?.removeAllListeners?.("data")
-      child?.stderr?.removeAllListeners?.("data")
-      const finalRecord = {
-        ...record,
-        ...finalState,
-        durationMs: Date.now() - startedAt,
-        endedAtIso: new Date().toISOString(),
-      }
-      delete finalRecord.killSignalAt
-      resolveRun(finalRecord)
-    }
   })
-}
-
-const MAX_STREAM_BUFFER_CHARS = 20_000
-
-function clampDeliberatorTimeout(timeoutMs) {
-  const value = Number(timeoutMs)
-  if (!Number.isFinite(value) || value <= 0) return DEFAULT_DELIBERATOR_TIMEOUT_MS
-  return Math.min(value, HARD_MAX_DELIBERATOR_TIMEOUT_MS)
 }
 
 export function piEnvelopeFor(processResult) {
@@ -2007,7 +2077,7 @@ export async function writeReport({ promptPath, sage, model, processResult }) {
 
 export async function runPiCouncil(options) {
   const { projectRoot, promptPath, mode, round, pass, roleModels, timeoutMs, signal, childEnv, childTracker, rolePromptRoot, spawnLike = spawn } = options
-  const timeout = clampTimeout(timeoutMs)
+  const timeout = clampDeliberatorTimeout(timeoutMs)
   const councilPrompt = (await readFile(promptPath, "utf8")).trim()
   const invocation = options.runnerBin
     ? { command: options.runnerBin, args: options.runnerBinArgs ?? [] }
@@ -2209,6 +2279,161 @@ test("shouldContinue honors stale locks, no-progress, and herdr-owned turns", as
   assert.equal(herdr.recover, false)
 })
 
+test("state file without mainModel still dispatches; session metadata carries the model capture", async () => {
+  // The state file deliberately holds NO mainModel/mainThinking. Role models
+  // must come from the session-local metadata captured in restore(ctx, {...}).
+  const calls = { runCalls: 0, seenRoleModels: null, loadedWith: null }
+  const pi = fakePi()
+  const resolveCalls = []
+  // The live state file holds NO mainModel fields at all.
+  const project = await mkdtemp(join(tmpdir(), "magi-state-less-"))
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(join(logDir, "state.json"), JSON.stringify({
+    active: true, currentRound: 1, currentPhase: "parallel_deliberation",
+    currentCouncilMode: "review", maxDeliberationPasses: 3, schemaVersion: 2,
+  }), "utf8")
+  const modelConfig = {
+    loadModelConfig: async (params) => { calls.loadedWith = params; return { ok: true, user: null, project: null } },
+    resolveRoleModels: (mainModel, mainThinking, user, project) => {
+      resolveCalls.push({ mainModel, mainThinking })
+      return {
+        melchior: { model: `resolved:${mainModel}:${mainThinking}`, thinking: mainThinking ?? "low" },
+        balthasar: { model: "b/f", thinking: "low" },
+        casper: { model: "c/f", thinking: "low" },
+      }
+    },
+    userModelConfigPath: () => "/u/open-magi.json",
+    projectModelConfigPath: (root) => `${root}/.pi/open-magi.json`,
+    writeModelConfig: async () => {},
+  }
+  const controller = createNativeController({ pi, modelConfig })
+  // session_start capture (refresh pattern from Task 8 impl): the Pi API surfaces
+  // (pi.getThinkingLevel() + ctx.model) have already delivered the session values.
+  await controller.restore({ mode: "tui", cwd: project, model: { id: "provider/main" } }, { mainModel: "provider/m2", thinkingLevel: "high" })
+  assert.equal(controller.session.mainModel, "provider/m2")
+  assert.equal(controller.session.mainThinking, "high")
+  assert.equal(controller.session.projectRoot, project)
+  const promptPath = join(project, ".open_magi", "magi-log", "round-001", "review-001", "prompt.md")
+  await writeFile(promptPath, "# review prompt", "utf8")
+  const outcome = await consumeCouncilRequest(controller, {
+    projectRoot: project,
+    promptPath,
+    round: 1, mode: "review", isProjectTrusted: true,
+    runner: (options) => {
+      calls.runCalls += 1
+      calls.seenRoleModels = options.roleModels
+      return { ok: true, halt: false, haltReason: null, hardErrors: [], results: [] }
+    },
+  })
+  assert.equal(outcome.ok, true)
+  assert.equal(calls.runCalls, 1)
+  assert.equal(resolveCalls.length, 1)
+  assert.deepEqual(resolveCalls[0], ["provider/m2", "high", null, null])
+})
+
+test("two controllers keep fully isolated child registries; registerChild removes on close", async () => {
+  const { EventEmitter } = await import("node:events")
+  const makeFakeChild = () => {
+    const child = new EventEmitter()
+    child.exitCode = null
+    child.killed = false
+    child.killedSignals = []
+    child.kill = (signal) => {
+      child.killedSignals.push(signal)
+      if (signal === "SIGTERM") { child.exitCode = 0; child.emit("close", 0) }
+    }
+    return child
+  }
+  const modelConfigStub = {}
+  const a = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: modelConfigStub })
+  const b = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: modelConfigStub })
+  const childA = a.registerChild(makeFakeChild())
+  assert.equal(a.childRegistry.size, 1)
+  assert.equal(b.childRegistry.size, 0, "second controller registry never touched")
+  childA.kill("SIGTERM") // close escalation removes it from ONLY controller a's registry
+  assert.equal(a.childRegistry.size, 0, "registerChild removes the child when the close event fires")
+  assert.equal(b.childRegistry.size, 0)
+})
+
+test("shutdown kills and reaps live children; SIGKILL fallback and empty registry resolve", async () => {
+  const controller = createNativeController({ pi: { appendEntry: () => {} }, modelConfig: {} })
+  // Empty registry: resolves immediately.
+  await assert.doesNotReject(() => controller.shutdown())
+  const closeDeferrer = {}
+  const fake = {
+    exitCode: null, killed: false, killedSignals: [],
+    kill(signal) { this.killedSignals.push(signal) },
+    once(event, fn) { if (event === "close") closeDeferrer.fire = () => { fn(0) } },
+  }
+  controller.registerChild(fake)
+  const promise = controller.shutdown({ killAfterMs: 40 })
+  let resolved = false
+  promise.then(() => { resolved = true })
+  await new Promise((r) => setTimeout(r, 10))
+  assert.deepEqual(fake.killedSignals.slice(0, 1), ["SIGTERM"])
+  assert.equal(resolved, false, "shutdown must WAIT for the reaped close")
+  closeDeferrer.fire()
+  await promise
+  assert.equal(controller.childRegistry.size, 0)
+  // SIGKILL fallback fires after killAfterMs when the child ignores SIGTERM.
+  // SIGKILL fallback fires after killAfterMs when the child ignores SIGTERM.
+  const stubborn = {
+    exitCode: null, killed: false, killedSignals: [], closeListeners: [],
+    once(event, fn) { if (event === "close") this.closeListeners.push(fn) },
+    kill(signal) { this.killedSignals.push(signal); if (signal === "SIGKILL") { this.exitCode = 137; this.closeListeners.forEach((fn) => fn(137)) } },
+  }
+  controller.registerChild(stubborn)
+  await controller.shutdown({ killAfterMs: 40 })
+  assert.ok(stubborn.killedSignals.includes("SIGKILL"), "SIGKILL fallback must fire after killAfterMs")
+  assert.equal(controller.childRegistry.size, 0, "stubborn child removed via the SIGKILL close")
+})
+
+test("no-progress limit reached: blocked state persists and NOTHING is sent", async () => {
+  const project = await mkdtemp(join(tmpdir(), "magi-no-progress-"))
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(join(logDir, "state.json"), JSON.stringify({
+    active: true, projectRoot: project, sessionID: "s", currentRound: 1, currentPhase: "synthesis",
+    consecutiveNoProgress: 0,
+    history: [{ progress: false }, { progress: false }, { progress: false }, { progress: false }, { progress: false }],
+  }), "utf8")
+  const sent = []
+  const pi = { sendUserMessage: async (content) => { sent.push(content) }, appendEntry: () => {} }
+  const controller = createNativeController({ pi, modelConfig: null })
+  await controller.settled({ mode: "tui", cwd: project, ui: fakeUi({ answers: [] }) })
+  assert.equal(sent.length, 0, "no continuation when the no-progress limit fires")
+  const blocked = readMagiState(project)
+  assert.equal(blocked.active, false)
+  assert.equal(blocked.currentPhase, "blocked")
+  assert.match(blocked.lastError, /no progress limit reached/)
+})
+
+test("approved question shows the true question, sends the answer back, and consumes the artifact", async () => {
+  const project = await mkdtemp(join(tmpdir(), "magi-question-"))
+  const logDir = join(project, ".open_magi", "magi-log")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(join(logDir, "state.json"), JSON.stringify({
+    active: true, projectRoot: project, sessionID: "s", currentRound: 2, currentPhase: "execution",
+    currentDeliberationPass: 2, maxDeliberationPasses: 3, schemaVersion: 2,
+  }), "utf8")
+  const requestText = "classification: execution_blocker\nquestion: fixture tests/fixture/a.txt was deleted; re-create it?\nphase: execution"
+  const requestPath = join(logDir, "question-request.txt")
+  await writeFile(requestPath, requestText, "utf8")
+  const sent = []
+  const uiQuestions = []
+  const pi = { sendUserMessage: async (content) => { sent.push(content) }, appendEntry: () => {} }
+  const controller = createNativeController({ pi, modelConfig: null })
+  const ctx = {
+    mode: "tui", cwd: project, ui: fakeUi({ asks: uiQuestions, answers: ["From docs: re-run fixture setup then continue"] }),
+  }
+  await controller.settled(ctx)
+  assert.equal(uiQuestions.length, 1)
+  assert.match(uiQuestions[0], /a\.txt was deleted;/)
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /question answered by the user: From docs: re-run fixture setup then continue/)
+  await assert.rejects(() => readFile(requestPath, "utf8"), /no such file|enoent/i)
+})
 test("evaluateSettledAction performs exactly one bounded action", async () => {
   const emptyQuestionFile = async () => null
   const quiet = { active: false, currentPhase: "complete", projectRoot: "/p" }
@@ -2363,7 +2588,7 @@ function fakeUi(options = {}) {
   return {
     notifies: [],
     asks: [],
-    select: async () => answers[index++] ?? undefined,
+    select: async (title) => { (options.selects ?? []).push?.(title); return answers[index++] ?? undefined },
     input: async (title, placeholder) => options.notifies?.push?.({ title, placeholder }) ?? answers[index++] ?? "",
     confirm: async () => answers[index++] === "yes",
     notify: (message, type) => { options.notifies?.push({ message, type }) },
@@ -2393,7 +2618,7 @@ Expected: FAIL — the required exports do not exist yet.
 
 - [ ] **Step 3: Implement the firewall/controller section (final code, appended to `adapters/pi/lib/controller.js`)**
 
-All helpers below are FINAL executable code (behaviors verify the corresponding index.js helpers: parseQuestionRequest L542-561, isQuestionAllowed L586-605 with FIREWALL_ALLOWED_CLASSES = execution_blocker / impossible_verification / destructive_or_unrelated_risk / ambiguous_file_ownership, isSensitiveHerdrRawCommand L611, questionDeniedText L619-643, writeQuestionDenied L645-679, isStaleLock L1138, isHerdrOwnedTurn L1864, shouldContinue L1504-1536, enforceNoProgressLimit L511, artifact formula family L92-310). Module top imports needed here: `readFileSync`, `writeFileSync`, `existsSync` from `node:fs`; `createHash` from `node:crypto`; `runPiCouncil` from `./pi-runner.js` (pi-runner owns its OWN timeout constants since Task 6 — controller is the only importer, so there is no cycle).
+All helpers below are FINAL executable code (behaviors verify the corresponding index.js helpers: parseQuestionRequest L542-561, isQuestionAllowed L586-605 with FIREWALL_ALLOWED_CLASSES = execution_blocker / impossible_verification / destructive_or_unrelated_risk / ambiguous_file_ownership, isSensitiveHerdrRawCommand L611, questionDeniedText L619-643, writeQuestionDenied L645-679, isStaleLock L1138, isHerdrOwnedTurn L1864, shouldContinue L1504-1536, enforceNoProgressLimit L511, artifact formula family L92-310). Module top imports needed here: `readFileSync`, `writeFileSync`, `rmSync` (consumes the question-request artifact), `existsSync` from `node:fs`; `createHash` from `node:crypto`; `runPiCouncil` from `./pi-runner.js` (pi-runner owns its OWN timeout constants since Task 6 — controller is the only importer, so there is no cycle).
 
 ```js
 // ---------- filesystem-authoritative state ----------
@@ -2659,6 +2884,10 @@ export function currentCouncilRoundArtifacts(state) {
   return list
 }
 
+export function verificationPathFor(state) {
+  return `${LOG_DIR}/round-${pad3(roundNumberOf(state))}/verification.md`
+}
+
 export function collectMissingArtifacts(state, projectRoot, existsImpl = existsSync) {
   return currentCouncilRoundArtifacts(state)
     .map((relative) => join(projectRoot, relative))
@@ -2703,16 +2932,18 @@ export async function evaluateSettledAction(state, deps = {}) {
   if (missing.length > 0) {
     return { kind: "corrective", text: `[magi] missing required artifacts: ${missing.join(", ")}`, payload: buildContinuePayloadPi(state) }
   }
+  // F13: false completion checks need the FINAL REPORT/REVIEW COUNCIL/review
+  // approval artifacts, not just the verdict; (the missing artifacts list above
+  // ALREADY includes review-001 reports + cleanup.md during completion_review).
+  // Add the specific adherence checks: when a verdict exists, verify at least
+  // one EXECUTION VERIFICATION trail (verification.md) and squash commit —
+  // completing the false-completion repair check.
+  if ((state?.currentPhase === "goal_check" || state?.currentPhase === "cleanup") && !existsImpl(join(directory ?? ".", verificationPathFor(state)))) {
+    return { kind: "corrective", text: "[magi] phase reached goal_check/cleanup but verification.md is missing; produce the verification trail first.", payload: buildContinuePayloadPi(state) }
+  }
   const verdict = shouldContinue(state, { event: { type: "session.idle", properties: { sessionID: state.sessionID } } }, directory ?? ".", nowMs, missing, false)
   if (verdict.ok && verdict.recover) return { kind: "continue", payload: buildContinuePayloadPi(state) }
   return { kind: "none" }
-}
-
-const trackedChildren = []
-
-export function trackChild(child) {
-  trackedChildren.push(child)
-  return child
 }
 
 // ---------- controller ----------
@@ -2720,26 +2951,31 @@ export function trackChild(child) {
 export function createNativeController({ pi, modelConfig }) {
   const controller = {
     modelConfig,
-    state: null,
-    async restore(ctx) {
-      // Filesystem is authoritative: only session OWNERSHIP metadata lives in the
-      // custom entry, so the restore deliberately refreshes deliberation state.
+    // Session-LOCAL metadata only (never persisted into state.json).
+    session: null,
+    // Instance-scoped child registry (Set). Two controllers never share it.
+    childRegistry: new Set(),
+    // Capture uses the correct Pi 0.85.1 API surface (pi.getThinkingLevel()
+    // when available, ctx.model.id for the model - both sourced from types.d.ts).
+    async restore(ctx, { mainModel, thinkingLevel } = {}) {
+      // Filesystem is authoritative: only session OWNERSHIP metadata lives in
+      // the custom entry; this method refreshes deliberation state from disk.
       controller.state = readMagiState(ctx?.cwd ?? ".")
-      if (controller.state) {
-        controller.state = {
-          ...controller.state,
-          mainModel: controller.state.mainModel ?? ctx?.model?.id ?? null,
-          mainThinking: controller.state.mainThinking ?? ctx?.thinkingLevel ?? null,
-          sessionID: controller.state.sessionID ?? ctx?.sessionManager?.getSessionId?.(),
-          projectRoot: controller.state.projectRoot ?? ctx?.cwd,
-        }
+      controller.session = {
+        mainModel: mainModel ?? ctx?.model?.id ?? null,
+        mainThinking: thinkingLevel ?? ctx?.thinkingLevel ?? null,
+        sessionID: ctx?.sessionManager?.getSessionId?.(),
+        projectRoot: ctx?.cwd ?? null,
       }
-      if (!controller.activeState()) return null // no filesystem state: do NOT start a loop
-      pi?.appendEntry?.("open-magi-controller", { sessionID: ctx?.sessionManager?.getSessionId?.(), projectRoot: ctx?.cwd })
+      if (!controller.state?.active) return null // no filesystem state: do NOT start a loop
+      pi?.appendEntry?.("open-magi-controller", {
+        sessionID: controller.session.sessionID,
+        projectRoot: controller.session.projectRoot,
+      })
       return controller.state
     },
     enforceToolGuard(event, ctx) {
-      const state = readMagiState(ctx?.cwd ?? ".") // fs-authoritative, per-event
+      const state = readMagiState(ctx?.cwd ?? ".")
       if (!state?.active) return { block: false }
       if (ctx?.mode !== "tui") return { block: false }
       const guardResult = assertGuardableToolSet(pi.getAllTools(), pi.getActiveTools())
@@ -2749,9 +2985,20 @@ export function createNativeController({ pi, modelConfig }) {
     },
     async settled(ctx) {
       const state = readMagiState(ctx?.cwd ?? ".")
-      if (!state?.active || isHerdrOwnedTurn(state)) return undefined // no false continuation
-      const missing = collectMissingArtifacts(state, ctx?.cwd ?? ".")
-      const outcome = await evaluateSettledAction(state, {
+      if (!state?.active || isHerdrOwnedTurn(state)) return undefined
+      // No-progress check runs BEFORE any continue is sent: if the limit is
+      // reached the blocked state lands in state.json via writeMagiState and
+      // NOTHING is injected into the main agent's stream.
+      const afterNoProgress = enforceNoProgressLimit(state, {
+        writeState: (stateSnapshot, next) => {
+          writeMagiState(stateSnapshot?.projectRoot ?? ctx.cwd ?? ".", next)
+          return next
+        },
+        nowIso: new Date().toISOString(),
+      })
+      if (!afterNoProgress.active) return undefined
+      const missing = collectMissingArtifacts(afterNoProgress, ctx?.cwd ?? ".")
+      const outcome = await evaluateSettledAction(afterNoProgress, {
         existsImpl: existsSync,
         readQuestionRequestImpl: () => readQuestionRequest(ctx?.cwd ?? "."),
         directory: ctx?.cwd,
@@ -2764,30 +3011,52 @@ export function createNativeController({ pi, modelConfig }) {
         return
       }
       if (outcome.kind === "question") {
-        await ctx?.ui?.input?.(`[magi] ${outcome.question}`, "") // interactive UI question, not notify
+        // Display the TRUE question (request.question) through the interactive UI,
+        // send the answer back to the main agent via pi.sendUserMessage, and
+        // delete the question-request artifact so the next settled() will not
+        // re-ask. Cancel semantics: answer === undefined keeps the artifact and
+        // sends nothing.
+        const artifact = join(ctx.cwd ?? ".", LOG_DIR, "question-request.txt")
+        const answer = await ctx?.ui?.input?.(`[magi] ${outcome.request.question}`, "")
+        if (answer === undefined) return undefined // cancelled: nothing written or sent
+        try { rmSync(artifact) } catch { /* already gone */ }
+        await pi?.sendUserMessage?.(`[magi] question answered by the user: ${answer}`)
         return
       }
       await pi?.sendUserMessage?.(outcome.kind === "corrective" ? `${outcome.text}\n${CONTINUE_TEXT_PI}` : CONTINUE_TEXT_PI)
-      // A freshly-blocked loop (no-progress limit reached) must NOT continue
-      // automatically: no-progress state lands in state.json through writeMagiState.
-      if (enforceNoProgressLimit(state, { writeState: writeMagiState, nowIso: new Date().toISOString() }).active === false) return
     },
     async council(request) {
       if (isHerdrActive()) throw new Error(TRANSPORT_MISMATCH_ERROR)
       return consumeCouncilRequest(controller, request)
     },
-    shutdown() {
-      const pending = trackedChildren.slice()
+    shutdown({ killAfterMs = 5_000 } = {}) {
+      // SIGTERM -> wait close (killAfterMs cap) -> SIGKILL -> remove from the
+      // instance registry -> resolve. No live children: immediate resolution.
+      const pending = [...controller.childRegistry]
+      if (pending.length === 0) return Promise.resolve()
       return Promise.all(pending.map((child) => new Promise((resolve) => {
         const reaped = () => {
-          const index = trackedChildren.indexOf(child)
-          if (index >= 0) trackedChildren.splice(index, 1)
+          controller.childRegistry.delete(child)
+          clearTimeout(killTimer)
           resolve()
         }
+        if (child.exitCode !== null || child.killed === true) { reaped(); return } // already closed
+        const killTimer = setTimeout(() => {
+          try { child.kill("SIGKILL") } catch { /* already gone */ }
+        }, killAfterMs)
+        if (typeof killTimer.unref === "function") killTimer.unref()
+        try { child.kill("SIGTERM") } catch { /* already closed */ }
         child.once("close", reaped)
-        const timer = setTimeout(() => { try { child.kill("SIGKILL") } catch { /* already gone */ } }, 2_000)
-        if (typeof timer.unref === "function") timer.unref()
       })))
+    },
+    // Runner seam: the per-child onChild pointer feeds registerChild; a close
+    // or error listener keeps registry membership aligned with live children.
+    registerChild(child) {
+      controller.childRegistry.add(child)
+      const drop = () => { controller.childRegistry.delete(child) }
+      child.once?.("close", drop)
+      child.once?.("error", drop)
+      return child
     },
   }
   return controller
@@ -2813,16 +3082,15 @@ export async function consumeCouncilRequest(controller, request) {
   if (!modeMatches || !roundMatches || !passMatches) {
     return { ok: false, error: "[magi] magi_council request is stale for the active round/pass; regenerate the prompt." }
   }
-  const roleModels = controller.modelConfig.resolveRoleModels(state.mainModel ?? null, state.mainThinking ?? null, config.user, config.project)
-  if (!state?.mainModel) {
+  if (!controller.session?.mainModel) {
     return { ok: false, error: "[magi] main session model is not set; select a model before dispatching Magi." }
   }
   const run = await (runner ?? runPiCouncil)({
     projectRoot, promptPath, round, pass, mode,
-    roleModels: controller.modelConfig.resolveRoleModels(state.mainModel, state.mainThinking ?? null, config.user, config.project),
+    roleModels: controller.modelConfig.resolveRoleModels(controller.session.mainModel, controller.session.mainThinking ?? null, config.user, config.project),
     timeoutMs: deliberatorTimeoutMsOf(state),
     signal,
-    childTracker: trackedChildren,
+    childTracker: { add: (child) => controller.registerChild(child) },
     spawnLike,
   })
   // Post-dispatch failures (timeout / hard_error) already produced the three
@@ -2831,8 +3099,6 @@ export async function consumeCouncilRequest(controller, request) {
   return { ok: run.ok, halt: run.halt, haltReason: run.haltReason, hardErrors: run.hardErrors, results: run.results, failureType: run.results[0]?.failureType ?? null }
 }
 ```
-
-Final-state guarantee: the former in-closure role-model aliasing helper is fully inlined; `modelConfig` is stored on the controller object; `consumeCouncilRequest` is `export`-ed and reads state from disk at dispatch time; the role models are resolved inline (no aliasing function); `trackChild`/`trackedChildren` carry a removal-on-close contract: every child enters the registry at spawn and leaves when its close event fires, and `controller.shutdown()` awaits each reaped close via a 2-second fallback SIGKILL.
 - [ ] **Step 4: GREEN**
 
 Run: `node --test test/pi-adapter.test.mjs` and `node --check adapters/pi/lib/controller.js`
@@ -2932,6 +3198,17 @@ async function loadExtension() {
     ...overrides,
   })
   return { activate }
+}
+
+async function activateControllerForTest({ pi, controllerOverride, modelConfig }) {
+  const module = await import("../adapters/pi/extension.js")
+  await module.default(pi, {
+    host: fakeHost(),
+    typebox: makeFakeType(),
+    ...(modelConfig ? { modelConfig } : {}),
+    controllerOverride,
+  })
+  return pi.tools[0]
 }
 
 function fakePi(overrides = {}) {
@@ -3045,6 +3322,72 @@ test("magi_council execute throws on union-shape mismatch and herdr before any c
   assert.equal(configCalls.read, 0)
 })
 
+test("post-dispatch timeout/hard_error results are RETURNED by execute (not thrown)", async () => {
+  const { activate } = await loadExtension()
+  const pi = fakePi()
+  // The runner results carry the standard role reports after either failure;
+  // tool must ROUTE the outcome back to gates instead of throwing.
+  const runOutcome = {
+    ok: false, halt: false, haltReason: null,
+    hardErrors: [], results: [
+      { sage: "melchior", ok: false, failureType: "timeout", piFailureType: "timeout", exitCode: null, timedOut: true, reportPath: "/p/.open_magi/magi-log/round-001/council-001/report-melchior.md", stderr: "", error: null },
+      { sage: "balthasar", ok: false, failureType: "timeout", piFailureType: "timeout", exitCode: null, timedOut: true, reportPath: "/p/report-b", stderr: "", error: null },
+      { sage: "casper", ok: false, failureType: "timeout", piFailureType: "timeout", exitCode: null, timedOut: true, reportPath: "/p/.open_magi/magi-log/round-001/council-001/report-casper.md", stderr: "", error: null },
+    ],
+  }
+  const statefulController = {
+    modelConfig: magiSetupModelConfigHooks({ writes: [], current: {} }),
+    council: async () => runOutcome,
+  }
+  const tool = await activateControllerForTest({ pi, controllerOverride: statefulController, modelConfig: statefulController.modelConfig })
+  const result = await tool.execute("call-5", {
+    projectRoot: "/p",
+    promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md",
+    round: 1, pass: 1, mode: "decision",
+  }, undefined, undefined, { mode: "tui", cwd: "/p", isProjectTrusted: () => true, ui: fakeUi() })
+  assert.ok(result.content?.[0]?.text?.length > 10, "tool returns the timeout outcome as content")
+  assert.equal(result.details.results.length, 3)
+  assert.equal(result.details.results.every((entry) => entry.failureType === "timeout"), true)
+})
+
+test("magi-setup pi-setup guard path keeps config use narrowed to the trusted door", async () => {
+  const { activate } = await loadExtension()
+  const loadCalls = []
+  const pi = fakePi()
+  await activate(pi, {
+    modelConfig: {
+      loadModelConfig: async (options) => { loadCalls.push(options); return { ok: true, user: null, project: null } },
+      resolveRoleModels: () => null,
+      userModelConfigPath: () => "/u/open-magi.json",
+      projectModelConfigPath: (root) => `${root}/.pi/open-magi.json`,
+      CONFIG_DIR_NAME: ".pi",
+      writeModelConfig: async () => {},
+    },
+  })
+  const ui = fakeUi({ answers: ["User scope (getAgentDir()/open-magi.json)", "a/b:low", "b2:low", "c3:low"] })
+  const ctx = { mode: "tui", cwd: "/proj", isProjectTrusted: () => false, ui }
+  await pi.commands["magi-setup"].handler("", ctx)
+  assert.equal(loadCalls.length, 1)
+  assert.equal(loadCalls[0].isProjectTrusted, false, "user scope must pass ctx.isProjectTrusted() verbatim")
+})
+
+test("magi-setup project scope empty string clears a role (no merge-back)", async () => {
+  const { activate } = await loadExtension()
+  const writes = []
+  const pi = fakePi()
+  await activate(pi, {
+    modelConfig: magiSetupModelConfigHooks({
+      writes, current: { melchior: "old/m1:low", casper: "old/c3:low" }, project: { models: { melchior: "old/m1:low", casper: "old/c3:low" } },
+    }),
+  })
+  const ui = fakeUi({ answers: ["Project scope (.pi/open-magi.json, trusted projects only)", "", "old/b2:low", ""] })
+  await pi.commands["magi-setup"].handler("", { mode: "tui", cwd: "/proj", isProjectTrusted: () => true, ui })
+  assert.equal(writes[0].options.scope, "project")
+  // melchior cleared by ""; casper confirmed ""? casper pre-filled old value, unchanged; balthasar cleared.
+  assert.equal(writes[0].next.models.melchior, undefined)
+  assert.equal(writes[0].next.models.casper, "old/c3:low")
+})
+
 test("magi_council tool is registered with the discriminator schema and throwing execute", async () => {
   const { activate } = await loadExtension()
   const pi = fakePi()
@@ -3149,8 +3492,8 @@ function fakeUi(options = {}) {
   const answers = options.answers ?? []
   return {
     notifies: [],
-    select: async () => answers[index++] ?? undefined,
-    input: async () => answers[index++] ?? "",
+    select: async (title) => { (options.selects ?? []).push?.(title); return answers[index++] ?? undefined },
+    input: async (title, placeholder) => { (options.asks ?? []).push(title); return answers[index++] ?? "" },
     confirm: async () => answers[index++] === "yes",
     notify: (message, type) => { options.notifies?.push({ message, type }) },
   }
@@ -3181,7 +3524,7 @@ export default async function (pi, testOverrides = {}) {
   const typebox = testOverrides.typebox ?? await import("typebox")
   const Type = typebox?.Type ?? typebox
   const modelConfig = testOverrides.modelConfig ?? createModelConfigApi({ getAgentDir: host.getAgentDir, CONFIG_DIR_NAME: host.CONFIG_DIR_NAME })
-  const controller = createNativeController({ pi, modelConfig })
+  const controller = testOverrides.controllerOverride ?? createNativeController({ pi, modelConfig })
 
   const councilInputSchema = Type.Union([
     Type.Object({
@@ -3221,7 +3564,9 @@ export default async function (pi, testOverrides = {}) {
         return
       }
       const targetPath = isUserScope ? modelConfig.userModelConfigPath() : modelConfig.projectModelConfigPath(ctx.cwd)
-      const loaded = await modelConfig.loadModelConfig({ projectRoot: ctx.cwd, isProjectTrusted: true })
+      // Always pass the REAL ctx.isProjectTrusted() — the user-scope path must not
+      // impersonate trust for the project file read.
+      const loaded = await modelConfig.loadModelConfig({ projectRoot: ctx.cwd, isProjectTrusted: ctx.isProjectTrusted() })
       if (!loaded.ok) {
         ctx.ui.notify(loaded.error + " Fix or remove the file with /magi-setup after editing it manually.", "error")
         return
@@ -3245,12 +3590,10 @@ export default async function (pi, testOverrides = {}) {
         const value = String(answer ?? "").trim()
         if (value) next.models[role] = value
       }
-      if (loaded.project && !isUserScope) {
-        // Preserve project roles the dialog did not touch when merging user scope.
-        for (const role of ROLE_NAMES) {
-          if (!next.models[role] && loaded.project.models?.[role]) next.models[role] = loaded.project.models[role]
-        }
-      }
+
+      // The loop above builds next.models: an empty answer drops that role
+      // (clear), untouched roles keep their pre-filled default (preserve), and
+      // there is NO merge-back of previously loaded values in either scope.
       await modelConfig.writeModelConfig(targetPath, next, { scope: isUserScope ? "user" : "project" })
       ctx.ui.notify(`[magi] ${isUserScope ? "User" : "Project"} model overrides written to ${targetPath} (CONFIG_DIR_NAME=${modelConfig.CONFIG_DIR_NAME}).`, "info")
     },
@@ -3295,10 +3638,16 @@ export default async function (pi, testOverrides = {}) {
     return { action: "continue" }
   })
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     // Await so subsequent events (tool_call, agent_settled) always see the fresh
     // filesystem state; restore() is intentionally fs-authoritative.
-    await controller.restore(ctx)
+    // Pi 0.85.1: thinking level comes from pi.getThinkingLevel() (ExtensionAPI,
+    // types.d.ts: getThinkingLevel(): ThinkingLevel), NOT an arbitrary
+    // ctx.thinkingLevel; the current model comes from ExtensionContext.model
+    // (typed `Model<any> | undefined`). Both are captured with `null` fallbacks.
+    const capturedThinking = pi.getThinkingLevel?.() ?? ctx?.thinkingLevel ?? null
+    const capturedModel = ctx.model?.id ?? null
+    await controller.restore(ctx, { mainModel: capturedModel, thinkingLevel: capturedThinking })
   })
 
   pi.on("tool_call", async (event, ctx) => {
@@ -3359,10 +3708,12 @@ git commit -m "docs: document experimental Pi installation, activation, and Herd
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Whole-suite GREEN**
+- [ ] **Step 1: Whole-suite GREEN (final verification, staged)**
 
-Run: `npm test`
-Expected: all four `node --test` files pass — package, plugin, setup, pi-adapter.
+Run: focused suites after EACH task (`node --test test/pi-adapter.test.mjs`, never claiming full-suite green from partial runs). For the FINAL green run the orchestrator must:
+1. Accept this round's report and delete the round's `.fatima/` files (they are collaboration artifacts carrying literal Han text and are the only reason the repo Han probe fails).
+2. Run fresh `npm test`.
+Expected: all 217 tests pass (package, plugin, setup, pi-adapter). NEVER silence tests or exclude `.fatima/` in repository test code to get here — the deletion of the collaboration files is what makes the fresh run pass.
 
 - [ ] **Step 2: Packaging smoke**
 
