@@ -1476,3 +1476,30 @@ test("magi-setup notify path comes through the real ui object with CONFIG_DIR_NA
   assert.ok(JSON.stringify(notifications).includes("CONFIG_DIR_NAME=.pi"))
 })
 
+test("HERDR_ENV=1 blocks the whole native council path before config, runner, or spawn", async () => {
+  const original = process.env.HERDR_ENV
+  process.env.HERDR_ENV = "1"
+  try {
+    const configCalls = { count: 0 }
+    const runnerCalls = { count: 0 }
+    const spawnCalls = { count: 0 }
+    const controller = {
+      state: { active: true, projectRoot: "/p", sessionID: "s" },
+      modelConfig: {
+        loadModelConfig: async () => { configCalls.count += 1; return { ok: true, user: null, project: null } },
+      },
+    }
+    await assert.rejects(() => consumeCouncilRequest(controller, {
+      projectRoot: "/p",
+      promptPath: "/p/.open_magi/magi-log/round-001/council-001/prompt.md",
+      round: 1, pass: 1, mode: "decision", isProjectTrusted: true,
+      runner: () => { runnerCalls.count += 1; return { ok: true, results: [] } },
+      spawnLike: () => { spawnCalls.count += 1; throw new Error("must not spawn") },
+    }), /transport mismatch/)
+    assert.equal(configCalls.count, 0)
+    assert.equal(runnerCalls.count, 0)
+    assert.equal(spawnCalls.count, 0)
+  } finally {
+    process.env.HERDR_ENV = original
+  }
+})
