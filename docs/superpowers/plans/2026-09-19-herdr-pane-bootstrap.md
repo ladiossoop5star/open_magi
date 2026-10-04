@@ -58,4 +58,3 @@
 - [ ] Verify the installed Herdr reference checksum is identical on all three hosts.
 - [ ] Verify each installed reference contains the cwd bootstrap and Stop-hook bypass contract.
 - [ ] Report that existing live sage panes require explicit cleanup/restart because installation cannot retroactively change their cwd or environment.
-
