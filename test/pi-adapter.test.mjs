@@ -503,6 +503,32 @@ test("parseJsonlStream selects the final assistant message and its usage", () =>
   assert.throws(() => parseJsonlStream("not-json"), /invalid_json/)
 })
 
+for (const [label, prefix, reportText, expectedOk] of [
+  ["large intermediate events", JSON.stringify({ type: "message_update", delta: "x".repeat(25_000) }) + "\n", "final report", true],
+  ["large final reports", "", "final report " + "x".repeat(25_000), true],
+  ["invalid early events", "not-json\n" + JSON.stringify({ type: "message_update", delta: "x".repeat(25_000) }) + "\n", "final report", false],
+]) {
+  test(`runner preserves JSONL validation across ${label}`, async () => {
+    const project = await mkdtemp(join(tmpdir(), "magi-pi-stream-"))
+    const output = prefix + JSON.stringify({ type: "message_end", message: {
+      role: "assistant", stopReason: "stop", text: reportText, usage: { input: 10, output: 20 },
+    } })
+    const processResult = await runOnePiChild({
+      invocation: { command: process.execPath, args: ["-e", `process.stdout.write(${JSON.stringify(output)})`] },
+      args: [], cwd: project, promptText: "prompt", timeoutMs: 5_000,
+    })
+    const result = await writeReport({ promptPath: join(project, "prompt.md"), sage: "melchior", model: "p/m", processResult })
+    assert.equal(result.ok, expectedOk)
+    const report = await readFile(result.reportPath, "utf8")
+    if (expectedOk) {
+      assert.ok(report.includes(reportText), "the complete final report is preserved")
+      assert.match(report, /^usage_output_tokens: 20$/m)
+    } else {
+      assert.equal(result.piFailureType, "invalid_json")
+    }
+  })
+}
+
 test("runPiCouncil launches three concurrent isolated children from the captured cwd", async () => {
   const project = await mkdtemp(join(tmpdir(), "magi-pi-runner-"))
   const councilDir = join(project, ".open_magi", "magi-log", "round-001", "council-001")
@@ -750,6 +776,19 @@ test("parseQuestionRequest and the firewall whitelist produce deny/allow/questio
   assert.equal(wrongRound, false)
 })
 
+test("question firewall permits initial goal and debug questions only in their allowed phases", () => {
+  for (const [classification, allowedPhases] of [
+    ["goal_ambiguity", ["goal_definition", "status_assessment"]],
+    ["debug_direction", ["status_assessment"]],
+  ]) {
+    const request = { classification, question: "Which direction?" }
+    for (const currentPhase of ["goal_definition", "status_assessment", "execution"]) {
+      assert.equal(isQuestionAllowed({ currentRound: 1, currentPhase }, request), allowedPhases.includes(currentPhase))
+      assert.equal(isQuestionAllowed({ currentRound: 2, currentPhase }, request), false)
+    }
+  }
+})
+
 test("questionDeniedText redacts sensitive herdr raw commands and hashes the question", () => {
   const request = {
     classification: "execution_blocker",
@@ -987,7 +1026,7 @@ test("approved question shows the true question, sends the answer back, and cons
     currentDeliberationPass: 2, maxDeliberationPasses: 3, schemaVersion: 2,
   }), "utf8")
   const requestText = "classification: execution_blocker\nquestion: fixture tests/fixture/a.txt was deleted; re-create it?\nphase: execution"
-  const requestPath = join(logDir, "question-request.txt")
+  const requestPath = join(logDir, "question-request.md")
   await writeFile(requestPath, requestText, "utf8")
   const sent = []
   const uiQuestions = []
@@ -1115,7 +1154,7 @@ test("controller lifecycle reads CURRENT filesystem state, never a stale snapsho
   })
   writeStateFile({ active: true, projectRoot: project, sessionID: "s", currentRound: 2, currentPhase: "execution", currentCouncilMode: "decision", currentDeliberationPass: 1, maxDeliberationPasses: 3 })
   await mkdir(join(logDir, "round-002", "council-001"), { recursive: true })
-  writeFileSync(join(logDir, "question-request.txt"), "classification: procedural\nquestion: should I write the reports?", "utf8")
+  writeFileSync(join(logDir, "question-request.md"), "classification: procedural\nquestion: should I write the reports?", "utf8")
   await controller.settled({ mode: "tui", cwd: project, ui: { input: async (title) => { deniedWrites.push(title); return undefined }, notify: () => {} } })
   const deniedFile = await readFile(join(logDir, "question-denied.md"), "utf8")
   assert.match(deniedFile, /denied by Magi question firewall/)

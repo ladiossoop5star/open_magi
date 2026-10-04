@@ -385,7 +385,7 @@ export function parseQuestionRequest(text) {
   return request
 }
 
-const FIREWALL_ALLOWED_CLASSES = new Set(["execution_blocker", "impossible_verification", "destructive_or_unrelated_risk", "ambiguous_file_ownership"])
+const FIREWALL_ALLOWED_CLASSES = new Set(["goal_ambiguity", "debug_direction", "execution_blocker", "impossible_verification", "destructive_or_unrelated_risk", "ambiguous_file_ownership"])
 
 export function isQuestionAllowed(state, request) {
   const classification = request?.classification
@@ -449,7 +449,7 @@ function writeQuestionDenied(projectRoot, request, nowIso) {
 
 export function readQuestionRequest(projectRoot) {
   try {
-    return parseQuestionRequest(readFileSync(join(projectRoot, LOG_DIR, "question-request.txt"), "utf8"))
+    return parseQuestionRequest(readFileSync(join(projectRoot, LOG_DIR, "question-request.md"), "utf8"))
   } catch (error) {
     if (error?.code === "ENOENT") return null
     return null
@@ -721,7 +721,7 @@ export function createNativeController({ pi, modelConfig }) {
         // delete the question-request artifact so the next settled() will not
         // re-ask. Cancel semantics: answer === undefined keeps the artifact and
         // sends nothing.
-        const artifact = join(ctx.cwd ?? ".", LOG_DIR, "question-request.txt")
+        const artifact = join(ctx.cwd ?? ".", LOG_DIR, "question-request.md")
         const answer = await ctx?.ui?.input?.(`[magi] ${outcome.request.question}`, "")
         if (answer === undefined) return undefined // cancelled: nothing written or sent
         try { rmSync(artifact) } catch { /* already gone */ }

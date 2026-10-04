@@ -51,12 +51,13 @@ export function buildChildArgs({ model, thinking }) {
   return [...ISOLATION_ARGS, "--model", String(model), "--thinking", normalizeThinking(thinking)]
 }
 
-export function parseJsonlStream(stdoutText) {
-  const lines = String(stdoutText ?? "").split("\n").filter((line) => line.trim())
+function createJsonlParser() {
+  let pending = ""
   let header = null
   let finalMessage = null
   let usage = null
-  for (const line of lines) {
+  function consume(line) {
+    if (!line.trim()) return
     let event
     try {
       event = JSON.parse(line)
@@ -69,6 +70,21 @@ export function parseJsonlStream(stdoutText) {
       usage = event.message?.usage ?? usage
     }
   }
+  return {
+    write(chunk) {
+      const lines = (pending + String(chunk)).split("\n")
+      pending = lines.pop()
+      for (const line of lines) consume(line)
+    },
+    finish() {
+      consume(pending)
+      pending = ""
+      return finalJsonlResponse(header, finalMessage, usage)
+    },
+  }
+}
+
+function finalJsonlResponse(header, finalMessage, usage) {
   if (!finalMessage) throw new Error("missing_final_response")
   const stopReason = finalMessage?.stopReason
   if (stopReason === "error" || stopReason === "aborted") {
@@ -79,6 +95,12 @@ export function parseJsonlStream(stdoutText) {
     : String(finalMessage?.text ?? "")
   if (!text.trim()) throw new Error("missing_final_response")
   return { header, finalMessage, usage, text }
+}
+
+export function parseJsonlStream(stdoutText) {
+  const parser = createJsonlParser()
+  parser.write(String(stdoutText ?? ""))
+  return parser.finish()
 }
 
 const MAX_STREAM_BUFFER_CHARS = 20_000
@@ -106,6 +128,8 @@ export function runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, si
     let escalated = false
     let timer = null
     let killTimer = null
+    const parser = createJsonlParser()
+    let parseError = null
     const startedAt = Date.now()
     const appendLimited = (current, chunk) => {
       const next = current === "" ? String(chunk) : current + String(chunk)
@@ -143,7 +167,14 @@ export function runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, si
       record.aborted = true
       escalate()
     }
-    child.stdout?.on("data", (chunk) => { record.stdout = appendLimited(record.stdout, chunk) })
+    // Raw diagnostics stay bounded; validate complete JSONL events separately
+    // so the diagnostic tail cannot truncate a successful report mid-event.
+    child.stdout?.setEncoding?.("utf8")
+    child.stdout?.on("data", (chunk) => {
+      record.stdout = appendLimited(record.stdout, chunk)
+      if (parseError) return
+      try { parser.write(chunk) } catch (error) { parseError = error }
+    })
     child.stderr?.on("data", (chunk) => { record.stderr = appendLimited(record.stderr, chunk) })
     child.on("error", (error) => {
       settle({ ok: false, piFailureType: "spawn_error", error: String(error?.message ?? error?.code ?? error ?? "spawn failed"), exitCode: null })
@@ -151,6 +182,14 @@ export function runOnePiChild({ invocation, args, cwd, promptText, timeoutMs, si
     child.on("close", (code) => {
       if (record.aborted) return settle({ ok: false, exitCode: code })
       if (record.timedOut) return settle({ ok: false, exitCode: code })
+      if (code === 0) {
+        try {
+          if (parseError) throw parseError
+          return settle({ ok: true, exitCode: code, parsedStream: parser.finish() })
+        } catch (error) {
+          return settle({ ok: false, exitCode: code, piFailureType: error.message, error: `parse: ${error.message}` })
+        }
+      }
       // nonzero_exit gets its subtype later (envelope checks model errors);
       // keep piFailureType null so piEnvelopeFor can see bounded stderr.
       settle({ ok: code === 0, exitCode: code })
@@ -231,7 +270,7 @@ export async function writeReport({ promptPath, sage, model, processResult }) {
   let usage = null
   if (processResult.ok) {
     try {
-      stream = parseJsonlStream(processResult.stdout)
+      stream = processResult.parsedStream ?? parseJsonlStream(processResult.stdout)
       usage = stream.usage
     } catch (parseError) {
       processResult = { ...processResult, ok: false, piFailureType: parseError.message, error: `parse: ${parseError.message}` }
